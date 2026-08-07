@@ -42,6 +42,8 @@ mod sandbox;
 #[cfg(target_os = "windows")]
 pub use sandbox::{spawn_one_shot, OneShotSpawnFailure};
 #[cfg(target_os = "windows")]
+mod regfree;
+#[cfg(target_os = "windows")]
 mod sandbox_id;
 #[cfg(target_os = "windows")]
 mod state_aware;
