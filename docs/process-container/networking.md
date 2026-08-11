@@ -26,9 +26,10 @@ shown below. These examples are forward-looking until the schema 0.8
 networking implementation lands.
 
 ProcessContainer ingress intentionally has no peer or port rules.
-`ingress.default` controls general inbound traffic, and
+`ingress.default` controls LAN/private-network inbound traffic, and
 `ingress.hostLoopback` separately controls host-loopback connectivity in
 either direction. The `hostLoopback` value overrides `default` for that path.
+WAN inbound is outside the GA policy and remains blocked.
 
 ### Model 1: direct egress, WFP-filtered (least restrictive)
 

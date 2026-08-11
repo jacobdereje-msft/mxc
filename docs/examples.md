@@ -39,8 +39,9 @@ shape and cooperative proxy environment-variable behavior. The enforced
 AppContainer proxy-peer model is new in 0.8.
 
 Ingress intentionally has no source, destination, or port rules. Its
-`default` field controls general inbound traffic, while `hostLoopback`
-separately controls host-loopback connectivity in either direction.
+`default` field controls LAN/private-network inbound traffic on supporting
+backends, while `hostLoopback` separately controls host-loopback connectivity
+in either direction. WAN inbound is not enabled by the GA policy.
 
 This direct-egress example permits only TCP/443 to one destination:
 
