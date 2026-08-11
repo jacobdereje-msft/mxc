@@ -3,24 +3,9 @@
 Starting with schema 0.8.0, ProcessContainer networking uses the shared
 `network.egress` and `network.ingress` policy plus
 `runtimeConfig.networkProxy` and
-`processContainer.network.allowedProxyPeer`. Schema 0.7 and earlier retain the
-legacy network shape and compatibility behavior described below.
+`processContainer.network.allowedProxyPeer`.
 
 Implementation companion to the parent [MXC Network Configuration, GA](../sandbox-policy/v2/networking.md) doc, which owns the shared policy schema, the three connectivity models, and the GA goal (model 2, deny-all-except-proxy). This doc covers only how the Windows processcontainer backend enforces those models.
-
-| Schema version | Config shape | Proxy setup behavior |
-|---|---|---|
-| 0.7.0 and earlier | Existing `network.proxy` shape remains unchanged | Compatibility path injects the cooperative proxy variables; it does not use the 0.8 proxy-peer contract |
-| 0.8.0 and later | Adds `egress`/`ingress`, `runtimeConfig.networkProxy`, and optional `processContainer.network.allowedProxyPeer` | Uses a packaged or unpackaged AppContainer proxy peer when named; otherwise requires explicit host-loopback opt-in |
-
-Schema 0.7 does not adopt the 0.8 package/AppContainer enforcement model. It
-keeps the legacy cooperative proxy configuration, including
-`HTTP_PROXY`/`HTTPS_PROXY` injection for clients that honor those variables.
-Schema 0.8 introduces the enforced proxy-peer path and its explicit
-host-loopback alternative.
-
-See the [0.7-to-0.8 migration guide](../sandbox-policy/v2/networking-0.7.0-vs-0.8.0.md) and
-[schema 0.8 examples](examples/0.8.0-schema.md).
 
 ## 1. What this backend delivers at GA
 
@@ -30,8 +15,7 @@ Each sandbox gets two enforcement primitives, scoped to its container SID and ap
 - **Per-container WinHTTP HTTP/S proxy:** points WinHTTP-stack clients (e.g., the WinHTTP/Chromium stack) at a caller-provided loopback proxy container. MXC also sets the proxy env vars (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, plus lowercase versions) to the same loopback endpoint. Runtimes that read those variables rather than WinHTTP (Node tooling, Python `requests` / `pip`, Go `net/http`, `curl`, `git`) route through the proxy using this mechanism. These variables are a compatibility layer for well-behaved clients, not the containment boundary. All traffic not destined for the proxy loopback will be dropped.
 
 Each model is a specific combination of container network capabilities and
-enforcement. Complete schema 0.8 configs and proxy-host setup instructions are
-shown below. These examples are forward-looking until the schema 0.8
+enforcement. The examples below are forward-looking until the schema 0.8
 networking implementation lands.
 
 ProcessContainer ingress intentionally has no peer or port rules.
