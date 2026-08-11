@@ -68,7 +68,7 @@ This direct-egress example permits only TCP/443 to one destination:
 }
 ```
 
-For proxy-only egress, leave egress deny-default with no direct rules and
+For proxy-only egress, omit the `network` block to use its deny-defaults and
 provide the loopback endpoint and one proxy identity outside the shared
 policy:
 
@@ -76,31 +76,25 @@ policy:
 {
   "version": "0.8.0-dev",
   "containment": "processcontainer",
-  "network": {
-    "egress": {
-      "default": "deny"
-    },
-    "ingress": {
-      "default": "deny",
-      "hostLoopback": "deny"
-    }
-  },
   "runtimeConfig": { // Runtime data passed to MXC, not policy.
-    // GA accepts only localhost, 127.0.0.1, or [::1] with a port.
+    // GA accepts http(s)://localhost:<port>, 127.0.0.1:<port>, or [::1]:<port>.
     "networkProxy": "http://127.0.0.1:8080"
   },
   "processContainer": {
     "network": {
-      // Package family name of the packaged AppContainer proxy.
-      "allowedProxyPeer": "Contoso.AgentProxy_1234567890abc"
+      // Package family name or AppContainer profile name of the proxy.
+      "allowedProxyPeer": "agent-proxy"
     }
   }
 }
 ```
 
-For a proxy that is not packaged as an AppContainer, omit
+An explicit `network` block with deny defaults and no direct egress rules is
+equivalent. Use it only when making the defaults visible helps the reader.
+
+For a proxy that does not run in a packaged or unpackaged AppContainer, omit
 `allowedProxyPeer` and explicitly set `network.ingress.hostLoopback` to
-`"allow"`. This opts into reaching a host loopback proxy rather than a
+`"allow"`. This opts into reaching a host process over loopback rather than a
 peer-isolated proxy:
 
 ```jsonc
@@ -118,8 +112,8 @@ peer-isolated proxy:
 }
 ```
 
-The proxy must already be running. A packaged proxy needs
+The proxy must already be running. A contained proxy needs
 `privateNetworkClientServer`, `internetClient` when it connects externally,
-and package-owned inbound firewall authorization. See
+and inbound firewall authorization. See
 [Process Container Networking Configuration](process-container/networking.md)
-for both proxy setups.
+for all proxy setups.

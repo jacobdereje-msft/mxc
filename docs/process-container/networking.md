@@ -5,7 +5,7 @@ Implementation companion to the parent [MXC Network Configuration, GA](../sandbo
 | Schema version | Config shape | Proxy setup behavior |
 |---|---|---|
 | 0.7.0 and earlier | Existing `network.proxy` shape remains unchanged | Compatibility path injects the cooperative proxy variables; it does not use the 0.8 proxy-peer contract |
-| 0.8.0 and later | Adds `egress`/`ingress`, `runtimeConfig.networkProxy`, and optional `processContainer.network.allowedProxyPeer` | Uses a packaged AppContainer proxy peer when named; otherwise requires explicit host-loopback opt-in |
+| 0.8.0 and later | Adds `egress`/`ingress`, `runtimeConfig.networkProxy`, and optional `processContainer.network.allowedProxyPeer` | Uses a packaged or unpackaged AppContainer proxy peer when named; otherwise requires explicit host-loopback opt-in |
 
 Schema 0.7 does not adopt the 0.8 package/AppContainer enforcement model. It
 keeps the legacy cooperative proxy configuration, including
@@ -61,31 +61,29 @@ WAN inbound is outside the GA policy and remains blocked.
 |---|---|
 | BaseContainer capability | `privateNetworkClientServer` |
 | Proxy capabilities | `privateNetworkClientServer`; also `internetClient` for external destinations |
-| Peer | Package family name in `allowedProxyPeer`, or no peer when opting into a host proxy |
+| Peer | Package family name or AppContainer profile name in `allowedProxyPeer`, or no peer when opting into a host proxy |
 | Enforcement | Per-container WinHTTP proxy plus scoped loopback; all direct egress remains blocked |
 
-#### Packaged AppContainer proxy (recommended)
+#### Contained AppContainer proxy (recommended)
 
 ```jsonc
 {
-  "network": {
-    "egress": { "default": "deny" },
-    "ingress": {
-      "default": "deny",
-      "hostLoopback": "deny"
-    }
-  },
   "runtimeConfig": { // MXC runtime metadata (not policy)
     "networkProxy": "http://127.0.0.1:8080"
   },
   "processContainer": {
     "network": {
-      // Package family name of the packaged AppContainer proxy.
-      "allowedProxyPeer": "Contoso.AgentProxy_1234567890abc"
+      // Package family name or AppContainer profile name of the proxy.
+      "allowedProxyPeer": "agent-proxy"
     }
   }
 }
 ```
+
+The omitted `network` block uses the default-deny posture. An explicit block
+with `egress.default: "deny"`, `ingress.default: "deny"`, and
+`ingress.hostLoopback: "deny"` is equivalent. Proxy mode cannot contain direct
+egress allow or deny rules.
 
 The proxy endpoint is runtime metadata, not shared network policy. MXC:
 
@@ -100,21 +98,22 @@ The caller must:
 - keep it alive until the client exits; and
 - leave egress deny-default with no direct allow or deny rules.
 
-#### Proxy firewall authorization
+#### Proxy identity and firewall authorization
 
-The packaged proxy owns its inbound authorization through a
-`desktop2:Extension Category="windows.firewallRules"` TCP rule. The scoped
-peer rule and `privateNetworkClientServer` do not bypass Windows Firewall's
-block-inbound-to-non-allowed-apps policy.
+| Proxy setup | `allowedProxyPeer` | Firewall authorization |
+|---|---|---|
+| Packaged AppContainer | Package family name | Package-owned `desktop2:Extension Category="windows.firewallRules"` inbound TCP rule |
+| Unpackaged AppContainer | [AppContainer profile](https://learn.microsoft.com/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) name | Administrator-installed inbound application rule for the proxy executable |
 
-The proxy package needs `privateNetworkClientServer`, `internetClient` when it
-connects to external destinations, AppContainer trust, and a
-`windows.firewallRules` inbound TCP declaration. The stacked follow-up change
-to this document provides a minimal manifest.
+The scoped peer rule and `privateNetworkClientServer` do not bypass Windows
+Firewall's block-inbound-to-non-allowed-apps policy. A packaged proxy needs
+AppContainer trust and the package-owned firewall declaration shown in the
+stacked follow-up. An unpackaged AppContainer proxy requires its installer or
+administrator to own the equivalent firewall rule.
 
-#### Unpackaged host proxy (explicit opt-in)
+#### Host-process proxy (explicit opt-in)
 
-If the consumer does not package the proxy, it must run as a host process.
+If the proxy does not run in an AppContainer, it is a host process.
 Omit `processContainer.network.allowedProxyPeer` and explicitly allow the host
 loopback path:
 
@@ -135,8 +134,8 @@ loopback path:
 
 This is a deliberate relaxation from the packaged peer model:
 `hostLoopback: "allow"` permits the sandbox to use the host-loopback path, and
-there is no package identity to scope with `allowedProxyPeer`. Direct internet
-egress remains deny-default.
+there is no contained AppContainer identity to scope with `allowedProxyPeer`.
+Direct internet egress remains deny-default.
 
 ### Model 3: fully blocked (most restrictive)
 

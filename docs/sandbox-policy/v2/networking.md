@@ -85,7 +85,7 @@ host-loopback connectivity while denying other inbound traffic.
 
 **Use cases for `ingress.hostLoopback: allow`:**
 
-- An unpackaged host HTTP/S proxy reached from the sandbox
+- A host-process HTTP/S proxy reached from the sandbox
 - MCP servers in SSE/WebSocket mode (server listens on a port for client connections from host)
 - Language server daemons (e.g., TypeScript language server) accessed from host IDE
 - Local dev servers (e.g., npm run dev on port 3000) accessed from host browser
@@ -139,31 +139,25 @@ No direct internet, loopback proxy only (more restrictive). Proxy
 
 ```json
 {
-  "network": { // Network Policy (must be set to defaults, deny all)
-    "egress": {
-      "default": "deny"
-    },
-    "ingress": {
-      "default": "deny",
-      "hostLoopback": "deny"
-    }
-  },
   "runtimeConfig": { // runtime data passed to MXC (not policy)
-    // only localhost:<port>, 127.0.0.1:<port> and [::1]:<port> allowed for GA
+    // http(s)://localhost:<port>, 127.0.0.1:<port>, or [::1]:<port>
     "networkProxy": "http://127.0.0.1:8080"
   },
   "processContainer": { // process-container backend data (not shared policy)
     "network": {
-      // Package family name of the packaged AppContainer proxy.
-      "allowedProxyPeer": "Contoso.AgentProxy_1234567890abc"
+      // Package family name or AppContainer profile name of the proxy.
+      "allowedProxyPeer": "agent-proxy"
     }
   }
 }
 ```
 
-For an unpackaged host proxy, omit `processContainer.network.allowedProxyPeer`
-and set `ingress.hostLoopback` to `"allow"`. This explicitly opts into the
-host-loopback path instead of the packaged, identity-scoped peer path.
+The omitted `network` block uses the default-deny egress, LAN inbound, and host
+loopback posture. An explicit deny-default block is equivalent.
+
+For a host-process proxy, omit `processContainer.network.allowedProxyPeer` and
+set `ingress.hostLoopback` to `"allow"`. This explicitly opts into the
+host-loopback path instead of the contained, identity-scoped peer path.
 
 This schema follows container-ecosystem conventions (CIDR peers, egress/ingress, to/ports), modeled loosely on Kubernetes NetworkPolicy (the CNCF standard layered on CNI/OCI) rather than on platform firewall primitives. MXC keeps an explicit deny list and a per-direction default, which are a deliberate extension over pure Kubernetes NetworkPolicy (allow-only with `ipBlock.except`) to give an auditable default and block-precedence.
 
@@ -183,11 +177,14 @@ This schema follows container-ecosystem conventions (CIDR peers, egress/ingress,
   (127.0.0.1 / ::1), including sandbox-to-host access to an unpackaged proxy.
   This setting overrides `ingress.default` for the host-loopback path and does
   not affect intra-container loopback.
-- `runtimeConfig.networkProxy`: This is outside of the main network policy and allows consumers to provide their proxy URL. Only `localhost:<port>`, `127.0.0.1:<port>` and `[::1]:<port>` are allowed for GA.
+- `runtimeConfig.networkProxy`: This is outside the main network policy and
+  allows consumers to provide their proxy URL. GA accepts only HTTP or HTTPS
+  loopback URLs: `http(s)://localhost:<port>`,
+  `http(s)://127.0.0.1:<port>`, and `http(s)://[::1]:<port>`.
 - `processContainer.network.allowedProxyPeer`: Optional process-container
-  backend metadata containing the package family name of the single packaged
-  AppContainer proxy allowed on the scoped loopback path. Omit it only when
-  using an unpackaged host proxy, which also requires
+  backend metadata containing the package family name or AppContainer profile
+  name of the single contained proxy allowed on the scoped loopback path. Omit
+  it only when using a host-process proxy, which also requires
   `ingress.hostLoopback: "allow"`. It is not part of the shared network policy.
 
 Egress peer and port fields (used in `egress.allow[]` / `egress.deny[]`; not shown in the minimal example above):
@@ -226,7 +223,7 @@ supports them. WAN inbound remains outside the GA policy.
 
 - **Attack surface:** Allowing host-to-container inbound means the sandbox can run servers accessible from the host. For agentic workloads, this creates a risk of command-and-control servers, exfiltration channels, or lateral movement vectors.
 - **Opt-in model:** Consumers that need host-loopback connectivity, including
-  an unpackaged host proxy or host access to a sandbox-local service, must
+  a host-process proxy or host access to a sandbox-local service, must
   explicitly set `ingress.hostLoopback: allow`.
 - **No granular rules:** GA does not define ingress peers, CIDRs, ports, or
   protocols. A backend that cannot honor an enabled ingress toggle rejects the
@@ -312,10 +309,10 @@ GA includes all backends for their respective isolation capabilities. Network co
 
 **Models (Connectivity models):** Model 2 (recommended) grants no
 `internetClient`, so the AppContainer reaches only the configured loopback
-proxy and all other outbound is dropped by the system. A packaged proxy is
-scoped by `allowedProxyPeer`; an unpackaged host proxy requires the explicit
-`hostLoopback: allow` opt-in. Model 1 grants `internetClient`, allowing direct
-egress under WFP IP/CIDR/port/protocol rules.
+proxy and all other outbound is dropped by the system. A packaged or
+unpackaged AppContainer proxy is scoped by `allowedProxyPeer`; a host-process
+proxy requires the explicit `hostLoopback: allow` opt-in. Model 1 grants
+`internetClient`, allowing direct egress under WFP IP/CIDR/port/protocol rules.
 
 **Model 3:** grants no internetClient and no loopback exemptions for the AppContainer SID.
 
