@@ -52,7 +52,7 @@ WAN inbound is outside the GA policy and remains blocked.
 
 | Item | Requirement |
 |---|---|
-| BaseContainer capability | `privateNetworkClientServer` |
+| BaseContainer capability | MXC adds `privateNetworkClientServer` when `runtimeConfig.networkProxy` is set, unless `ingress.hostLoopback` is `"allow"` |
 | Proxy capabilities | `privateNetworkClientServer`; also `internetClient` for external destinations |
 | Peer | Package family name or AppContainer profile name in `allowedProxyPeer`, or no peer when opting into a host proxy |
 | Enforcement | Per-container WinHTTP proxy plus scoped loopback; all direct egress remains blocked |
@@ -80,8 +80,10 @@ egress allow or deny rules.
 
 The proxy endpoint is runtime metadata, not shared network policy. MXC:
 
-- resolves `allowedProxyPeer` and creates the scoped loopback relationship;
-- adds `privateNetworkClientServer` to the BaseContainer client; and
+- resolves `allowedProxyPeer` and creates the scoped loopback relationship
+  when a peer is provided;
+- adds `privateNetworkClientServer` to the BaseContainer client unless
+  `ingress.hostLoopback` is `"allow"`; and
 - configures the per-container WinHTTP proxy.
 
 The caller must:
