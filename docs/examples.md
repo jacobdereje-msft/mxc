@@ -58,5 +58,5 @@ egress, and blocks private-network and host-loopback inbound connections:
 }
 ```
 
-See [MXC Network Configuration](sandbox-policy/v2/networking.md) for the
+See the [current network policy](sandbox-policy/v2/networking.md) for the
 complete schema and backend support.
