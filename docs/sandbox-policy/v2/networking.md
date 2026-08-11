@@ -353,6 +353,3 @@ the two ingress toggles via INPUT).
 - **Inter-container networking:** Containers cannot communicate with each other (except Windows process containers).
 - **macOS direct-egress models:** Seatbelt cannot filter arbitrary remote destinations, so model 1 (direct egress under IP/CIDR/port/protocol rules) is not available on macOS; macOS supports model 2 (proxy-only).
 - **Proxy arbitrary network traffic:** GA MXC configures proxies for HTTP/S traffic only. On Windows, only clients that use the WinHTTP stack or correctly query the platform proxy configuration are proxied. Many libraries on all 3 platforms (Windows/Linux/macOS) use proxy environment variables as their configuration mechanism. On Linux and macOS these are the standard way to apply proxy configurations; however, it is advisory only and not a full RFC standard. As far as MXC is concerned, libraries/apps that honor them will use the proxy, while libraries/apps that ignore them will not have their traffic directed to the proxy and but instead have their egress blocked.
-- **Granular inbound filtering:** GA can allow or deny LAN/private-network
-  inbound and host-loopback inbound, but cannot filter inbound by source,
-  destination, protocol, or port. WAN inbound is not enabled by the GA policy.

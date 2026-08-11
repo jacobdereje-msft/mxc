@@ -12,8 +12,7 @@ Each sandbox gets two enforcement primitives, scoped to its container SID and ap
 - **WFP outbound filters:** block all outbound traffic by default, then allow or block specific destinations by IP address or range, protocol, and port (a single port or a range), for both IPv4 and IPv6. An explicit block always wins over an allow, so a deny is expected to fall inside the allow it narrows; an allow and a deny matching the exact same destination, protocol, and port is rejected as an invalid policy. The rules apply only to this sandbox.
 - **Per-container WinHTTP HTTP/S proxy:** points WinHTTP-stack clients (e.g., the WinHTTP/Chromium stack) at a caller-provided loopback proxy container. MXC also sets the proxy env vars (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, plus lowercase versions) to the same loopback endpoint. Runtimes that read those variables rather than WinHTTP (Node tooling, Python `requests` / `pip`, Go `net/http`, `curl`, `git`) route through the proxy using this mechanism. These variables are a compatibility layer for well-behaved clients, not the containment boundary. All traffic not destined for the proxy loopback will be dropped.
 
-Each model combines container network capabilities and enforcement. The examples are forward-looking until the schema
-0.8 networking implementation lands.
+The examples below use the proposed schema 0.8 network shape.
 
 ProcessContainer ingress has no peer or port rules. `ingress.default` controls LAN/private-network inbound traffic;
 `ingress.hostLoopback` controls host-loopback connectivity and overrides `default` for that path. WAN inbound remains
