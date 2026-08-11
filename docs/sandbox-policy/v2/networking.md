@@ -214,7 +214,7 @@ Ingress has no CIDR peers or port rules. `ingress.default` and
 
 **Limitation:** Enforcement requires an egress restriction at the OS level: WFP on Windows process containers, a network namespace plus iptables on the Linux backends, and a Seatbelt profile confining network-outbound to the loopback proxy port on macOS. Rich IP/CIDR/port allow-lists are expressible on Windows and the Linux backends but not on macOS, where Seatbelt restricts egress to the proxy port rather than filtering arbitrary destinations. A configuration a backend cannot enforce is rejected rather than run advisory, so "fully describes the workload's network view" always holds for an accepted configuration.
 
-### D2: Inbound and host-loopback access are blocked by default
+### D2: Private-network and host-loopback inbound are blocked by default
 
 **Decision:** GA defines one LAN/private-network inbound control and one
 host-loopback control. Both are blocked by default (`ingress.default: deny`

@@ -34,8 +34,8 @@ For a more comprehensive list of examples, look in the examples\ directory.
 ### Networking
 
 Starting with schema 0.8.0, MXC network policy uses `egress` and `ingress`
-sections. This example allows TCP/443 to one CIDR while keeping all other
-egress, LAN/private-network inbound, and host-loopback access denied:
+sections. This example allows outbound TCP/443 to one CIDR, denies all other
+egress, and blocks private-network and host-loopback inbound connections:
 
 ```jsonc
 {
