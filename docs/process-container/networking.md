@@ -78,8 +78,9 @@ unless `ingress.hostLoopback` is `"allow"`.
 
 #### HTTP client guidance
 
-Use WinHTTP or an HTTP library that calls the recommended Windows APIs to query, evaluate, and use the system HTTP/S
-proxy configuration. These clients use the proxy transparently.
+Use WinHTTP or an HTTP library that calls the WinHTTP APIs on Windows to query, evaluate, and use the system HTTP/S
+proxy configuration. The OS sets this configuration per BaseContainer; the WinHTTP stack discovers and uses it
+transparently. Other HTTP libraries do not receive this OS-level proxy configuration.
 
 MXC also sets the standard proxy environment variables for libraries that use cooperative proxying. The OS permits
 outbound traffic only to the configured loopback proxy address and port; direct or proxy-bypassing traffic is blocked.
