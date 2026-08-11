@@ -4,13 +4,14 @@ Implementation companion to the parent [MXC Network Configuration, GA](../sandbo
 
 | Schema version | Config shape | Proxy setup behavior |
 |---|---|---|
-| 0.7.0 and earlier | Existing `network.proxy` shape remains unchanged | Proxy host must use one of the packaged or unpackaged Windows setups described below |
-| 0.8.0 and later | Adds `egress`/`ingress`, `runtimeConfig.networkProxy`, and singular `processContainer.network.allowedPeer` | Uses the same proxy-host setup and names the single peer in config |
+| 0.7.0 and earlier | Existing `network.proxy` shape remains unchanged | Compatibility path injects the cooperative proxy variables; it does not use the 0.8 proxy-peer contract |
+| 0.8.0 and later | Adds `egress`/`ingress`, `runtimeConfig.networkProxy`, and optional `processContainer.network.allowedProxyPeer` | Uses a packaged AppContainer proxy peer when named; otherwise requires explicit host-loopback opt-in |
 
-The 0.7.0 compatibility promise applies to the JSON shape. Proxy bring-up has a
-behavioral change so legacy and 0.8 clients use one consistent Windows
-proxy-host security model. Only 0.8 expresses the single peer through
-`processContainer.network.allowedPeer`.
+Schema 0.7 does not adopt the 0.8 package/AppContainer enforcement model. It
+keeps the legacy cooperative proxy configuration, including
+`HTTP_PROXY`/`HTTPS_PROXY` injection for clients that honor those variables.
+Schema 0.8 introduces the enforced proxy-peer path and its explicit
+host-loopback alternative.
 
 ## 1. What this backend delivers at GA
 
@@ -26,8 +27,8 @@ networking implementation lands.
 
 ProcessContainer ingress intentionally has no peer or port rules.
 `ingress.default` controls general inbound traffic, and
-`ingress.hostLoopback` separately controls the host-loopback path. The
-`hostLoopback` value overrides `default` for that path.
+`ingress.hostLoopback` separately controls host-loopback connectivity in
+either direction. The `hostLoopback` value overrides `default` for that path.
 
 ### Model 1: direct egress, WFP-filtered (least restrictive)
 
@@ -59,8 +60,10 @@ ProcessContainer ingress intentionally has no peer or port rules.
 |---|---|
 | BaseContainer capability | `privateNetworkClientServer` |
 | Proxy capabilities | `privateNetworkClientServer`; also `internetClient` for external destinations |
-| Peer | One packaged or unpackaged proxy identity |
+| Peer | Package family name in `allowedProxyPeer`, or no peer when opting into a host proxy |
 | Enforcement | Per-container WinHTTP proxy plus scoped loopback; all direct egress remains blocked |
+
+#### Packaged AppContainer proxy (recommended)
 
 ```jsonc
 {
@@ -76,8 +79,8 @@ ProcessContainer ingress intentionally has no peer or port rules.
   },
   "processContainer": {
     "network": {
-      // Package family name or unpackaged AppContainer profile name.
-      "allowedPeer": "agent-proxy"
+      // Package family name of the packaged AppContainer proxy.
+      "allowedProxyPeer": "Contoso.AgentProxy_1234567890abc"
     }
   }
 }
@@ -85,7 +88,7 @@ ProcessContainer ingress intentionally has no peer or port rules.
 
 The proxy endpoint is runtime metadata, not shared network policy. MXC:
 
-- resolves `allowedPeer` and creates the scoped loopback relationship;
+- resolves `allowedProxyPeer` and creates the scoped loopback relationship;
 - adds `privateNetworkClientServer` to the BaseContainer client; and
 - configures the per-container WinHTTP proxy.
 
@@ -98,19 +101,41 @@ The caller must:
 
 #### Proxy firewall authorization
 
-| Proxy setup | Schema 0.8 `allowedPeer` | Firewall authorization |
-|---|---|---|
-| Unpackaged AppContainer | [AppContainer profile](https://learn.microsoft.com/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) name | Administrator-installed inbound application rule |
-| Packaged proxy | Package family name | Package-owned `desktop2:Extension Category="windows.firewallRules"` inbound TCP rule |
-
-Without one of these setups, the BaseContainer process cannot connect to the
-proxy. The scoped peer rule and `privateNetworkClientServer` do not bypass
-Windows Firewall's block-inbound-to-non-allowed-apps policy.
+The packaged proxy owns its inbound authorization through a
+`desktop2:Extension Category="windows.firewallRules"` TCP rule. The scoped
+peer rule and `privateNetworkClientServer` do not bypass Windows Firewall's
+block-inbound-to-non-allowed-apps policy.
 
 The proxy package needs `privateNetworkClientServer`, `internetClient` when it
 connects to external destinations, AppContainer trust, and a
 `windows.firewallRules` inbound TCP declaration. The stacked follow-up change
 to this document provides a minimal manifest.
+
+#### Unpackaged host proxy (explicit opt-in)
+
+If the consumer does not package the proxy, it must run as a host process.
+Omit `processContainer.network.allowedProxyPeer` and explicitly allow the host
+loopback path:
+
+```jsonc
+{
+  "network": {
+    "egress": { "default": "deny" },
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "allow"
+    }
+  },
+  "runtimeConfig": {
+    "networkProxy": "http://127.0.0.1:8080"
+  }
+}
+```
+
+This is a deliberate relaxation from the packaged peer model:
+`hostLoopback: "allow"` permits the sandbox to use the host-loopback path, and
+there is no package identity to scope with `allowedProxyPeer`. Direct internet
+egress remains deny-default.
 
 ### Model 3: fully blocked (most restrictive)
 

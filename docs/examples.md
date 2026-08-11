@@ -34,13 +34,13 @@ For a more comprehensive list of examples, look in the examples\ directory.
 ### ProcessContainer Networking
 
 Starting in schema 0.8, ProcessContainer networking adds IP/CIDR, protocol, and
-port rules. Schema 0.7.0 and earlier retain their existing network config
-shape, while legacy proxy bring-up adopts the same packaged or unpackaged
-proxy-host requirements as 0.8. Only 0.8 names the peer with `allowedPeer`.
+port rules. Schema 0.7.0 and earlier retain their existing `network.proxy`
+shape and cooperative proxy environment-variable behavior. The enforced
+AppContainer proxy-peer model is new in 0.8.
 
 Ingress intentionally has no source, destination, or port rules. Its
 `default` field controls general inbound traffic, while `hostLoopback`
-separately controls connections from the host over loopback.
+separately controls host-loopback connectivity in either direction.
 
 This direct-egress example permits only TCP/443 to one destination:
 
@@ -90,15 +90,35 @@ policy:
   },
   "processContainer": {
     "network": {
-      // Package family name or unpackaged AppContainer profile name.
-      "allowedPeer": "agent-proxy"
+      // Package family name of the packaged AppContainer proxy.
+      "allowedProxyPeer": "Contoso.AgentProxy_1234567890abc"
     }
   }
 }
 ```
 
-The proxy must already be running. Both the BaseContainer client and proxy
-security environments need `privateNetworkClientServer`, and the proxy
-executable needs inbound firewall authorization. See
+For a proxy that is not packaged as an AppContainer, omit
+`allowedProxyPeer` and explicitly set `network.ingress.hostLoopback` to
+`"allow"`. This opts into reaching a host loopback proxy rather than a
+peer-isolated proxy:
+
+```jsonc
+{
+  "network": {
+    "egress": { "default": "deny" },
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "allow"
+    }
+  },
+  "runtimeConfig": {
+    "networkProxy": "http://127.0.0.1:8080"
+  }
+}
+```
+
+The proxy must already be running. A packaged proxy needs
+`privateNetworkClientServer`, `internetClient` when it connects externally,
+and package-owned inbound firewall authorization. See
 [Process Container Networking Configuration](process-container/networking.md)
-for the supported packaged and unpackaged proxy setups.
+for both proxy setups.
