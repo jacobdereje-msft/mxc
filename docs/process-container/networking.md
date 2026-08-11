@@ -52,10 +52,13 @@ WAN inbound is outside the GA policy and remains blocked.
 
 | Item | Requirement |
 |---|---|
-| BaseContainer capability | MXC adds `privateNetworkClientServer` when `runtimeConfig.networkProxy` is set, unless `ingress.hostLoopback` is `"allow"` |
+| Client capability | MXC adds `privateNetworkClientServer` for contained-peer proxy mode |
 | Proxy capabilities | `privateNetworkClientServer`; also `internetClient` for external destinations |
-| Peer | Package family name or AppContainer profile name in `allowedProxyPeer`, or no peer when opting into a host proxy |
+| Peer | Package family or AppContainer profile; omit for a host-process proxy |
 | Enforcement | Per-container WinHTTP proxy plus scoped loopback; all direct egress remains blocked |
+
+When `runtimeConfig.networkProxy` is set, MXC adds `privateNetworkClientServer`
+unless `ingress.hostLoopback` is `"allow"`.
 
 #### Contained AppContainer proxy (recommended)
 
@@ -72,6 +75,16 @@ WAN inbound is outside the GA policy and remains blocked.
   }
 }
 ```
+
+#### HTTP client guidance
+
+Use WinHTTP or an HTTP library that calls the recommended Windows APIs to
+query, evaluate, and use the system HTTP/S proxy configuration. These clients
+use the proxy transparently.
+
+MXC also sets the standard proxy environment variables for libraries that use
+cooperative proxying. The OS permits outbound traffic only to the configured
+loopback proxy address and port; direct or proxy-bypassing traffic is blocked.
 
 The omitted `network` block uses the default-deny posture. An explicit block
 with `egress.default: "deny"`, `ingress.default: "deny"`, and
@@ -149,7 +162,14 @@ Both (a) WFP filter writes and (b) per-container WinHTTP proxy configuration req
 
 ## 3. WFP is the enforcement primitive (both tiers)
 
-AppContainers today have 3 network capabilities: `internetClient`, `internetClientServer`, and `privateNetworkClientServer`. Direct egress uses `internetClient` as an on/off switch for outbound internet connectivity. Proxy mode instead gives both the BaseContainer client and AppContainer proxy server `privateNetworkClientServer`; only the proxy receives `internetClient`. Beyond that, outbound policy is enforced with the Windows Filtering Platform (WFP), the OS's built-in network-filtering engine. When the sandbox tries to open an outbound connection, the kernel checks MXC's filters and allows or blocks it. Each filter is scoped to the sandbox's container SID, so it applies only to that sandbox.
+AppContainers have three network capabilities: `internetClient`,
+`internetClientServer`, and `privateNetworkClientServer`. Direct egress uses
+`internetClient` as an outbound internet switch. Contained-peer proxy mode
+gives the client and proxy `privateNetworkClientServer`; only the proxy gets
+`internetClient`.
+
+WFP enforces the outbound policy. Each filter is scoped to the sandbox's
+container SID, so it applies only to that sandbox.
 
 **Admin requirement.** Adding WFP filters is admin-only. On Tier 1 the OS applies them in its own elevated context; on Tier 2 (Windows 23H2) MXC elevates on each launch to write the filters.
 

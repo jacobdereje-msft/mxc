@@ -330,7 +330,7 @@ proxy requires the explicit `hostLoopback: allow` opt-in. Model 1 grants
 | Default-deny | WFP block-all baseline filter at lower precedence than explicit allows. AppContainer has no internetClient capability. | |
 | Proxy (HTTP/S only) | Per-AppContainer WinHTTP proxy configuration. Applications using WinHTTP stack (e.g., Chromium) are transparently routed. **Loopback access to the configured localhost proxy endpoint is explicitly permitted while blocking direct internet egress.** | Non-WinHTTP stacks (raw sockets, SSH, custom TCP/UDP) and HTTP clients configured to ignore OS/env proxy settings are not proxied and traffic is dropped. |
 | Per-sandbox scoping | AppContainer SID, unique per sandbox instance | |
-| Inbound / host loopback | AppContainer networking capabilities control LAN/private-network inbound; loopback rules control bidirectional host-loopback connectivity. Both default to deny. | WAN inbound is not enabled; no ingress peers or ports. |
+| Inbound | AppContainer capabilities and loopback rules | LAN and host loopback default to deny; WAN is not enabled. |
 | DNS | DNS queries follow same IP/CIDR allow/block rules as other traffic. No domain-based filtering. | If DNS resolver IP is blocked, DNS fails. If allowed, sandbox can resolve any domain. **For HTTP(S) via the proxy, DNS resolution happens in the proxy.** |
 | Bypass resistance | High. Kernel-enforced WFP filters. Bypass requires kernel compromise or AppContainer escape (elevation). | |
 
@@ -354,7 +354,7 @@ proxy requires the explicit `hostLoopback: allow` opt-in. Model 1 grants
 | Default-deny | iptables rules in container network namespace. | |
 | Proxy (HTTP/S only) | `HTTP_PROXY` / `HTTPS_PROXY` environment variable injection. Apps honoring these vars are routed. iptables rules allow outbound to only localhost proxy provided by MXC caller. | Apps ignoring env vars are still subject to allow/block rules (cannot bypass iptables). |
 | Per-sandbox scoping | Container network namespace (each container has isolated network namespace) | |
-| Inbound / host loopback | Enforced via network-namespace filtering and host forwarding. `ingress.default` controls LAN/private-network inbound and `ingress.hostLoopback` controls the host-loopback path. | WAN inbound is not enabled; no ingress peers or ports. |
+| Inbound | Network-namespace filtering and host forwarding | LAN and host loopback only; WAN is not enabled. |
 | DNS | DNS queries follow same IP/CIDR allow/block rules as other traffic. No domain-based filtering. | If DNS resolver IP is blocked, DNS fails. If allowed, sandbox can resolve any domain. **For HTTP(S) via the proxy, DNS resolution happens in the proxy.** |
 | Bypass resistance | Medium. Container escape bypasses iptables, but kernel-enforced within container. | |
 
@@ -380,7 +380,7 @@ the two ingress toggles via INPUT).
 | Proxy routing (HTTP/S) | `HTTP_PROXY`/`HTTPS_PROXY` set to the loopback proxy; cooperating clients route there. | A minority of clients ignore the variables; their traffic is dropped by the egress restriction, not bypassed. |
 | IP/CIDR / port / protocol allow-lists | Not supported. | |
 | Per-sandbox scoping | Seatbelt profile per sandbox-exec invocation | |
-| Inbound / host loopback | `ingress.default` and `ingress.hostLoopback` map to Seatbelt network-bind / network-inbound profile rules. | Seatbelt has no private loopback; unsupported combinations are rejected. |
+| Inbound | Seatbelt bind/inbound rules | No private loopback; unsupported combinations are rejected. |
 | DNS | Direct outbound DNS to an external resolver is blocked (egress confined to the proxy port); cooperating clients pass hostnames to the proxy, which resolves them. All others would be blocked. | |
 | Bypass resistance | Medium. Egress is profile-restricted to the proxy port, so raw-socket and direct-DNS attempts are denied. Weaker than a separate network namespace (Seatbelt shares the host network stack) and depends on a correct profile. | |
 
