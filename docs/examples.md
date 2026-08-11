@@ -34,7 +34,7 @@ For a more comprehensive list of examples, look in the examples\ directory.
 ### ProcessContainer Networking
 
 ProcessContainer networking differs between schemas 0.7 and 0.8. See the
-[ProcessContainer examples](process-container/examples/README.md) for
-versioned direct-egress, contained-proxy, and host-process-proxy
-configurations. Enforcement details are in
+[schema 0.7](process-container/examples/0.7.0-schema.md) and
+[schema 0.8](process-container/examples/0.8.0-schema.md) ProcessContainer
+examples. Enforcement details are in
 [Process Container Networking Configuration](process-container/networking.md).
