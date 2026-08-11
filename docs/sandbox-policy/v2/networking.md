@@ -58,17 +58,27 @@ Throughout this document, the deny-all-except-proxy posture (the GA goal) refers
 
 #### Host-to-Container Inbound Policy
 
-**Default stance:** Host-to-container and external inbound traffic are blocked by default on all backends.
+**Default stance:** Host-to-container and external inbound traffic are blocked
+by default on all backends.
 
 This does not affect intra-container loopback. Processes inside the same sandbox may communicate with each other over localhost / 127.0.0.1 / ::1.
 
-**When allowed:** `ingress.hostLoopback: allow` (see schema) allows sandbox-local listening sockets to be reachable from the host over loopback only (127.0.0.1 / ::1), where the backend supports it. There is deliberately no setting that exposes the sandbox as a LAN/WAN server.
+Ingress has two allow/deny controls and no rule arrays:
+
+- `ingress.default` controls inbound traffic generally.
+- `ingress.hostLoopback` independently controls whether the host can reach
+  sandbox-local listening sockets over 127.0.0.1 / ::1.
+
+The specific `hostLoopback` value overrides `default` for host-loopback
+traffic. For example, `default: deny` with `hostLoopback: allow` permits only
+host-loopback ingress, while `default: allow` with `hostLoopback: deny` permits
+other inbound traffic but still blocks the host loopback path.
 
 **Scope:**
 
 - Intra-container loopback: always allowed
-- Host-to-container inbound: blocked by default; opt-in via `ingress.hostLoopback: allow` where supported
-- LAN/WAN inbound: not allowed in GA
+- Host-to-container loopback inbound: controlled by `ingress.hostLoopback`
+- Other inbound: controlled by `ingress.default`
 
 **Use cases for `ingress.hostLoopback: allow`:**
 
@@ -112,6 +122,7 @@ Direct internet, no proxy (least restrictive). OR no egress at all: default deny
       "deny": []
     },
     "ingress": {
+      "default": "deny",
       "hostLoopback": "deny"
     }
   }
@@ -129,12 +140,19 @@ No direct internet, loopback proxy only (more restrictive). Proxy
       "default": "deny"
     },
     "ingress": {
+      "default": "deny",
       "hostLoopback": "deny"
     }
   },
   "runtimeConfig": { // runtime data passed to MXC (not policy)
     // only localhost:<port>, 127.0.0.1:<port> and [::1]:<port> allowed for GA
     "networkProxy": "http://127.0.0.1:8080"
+  },
+  "processContainer": { // process-container backend data (not shared policy)
+    "network": {
+      // Package family name or unpackaged AppContainer profile name.
+      "allowedPeer": "agent-proxy"
+    }
   }
 }
 ```
@@ -144,9 +162,21 @@ This schema follows container-ecosystem conventions (CIDR peers, egress/ingress,
 **Field semantics:**
 
 - `egress.default`: `"deny"` (default) or `"allow"`, the stance for traffic not matched by a rule.
-- `egress.allow[]` / `egress.deny[]`: rules in container-network style. Each rule has `to` (a list of peers) and optional `ports`. An explicit deny match overrides an allow match (block precedence). These are rejected when the mode is set to proxy.
-- `ingress.hostLoopback`: `"deny"` (default) or `"allow"`. Controls whether the host may reach sandbox-local listening sockets over loopback (127.0.0.1 / ::1) only. LAN/WAN inbound is never allowed at GA; there is deliberately no CIDR-based ingress, to prevent exposing the sandbox as a LAN server. Does not affect intra-container loopback. Enforced on all backends: Windows process containers via loopback rules, WSLc/LXC/Bubblewrap via iptables INPUT, Seatbelt via profile.
+- `egress.allow[]` / `egress.deny[]`: rules in container-network style. Each
+  rule has `to` (a list of peers) and optional `ports`. An explicit deny match
+  overrides an allow match (block precedence). Direct rules are rejected when
+  `runtimeConfig.networkProxy` selects proxy-only egress.
+- `ingress.default`: `"deny"` (default) or `"allow"`. Controls inbound traffic
+  not covered by the more specific host-loopback setting. GA intentionally has
+  no ingress allow/deny rule arrays.
+- `ingress.hostLoopback`: `"deny"` (default) or `"allow"`. Controls whether the
+  host may reach sandbox-local listening sockets over loopback
+  (127.0.0.1 / ::1). This setting overrides `ingress.default` for the
+  host-loopback path and does not affect intra-container loopback.
 - `runtimeConfig.networkProxy`: This is outside of the main network policy and allows consumers to provide their proxy URL. Only `localhost:<port>`, `127.0.0.1:<port>` and `[::1]:<port>` are allowed for GA.
+- `processContainer.network.allowedPeer`: Process-container backend metadata
+  that identifies the single packaged or unpackaged proxy identity allowed on
+  the scoped loopback path. It is not part of the shared network policy.
 
 Egress peer and port fields (used in `egress.allow[]` / `egress.deny[]`; not shown in the minimal example above):
 
@@ -158,7 +188,8 @@ Egress peer and port fields (used in `egress.allow[]` / `egress.deny[]`; not sho
 | `ports[].port` | uint16, optional | Destination port. Omit `ports` to match all ports/protocols. |
 | `ports[].endPort` | uint16, optional | End of a port range (Kubernetes `endPort` style); requires numeric port. Supported on Windows process containers (WFP) and the Linux backends (iptables); not supported on Seatbelt. |
 
-Ingress has no CIDR peers: `ingress.hostLoopback` is a deny/allow toggle for host loopback only, deliberately preventing LAN/WAN exposure.
+Ingress has no CIDR peers or port rules. `ingress.default` and
+`ingress.hostLoopback` are the complete GA ingress surface.
 
 ## Design decisions
 
@@ -172,13 +203,23 @@ Ingress has no CIDR peers: `ingress.hostLoopback` is a deny/allow toggle for hos
 
 ### D2: Inbound is blocked by default and opt-in where supported
 
-**Decision:** GA defines outbound configuration and inbound control. Host-to-container and external inbound traffic is blocked by default (`ingress.hostLoopback: deny`). Intra-container loopback (process-to-process within same sandbox) is always allowed. When `ingress.hostLoopback: allow`, sandbox-local listening sockets are reachable from the host over loopback only (127.0.0.1 / ::1), where the backend supports it.
+**Decision:** GA defines outbound configuration and two coarse inbound
+controls. All inbound traffic is blocked by default (`ingress.default: deny`
+and `ingress.hostLoopback: deny`). Intra-container loopback
+(process-to-process within the same sandbox) is always allowed. Consumers may
+allow general inbound traffic and host-loopback traffic independently, where
+the backend supports them.
 
 **Why inbound is blocked by default:**
 
 - **Attack surface:** Allowing host-to-container inbound means the sandbox can run servers accessible from the host. For agentic workloads, this creates a risk of command-and-control servers, exfiltration channels, or lateral movement vectors.
 - **Opt-in model:** Customer scenarios that need host-to-container inbound (MCP servers in SSE/WebSocket mode accessed from host, language server daemons accessed from host IDE) must explicitly set `ingress.hostLoopback: allow`.
-- **GA enforcement:** `ingress.hostLoopback` is enforced on all backends, Windows process containers via loopback exemption rules scoped to the AppContainer SID, WSLc/LXC/Bubblewrap via iptables INPUT, and Seatbelt via its profile.
+- **No granular rules:** GA does not define ingress peers, CIDRs, ports, or
+  protocols. A backend that cannot honor an enabled ingress toggle rejects the
+  configuration rather than silently weakening it.
+- **GA enforcement:** The ingress toggles are enforced with backend-specific
+  primitives: Windows process-container capabilities and loopback rules,
+  WSLc/LXC/Bubblewrap INPUT filtering, and the Seatbelt profile.
 
 **Seatbelt caveat:** On Seatbelt there is no private loopback, so a profile that blocks host-to-container ingress (`ingress.hostLoopback: deny`) also blocks the sandbox from binding loopback listeners at all, breaking intra-sandbox loopback servers. For intra-sandbox IPC on macOS, Unix-domain sockets in a sandbox-private path rather than TCP loopback could be used. That said, Unix-domain sockets come with their own security questions and should be outlined in a separate macOS doc if necessary.
 
@@ -262,7 +303,7 @@ GA includes all backends for their respective isolation capabilities. Network co
 | Default-deny | WFP block-all baseline filter at lower precedence than explicit allows. AppContainer has no internetClient capability. | |
 | Proxy (HTTP/S only) | Per-AppContainer WinHTTP proxy configuration. Applications using WinHTTP stack (e.g., Chromium) are transparently routed. **Loopback access to the configured localhost proxy endpoint is explicitly permitted while blocking direct internet egress.** | Non-WinHTTP stacks (raw sockets, SSH, custom TCP/UDP) and HTTP clients configured to ignore OS/env proxy settings are not proxied and traffic is dropped. |
 | Per-sandbox scoping | AppContainer SID, unique per sandbox instance | |
-| Inbound | Enforced via Loopback rules. When `ingress.hostLoopback: deny` (default), inbound accepts are blocked. When allow, loopback inbound to the sandbox is permitted. | Loopback only. Only AppContainer to AppContainer connection allowed. |
+| Inbound | AppContainer networking capabilities control general inbound; loopback rules control the host-loopback path. Both default to deny. | Coarse allow/deny toggles only; no ingress peers or ports. |
 | DNS | DNS queries follow same IP/CIDR allow/block rules as other traffic. No domain-based filtering. | If DNS resolver IP is blocked, DNS fails. If allowed, sandbox can resolve any domain. **For HTTP(S) via the proxy, DNS resolution happens in the proxy.** |
 | Bypass resistance | High. Kernel-enforced WFP filters. Bypass requires kernel compromise or AppContainer escape (elevation). | |
 
@@ -286,13 +327,15 @@ GA includes all backends for their respective isolation capabilities. Network co
 | Default-deny | iptables rules in container network namespace. | |
 | Proxy (HTTP/S only) | `HTTP_PROXY` / `HTTPS_PROXY` environment variable injection. Apps honoring these vars are routed. iptables rules allow outbound to only localhost proxy provided by MXC caller. | Apps ignoring env vars are still subject to allow/block rules (cannot bypass iptables). |
 | Per-sandbox scoping | Container network namespace (each container has isolated network namespace) | |
-| Inbound | Enforced via iptables INPUT chain. When `ingress.hostLoopback: deny` (default), all host/external inbound blocked. When allow, iptables rules allow host loopback inbound to the container. | Loopback only. |
+| Inbound | Enforced via the iptables INPUT chain. `ingress.default` controls general inbound and `ingress.hostLoopback` controls the host-loopback path. | Coarse allow/deny toggles only. |
 | DNS | DNS queries follow same IP/CIDR allow/block rules as other traffic. No domain-based filtering. | If DNS resolver IP is blocked, DNS fails. If allowed, sandbox can resolve any domain. **For HTTP(S) via the proxy, DNS resolution happens in the proxy.** |
 | Bypass resistance | Medium. Container escape bypasses iptables, but kernel-enforced within container. | |
 
 ### LXC and Bubblewrap: GA enforcement
 
-Same model and enforcement as WSLc (model 2 achievable; iptables/nftables on the veth interface; default-deny outbound, loopback proxy + allow-list and `ingress.hostLoopback` via INPUT).
+Same model and enforcement as WSLc (model 2 achievable; iptables/nftables on
+the veth interface; default-deny outbound, loopback proxy + allow-list, and
+the two ingress toggles via INPUT).
 
 ### macOS (Seatbelt): GA enforcement
 
@@ -310,7 +353,7 @@ Same model and enforcement as WSLc (model 2 achievable; iptables/nftables on the
 | Proxy routing (HTTP/S) | `HTTP_PROXY`/`HTTPS_PROXY` set to the loopback proxy; cooperating clients route there. | A minority of clients ignore the variables; their traffic is dropped by the egress restriction, not bypassed. |
 | IP/CIDR / port / protocol allow-lists | Not supported. | |
 | Per-sandbox scoping | Seatbelt profile per sandbox-exec invocation | |
-| Inbound | `ingress.hostLoopback` via the Seatbelt profile (network-bind / network-inbound). deny default; allow scoped to loopback only. | Loopback only. |
+| Inbound | `ingress.default` and `ingress.hostLoopback` map to Seatbelt network-bind / network-inbound profile rules. | Seatbelt has no private loopback; unsupported combinations are rejected. |
 | DNS | Direct outbound DNS to an external resolver is blocked (egress confined to the proxy port); cooperating clients pass hostnames to the proxy, which resolves them. All others would be blocked. | |
 | Bypass resistance | Medium. Egress is profile-restricted to the proxy port, so raw-socket and direct-DNS attempts are denied. Weaker than a separate network namespace (Seatbelt shares the host network stack) and depends on a correct profile. | |
 
@@ -328,3 +371,6 @@ Same model and enforcement as WSLc (model 2 achievable; iptables/nftables on the
 - **Inter-container networking:** Containers cannot communicate with each other (except Windows process containers).
 - **macOS direct-egress models:** Seatbelt cannot filter arbitrary remote destinations, so model 1 (direct egress under IP/CIDR/port/protocol rules) is not available on macOS; macOS supports model 2 (proxy-only).
 - **Proxy arbitrary network traffic:** GA MXC configures proxies for HTTP/S traffic only. On Windows, only clients that use the WinHTTP stack or correctly query the platform proxy configuration are proxied. Many libraries on all 3 platforms (Windows/Linux/macOS) use proxy environment variables as their configuration mechanism. On Linux and macOS these are the standard way to apply proxy configurations; however, it is advisory only and not a full RFC standard. As far as MXC is concerned, libraries/apps that honor them will use the proxy, while libraries/apps that ignore them will not have their traffic directed to the proxy and but instead have their egress blocked.
+- **Granular inbound filtering:** GA can allow or deny general inbound and
+  host-loopback inbound, but cannot filter inbound by source, destination,
+  protocol, or port.

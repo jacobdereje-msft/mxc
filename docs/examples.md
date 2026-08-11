@@ -31,61 +31,74 @@ For a more comprehensive list of examples, look in the examples\ directory.
 }
 ```
 
-### Network Restricted Execution
-```json
+### ProcessContainer Networking
+
+Starting in schema 0.8, ProcessContainer networking adds IP/CIDR, protocol, and
+port rules. Schema 0.7.0 and earlier retain their existing network config
+shape, while legacy proxy bring-up adopts the same packaged or unpackaged
+proxy-host requirements as 0.8. Only 0.8 names the peer with `allowedPeer`.
+
+Ingress intentionally has no source, destination, or port rules. Its
+`default` field controls general inbound traffic, while `hostLoopback`
+separately controls connections from the host over loopback.
+
+This direct-egress example permits only TCP/443 to one destination:
+
+```jsonc
 {
-  "script": "import urllib.request\nurllib.request.urlopen('https://api.github.com')",
+  "version": "0.8.0-dev",
+  "containment": "processcontainer",
   "network": {
-    "defaultPolicy": "block",
-    "enforcementMode": "firewall",
-    "allowedHosts": ["api.github.com"]
+    "egress": {
+      "default": "deny",
+      "allow": [
+        {
+          "to": [ { "cidr": "140.82.112.0/20" } ],
+          "ports": [ { "protocol": "tcp", "port": 443 } ]
+        }
+      ],
+      "deny": []
+    },
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "deny"
+    }
   }
 }
 ```
 
-### Network Proxy
+For proxy-only egress, leave egress deny-default with no direct rules and
+provide the loopback endpoint and one proxy identity outside the shared
+policy:
 
-Route process-container traffic through a localhost proxy. Supported with the
-`processcontainer` containment backend only. Two mutually exclusive modes are available:
-
-**External proxy** — connect to an already-running localhost proxy:
-
-```json
+```jsonc
 {
-  "script": "python -c \"import urllib.request; print(urllib.request.urlopen('https://api.github.com').status)\"",
-  "timeout": 30000,
-  "processContainer": {
-    "name": "CLI-Proxy",
-    "capabilities": ["internetClient"]
+  "version": "0.8.0-dev",
+  "containment": "processcontainer",
+  "network": {
+    "egress": {
+      "default": "deny"
+    },
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "deny"
+    }
   },
-  "network": {
-    "proxy": { "localhost": 8080 }
-  }
-}
-```
-
-**Builtin test server** — `wxc-exec` launches its own minimal HTTP CONNECT proxy on
-an OS-assigned port (for integration testing only, not production):
-
-```json
-{
-  "script": "python -c \"import urllib.request; print(urllib.request.urlopen('https://api.github.com').status)\"",
-  "timeout": 30000,
-  "processContainer": {
-    "name": "CLI-BuiltinProxy",
-    "capabilities": ["internetClient"]
+  "runtimeConfig": { // Runtime data passed to MXC, not policy.
+    // GA accepts only localhost, 127.0.0.1, or [::1] with a port.
+    "networkProxy": "http://127.0.0.1:8080"
   },
-  "network": {
-    "proxy": { "builtinTestServer": true }
+  "processContainer": {
+    "network": {
+      // Package family name or unpackaged AppContainer profile name.
+      "allowedPeer": "agent-proxy"
+    }
   }
 }
 ```
 
-When `builtinTestServer` is `true`, it must be the only key in the `proxy`
-object. Because it activates a deliberately-permissive, testing-only proxy
-(no auth, no body limits), it is **not** enabled by default: pass the
-`--allow-testing-features` flag to `wxc-exec`/`lxc-exec`/`mxc-exec-mac`. This
-is a separate axis from `--experimental` (which selects experimental backends
-and features). The MXC SDK exposes the same gate as the `allowTestingFeatures`
-spawn option, which must be set to `true` for a policy that uses
-`builtinTestServer`.
+The proxy must already be running. Both the BaseContainer client and proxy
+security environments need `privateNetworkClientServer`, and the proxy
+executable needs inbound firewall authorization. See
+[Process Container Networking Configuration](process-container/networking.md)
+for the supported packaged and unpackaged proxy setups.
