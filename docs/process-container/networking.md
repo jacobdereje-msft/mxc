@@ -1,5 +1,11 @@
 # Process Container Networking Configuration, GA
 
+Starting with schema 0.8.0, ProcessContainer networking uses the shared
+`network.egress` and `network.ingress` policy plus
+`runtimeConfig.networkProxy` and
+`processContainer.network.allowedProxyPeer`. Schema 0.7 and earlier retain the
+legacy network shape and compatibility behavior described below.
+
 Implementation companion to the parent [MXC Network Configuration, GA](../sandbox-policy/v2/networking.md) doc, which owns the shared policy schema, the three connectivity models, and the GA goal (model 2, deny-all-except-proxy). This doc covers only how the Windows processcontainer backend enforces those models.
 
 | Schema version | Config shape | Proxy setup behavior |

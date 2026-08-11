@@ -1,5 +1,9 @@
 # MXC Network Configuration, GA
 
+Starting with schema 0.8.0, MXC network policy uses the `network.egress` and
+`network.ingress` sections described in this document. Schema 0.7 and earlier
+retain their legacy network configuration shape.
+
 ## Overview
 
 The MXC network configuration describes what network access a sandboxed workload has. The schema is shared across all container types (process containers, WSLc, LXC, Bubblewrap, Seatbelt). Enforcement varies by backend and platform.

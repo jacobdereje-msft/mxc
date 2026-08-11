@@ -31,10 +31,32 @@ For a more comprehensive list of examples, look in the examples\ directory.
 }
 ```
 
-### ProcessContainer Networking
+### Networking
 
-ProcessContainer networking differs between schemas 0.7 and 0.8. See the
-[schema 0.7](process-container/examples/0.7.0-schema.md) and
-[schema 0.8](process-container/examples/0.8.0-schema.md) ProcessContainer
-examples. Enforcement details are in
-[Process Container Networking Configuration](process-container/networking.md).
+Starting with schema 0.8.0, MXC network policy uses `egress` and `ingress`
+sections. This example allows TCP/443 to one CIDR while keeping all other
+egress, LAN/private-network inbound, and host-loopback access denied:
+
+```jsonc
+{
+  "network": {
+    "egress": {
+      "default": "deny",
+      "allow": [
+        {
+          "to": [ { "cidr": "140.82.112.0/20" } ],
+          "ports": [ { "protocol": "tcp", "port": 443 } ]
+        }
+      ],
+      "deny": []
+    },
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "deny"
+    }
+  }
+}
+```
+
+See [MXC Network Configuration](sandbox-policy/v2/networking.md) for the
+complete schema and backend support.
