@@ -165,32 +165,6 @@ host-loopback path instead of the contained, identity-scoped peer path.
 
 This schema follows container-ecosystem conventions (CIDR peers, egress/ingress, to/ports), modeled loosely on Kubernetes NetworkPolicy (the CNCF standard layered on CNI/OCI) rather than on platform firewall primitives. MXC keeps an explicit deny list and a per-direction default, which are a deliberate extension over pure Kubernetes NetworkPolicy (allow-only with `ipBlock.except`) to give an auditable default and block-precedence.
 
-**Field semantics:**
-
-- `egress.default`: `"deny"` (default) or `"allow"`, the stance for traffic not matched by a rule.
-- `egress.allow[]` / `egress.deny[]`: rules in container-network style. Each
-  rule has `to` (a list of peers) and optional `ports`. An explicit deny match
-  overrides an allow match (block precedence). Direct rules are rejected when
-  `runtimeConfig.networkProxy` selects proxy-only egress.
-- `ingress.default`: `"deny"` (default) or `"allow"`. Controls
-  LAN/private-network inbound traffic not covered by the more specific
-  host-loopback setting, where the backend supports it. It does not enable WAN
-  inbound. GA intentionally has no ingress allow/deny rule arrays.
-- `ingress.hostLoopback`: `"deny"` (default) or `"allow"`. Controls whether the
-  sandbox and host may communicate over host loopback
-  (127.0.0.1 / ::1), including sandbox-to-host access to an unpackaged proxy.
-  This setting overrides `ingress.default` for the host-loopback path and does
-  not affect intra-container loopback.
-- `runtimeConfig.networkProxy`: This is outside the main network policy and
-  allows consumers to provide their proxy URL. GA accepts only HTTP or HTTPS
-  loopback URLs: `http(s)://localhost:<port>`,
-  `http(s)://127.0.0.1:<port>`, and `http(s)://[::1]:<port>`.
-- `processContainer.network.allowedProxyPeer`: Optional process-container
-  backend metadata containing the package family name or AppContainer profile
-  name of the single contained proxy allowed on the scoped loopback path. Omit
-  it only when using a host-process proxy, which also requires
-  `ingress.hostLoopback: "allow"`. It is not part of the shared network policy.
-
 Egress peer and port fields (used in `egress.allow[]` / `egress.deny[]`; not shown in the minimal example above):
 
 | Field | Type | Notes |
@@ -214,36 +188,17 @@ Ingress has no CIDR peers or port rules. `ingress.default` and
 
 **Limitation:** Enforcement requires an egress restriction at the OS level: WFP on Windows process containers, a network namespace plus iptables on the Linux backends, and a Seatbelt profile confining network-outbound to the loopback proxy port on macOS. Rich IP/CIDR/port allow-lists are expressible on Windows and the Linux backends but not on macOS, where Seatbelt restricts egress to the proxy port rather than filtering arbitrary destinations. A configuration a backend cannot enforce is rejected rather than run advisory, so "fully describes the workload's network view" always holds for an accepted configuration.
 
-### D2: Private-network and host-loopback inbound are blocked by default
+### D2: Inbound is blocked by default and opt-in where supported
 
-**Decision:** GA defines one LAN/private-network inbound control and one
-host-loopback control. Both are blocked by default (`ingress.default: deny`
-and `ingress.hostLoopback: deny`). Intra-container loopback
-(process-to-process within the same sandbox) is always allowed. Consumers may
-allow LAN inbound and host-loopback traffic independently where the backend
-supports them. WAN inbound remains outside the GA policy.
+**Decision:** GA defines outbound configuration and inbound control. Host-to-container and external inbound traffic is blocked by default (`ingress.hostLoopback: deny`). Intra-container loopback (process-to-process within same sandbox) is always allowed. When `ingress.hostLoopback: allow`, sandbox-local listening sockets are reachable from the host over loopback only (127.0.0.1 / ::1), where the backend supports it.
 
 **Why inbound is blocked by default:**
 
 - **Attack surface:** Allowing host-to-container inbound means the sandbox can run servers accessible from the host. For agentic workloads, this creates a risk of command-and-control servers, exfiltration channels, or lateral movement vectors.
-- **Opt-in model:** Consumers that need host-loopback connectivity, including
-  a host-process proxy or host access to a sandbox-local service, must
-  explicitly set `ingress.hostLoopback: allow`.
-- **No granular rules:** GA does not define ingress peers, CIDRs, ports, or
-  protocols. A backend that cannot honor an enabled ingress toggle rejects the
-  configuration rather than silently weakening it.
-- **GA enforcement:** The ingress toggles are enforced with backend-specific
-  primitives: Windows process-container capabilities and loopback rules,
-  WSLc/LXC/Bubblewrap network filtering and forwarding, and the Seatbelt
-  profile.
+- **Opt-in model:** Customer scenarios that need host-to-container inbound (MCP servers in SSE/WebSocket mode accessed from host, language server daemons accessed from host IDE) must explicitly set `ingress.hostLoopback: allow`.
+- **GA enforcement:** `ingress.hostLoopback` is enforced on all backends, Windows process containers via loopback exemption rules scoped to the AppContainer SID, WSLc/LXC/Bubblewrap via iptables INPUT, and Seatbelt via its profile.
 
-**Seatbelt caveat:** On Seatbelt there is no private loopback, so a profile
-that blocks host-loopback connectivity (`ingress.hostLoopback: deny`) also
-blocks the sandbox from binding loopback listeners at all, breaking
-intra-sandbox loopback servers. For intra-sandbox IPC on macOS, Unix-domain
-sockets in a sandbox-private path rather than TCP loopback could be used. That
-said, Unix-domain sockets come with their own security questions and should be
-outlined in a separate macOS doc if necessary.
+**Seatbelt caveat:** On Seatbelt there is no private loopback, so a profile that blocks host-to-container ingress (`ingress.hostLoopback: deny`) also blocks the sandbox from binding loopback listeners at all, breaking intra-sandbox loopback servers. For intra-sandbox IPC on macOS, Unix-domain sockets in a sandbox-private path rather than TCP loopback could be used. That said, Unix-domain sockets come with their own security questions and should be outlined in a separate macOS doc if necessary.
 
 **Elevation caveat:** Installing these filters (WFP on Windows, iptables on the Linux backends) generally requires elevation. Elevating on every sandbox launch is out of the question, so MXC applies them through a privileged broker/service rather than from the unelevated launch path. A per-platform, per-technology elevation story must be defined in a separate MXC elevation design doc and is a prerequisite for this enforcement.
 

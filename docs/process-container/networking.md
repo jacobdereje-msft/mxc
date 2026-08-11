@@ -1,9 +1,7 @@
 # Process Container Networking Configuration, GA
 
-Starting with schema 0.8.0, ProcessContainer networking uses the shared
-`network.egress` and `network.ingress` policy plus
-`runtimeConfig.networkProxy` and
-`processContainer.network.allowedProxyPeer`.
+Starting with schema 0.8.0, ProcessContainer networking uses the shared `network.egress` and `network.ingress` policy
+plus `runtimeConfig.networkProxy` and `processContainer.network.allowedProxyPeer`.
 
 Implementation companion to the parent [MXC Network Configuration, GA](../sandbox-policy/v2/networking.md) doc, which owns the shared policy schema, the three connectivity models, and the GA goal (model 2, deny-all-except-proxy). This doc covers only how the Windows processcontainer backend enforces those models.
 
@@ -14,15 +12,12 @@ Each sandbox gets two enforcement primitives, scoped to its container SID and ap
 - **WFP outbound filters:** block all outbound traffic by default, then allow or block specific destinations by IP address or range, protocol, and port (a single port or a range), for both IPv4 and IPv6. An explicit block always wins over an allow, so a deny is expected to fall inside the allow it narrows; an allow and a deny matching the exact same destination, protocol, and port is rejected as an invalid policy. The rules apply only to this sandbox.
 - **Per-container WinHTTP HTTP/S proxy:** points WinHTTP-stack clients (e.g., the WinHTTP/Chromium stack) at a caller-provided loopback proxy container. MXC also sets the proxy env vars (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, plus lowercase versions) to the same loopback endpoint. Runtimes that read those variables rather than WinHTTP (Node tooling, Python `requests` / `pip`, Go `net/http`, `curl`, `git`) route through the proxy using this mechanism. These variables are a compatibility layer for well-behaved clients, not the containment boundary. All traffic not destined for the proxy loopback will be dropped.
 
-Each model is a specific combination of container network capabilities and
-enforcement. The examples below are forward-looking until the schema 0.8
-networking implementation lands.
+Each model combines container network capabilities and enforcement. The examples are forward-looking until the schema
+0.8 networking implementation lands.
 
-ProcessContainer ingress intentionally has no peer or port rules.
-`ingress.default` controls LAN/private-network inbound traffic, and
-`ingress.hostLoopback` separately controls host-loopback connectivity in
-either direction. The `hostLoopback` value overrides `default` for that path.
-WAN inbound is outside the GA policy and remains blocked.
+ProcessContainer ingress has no peer or port rules. `ingress.default` controls LAN/private-network inbound traffic;
+`ingress.hostLoopback` controls host-loopback connectivity and overrides `default` for that path. WAN inbound remains
+blocked.
 
 ### Model 1: direct egress, WFP-filtered (least restrictive)
 
@@ -78,9 +73,9 @@ unless `ingress.hostLoopback` is `"allow"`.
 
 #### HTTP client guidance
 
-Use WinHTTP or an HTTP library that calls the WinHTTP APIs on Windows to query, evaluate, and use the system HTTP/S
-proxy configuration. The OS sets this configuration per BaseContainer; the WinHTTP stack discovers and uses it
-transparently. Other HTTP libraries do not receive this OS-level proxy configuration.
+Code inside the ProcessContainer should use WinHTTP or an HTTP library that queries the system for proxy information.
+The OS sets the proxy configuration per BaseContainer, and the WinHTTP stack uses it transparently. The proxy process
+itself does not use this per-BaseContainer configuration.
 
 MXC also sets the standard proxy environment variables for libraries that use cooperative proxying. The OS permits
 outbound traffic only to the configured loopback proxy address and port; direct or proxy-bypassing traffic is blocked.
@@ -150,15 +145,6 @@ Both (a) WFP filter writes and (b) per-container WinHTTP proxy configuration req
 - For a present-but-incomplete API, MXC rejects the launch with a typed error naming the missing capability.
 
 ## 3. WFP is the enforcement primitive (both tiers)
-
-AppContainers have three network capabilities: `internetClient`,
-`internetClientServer`, and `privateNetworkClientServer`. Direct egress uses
-`internetClient` as an outbound internet switch. Contained-peer proxy mode
-gives the client and proxy `privateNetworkClientServer`; only the proxy gets
-`internetClient`.
-
-WFP enforces the outbound policy. Each filter is scoped to the sandbox's
-container SID, so it applies only to that sandbox.
 
 **Admin requirement.** Adding WFP filters is admin-only. On Tier 1 the OS applies them in its own elevated context; on Tier 2 (Windows 23H2) MXC elevates on each launch to write the filters.
 
