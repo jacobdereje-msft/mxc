@@ -19,9 +19,8 @@ keeps the legacy cooperative proxy configuration, including
 Schema 0.8 introduces the enforced proxy-peer path and its explicit
 host-loopback alternative.
 
-See the ProcessContainer examples for complete
-[schema 0.7](examples/0.7.0-schema.md) and
-[schema 0.8](examples/0.8.0-schema.md) configurations.
+See the [0.7-to-0.8 migration guide](examples/0.7.0-vs-0.8.0.md) and
+[schema 0.8 examples](examples/0.8.0-schema.md).
 
 ## 1. What this backend delivers at GA
 
