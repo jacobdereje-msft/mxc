@@ -78,33 +78,21 @@ unless `ingress.hostLoopback` is `"allow"`.
 
 #### HTTP client guidance
 
-Use WinHTTP or an HTTP library that calls the recommended Windows APIs to
-query, evaluate, and use the system HTTP/S proxy configuration. These clients
-use the proxy transparently.
+Use WinHTTP or an HTTP library that calls the recommended Windows APIs to query, evaluate, and use the system HTTP/S
+proxy configuration. These clients use the proxy transparently.
 
-MXC also sets the standard proxy environment variables for libraries that use
-cooperative proxying. The OS permits outbound traffic only to the configured
-loopback proxy address and port; direct or proxy-bypassing traffic is blocked.
+MXC also sets the standard proxy environment variables for libraries that use cooperative proxying. The OS permits
+outbound traffic only to the configured loopback proxy address and port; direct or proxy-bypassing traffic is blocked.
 
-The omitted `network` block uses the default-deny posture. An explicit block
-with `egress.default: "deny"`, `ingress.default: "deny"`, and
-`ingress.hostLoopback: "deny"` is equivalent. Proxy mode cannot contain direct
-egress allow or deny rules.
+The omitted `network` block uses the default-deny posture. An explicit block with `egress.default: "deny"`,
+`ingress.default: "deny"`, and `ingress.hostLoopback: "deny"` is equivalent. Proxy mode cannot contain direct egress
+allow or deny rules.
 
-The proxy endpoint is runtime metadata, not shared network policy. MXC:
+The proxy endpoint is runtime metadata, not shared network policy. MXC resolves `allowedProxyPeer` when provided, adds
+`privateNetworkClientServer` unless `ingress.hostLoopback` is `"allow"`, and configures the per-container WinHTTP proxy.
 
-- resolves `allowedProxyPeer` and creates the scoped loopback relationship
-  when a peer is provided;
-- adds `privateNetworkClientServer` to the BaseContainer client unless
-  `ingress.hostLoopback` is `"allow"`; and
-- configures the per-container WinHTTP proxy.
-
-The caller must:
-
-- create and authorize the proxy;
-- start it before the BaseContainer;
-- keep it alive until the client exits; and
-- leave egress deny-default with no direct allow or deny rules.
+The caller creates and authorizes the proxy, starts it before the BaseContainer, keeps it alive until the client exits,
+and leaves egress deny-default with no direct allow or deny rules.
 
 ### Model 3: fully blocked (most restrictive)
 
