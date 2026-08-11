@@ -1,4 +1,4 @@
-# ProcessContainer network schema: 0.7 vs. 0.8
+# MXC network schema: 0.7 vs. 0.8
 
 Schema 0.8 replaces the flat 0.7 network object with explicit egress and
 ingress policy. It also moves proxy runtime data and ProcessContainer-specific
@@ -16,7 +16,7 @@ peer identity outside the shared policy.
 | `allowLocalNetwork` | `ingress.default` | Controls LAN/private-network inbound |
 | No equivalent | `ingress.hostLoopback` | New host-loopback inbound control |
 | `proxy.localhost` / `proxy.url` | `runtimeConfig.networkProxy` | Proxy endpoint is runtime data, not policy |
-| No equivalent | `processContainer.network.allowedProxyPeer` | Identifies one contained proxy peer |
+| No equivalent | `processContainer.network.allowedProxyPeer` | ProcessContainer-only identity for one contained proxy peer |
 
 `proxy.builtinTestServer` has no schema 0.8 GA equivalent.
 
@@ -57,7 +57,7 @@ Schema 0.8:
 }
 ```
 
-## Proxy
+## ProcessContainer proxy
 
 Schema 0.7 uses cooperative proxy variables:
 
@@ -85,5 +85,5 @@ Schema 0.8 uses runtime metadata plus an identity-scoped proxy peer:
 ```
 
 The omitted 0.8 `network` block uses deny defaults. See
-[schema 0.8 examples](0.8.0-schema.md) for direct-egress and proxy setup
-details.
+[ProcessContainer schema 0.8 examples](../../process-container/examples/0.8.0-schema.md)
+for proxy setup details.

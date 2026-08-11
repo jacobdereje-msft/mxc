@@ -33,7 +33,7 @@ For a more comprehensive list of examples, look in the examples\ directory.
 
 ### Networking
 
-Starting with [schema 0.8.0](process-container/examples/0.7.0-vs-0.8.0.md),
+Starting with [schema 0.8.0](sandbox-policy/v2/networking-0.7.0-vs-0.8.0.md),
 MXC network policy uses `egress` and `ingress` sections. This example allows
 outbound TCP/443 to one CIDR, denies all other egress, and blocks
 private-network and host-loopback inbound connections:
