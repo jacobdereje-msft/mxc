@@ -13,6 +13,9 @@ keeps the legacy cooperative proxy configuration, including
 Schema 0.8 introduces the enforced proxy-peer path and its explicit
 host-loopback alternative.
 
+See the [ProcessContainer examples](examples/README.md) for complete schema
+0.7 and 0.8 configurations.
+
 ## 1. What this backend delivers at GA
 
 Each sandbox gets two enforcement primitives, scoped to its container SID and applied with no UAC prompt per launch:
