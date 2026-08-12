@@ -107,7 +107,7 @@ File:line citations reference paths under `src/backends/<backend>/...` and `src/
 
 | # | Item | Status | Description | Effort |
 |---|---|---|---|---|
-| 18 | **(N7) Schema migration** | 🟡 Actionable | Current schema (`allowedHosts`/`blockedHosts`/`defaultPolicy`) → GA schema (`egress.default/allow[]/deny[]`, `ingress.default`, `ingress.hostLoopback`) plus `runtimeConfig.networkProxy`. Shared parser + SDK types. | L |
+| 18 | **(N7) Schema migration** | 🟡 Actionable | Adopt shared 0.8 egress/ingress and runtime proxy types. | L |
 | 19 | **IPv6 + CIDR parsing** | 🟡 Actionable | `NetworkIptablesManager` resolves hostnames to IPv4 only. Add proper CIDR parsing + `ip6tables` for IPv6. | M |
 | 20 | **Port filtering** | 🟡 Actionable | Not implemented. iptables `--dport` natively supported. | S |
 | 21 | **Protocol filtering** | 🟡 Actionable | Not implemented. iptables `-p tcp/udp/icmp` natively supported. | S |
