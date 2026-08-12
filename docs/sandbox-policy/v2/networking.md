@@ -39,9 +39,21 @@ Throughout this document, the deny-all-except-proxy posture (the GA goal) refers
 **Proxy path (recommended for application traffic):**
 
 - **Protocol:** HTTP and HTTPS only
-- **Destination:** Localhost proxy only (e.g., 127.0.0.1, ::1)
+- **Destination:** The single local proxy endpoint supplied by
+  `runtimeConfig.networkProxy`.
 - **Ports:** Any port within the 1 – 65535 range.
-- **Routing mechanism:** This applies to HTTP(S) only, never to other protocols. The sandbox's outbound is restricted so the only reachable destination is the loopback proxy port. Cooperating clients are pointed at the proxy: via the `HTTP_PROXY`/`HTTPS_PROXY` variables on the Linux and macOS backends, and via the per-appContainer WinHTTP proxy configuration on Windows. A client that ignores it cannot reach the internet directly because the egress restriction drops everything except the localhost proxy port, so it is dropped rather than bypassing the proxy. In model 1 (where direct egress is permitted) such a client may instead egress directly, subject to the IP/CIDR/port/protocol rules.
+- **Routing mechanism:** This applies to HTTP(S) only, never to other protocols.
+  The sandbox's outbound is restricted so the only reachable destination is
+  the configured proxy endpoint. Cooperating clients are pointed at the proxy:
+  via the `HTTP_PROXY`/`HTTPS_PROXY` variables on the Linux and macOS backends,
+  and via the per-AppContainer WinHTTP proxy configuration on Windows. A
+  backend with a private network namespace translates the caller's local proxy
+  URL to an address reachable from that namespace and authorizes only outbound
+  traffic to that translated endpoint. This does not grant host-to-sandbox
+  ingress. A client that ignores the proxy cannot reach the internet directly
+  because all other egress is dropped. In model 1, where direct egress is
+  permitted, such a client may instead egress directly subject to the
+  IP/CIDR/port/protocol rules.
 - **What is NOT routed:** Non-HTTP traffic (raw TCP/UDP sockets, SSH, custom protocols, QUIC, WebRTC, etc.) is never redirected to the proxy. In model 2 on Windows, without the internetClient capability such connections cannot be made at all (the capability, not allow rules, gates direct egress); in model 1 they are subject to the IP/CIDR/port/protocol rules. Transparently routing this traffic through the proxy is a gap that requires further design and is out of scope for GA.
 
 **Direct outbound path (model 1 only):**
@@ -72,8 +84,8 @@ Ingress has two allow/deny controls and no rule arrays:
 
 - `ingress.default` controls LAN/private-network inbound traffic where the
   backend supports it.
-- `ingress.hostLoopback` independently controls host-loopback connectivity
-  over 127.0.0.1 / ::1 in either direction.
+- `ingress.hostLoopback` controls inbound connections originating from the host
+  loopback path and targeting a listener in the sandbox.
 
 The specific `hostLoopback` value overrides `default` for the host-loopback
 path. For example, `default: deny` with `hostLoopback: allow` permits
@@ -82,14 +94,14 @@ host-loopback connectivity while denying other inbound traffic.
 **Scope:**
 
 - Intra-container loopback: always allowed
-- Host-loopback connectivity in either direction: controlled by
-  `ingress.hostLoopback`
+- Sandbox-to-host loopback or private-network traffic: outbound, controlled by
+  `egress` and, for model 2, the exact `runtimeConfig.networkProxy` endpoint
+- Host-loopback-to-sandbox traffic: controlled by `ingress.hostLoopback`
 - LAN/private-network inbound: controlled by `ingress.default`, where supported
 - WAN inbound: not enabled by the GA policy
 
 **Use cases for `ingress.hostLoopback: allow`:**
 
-- A host-process HTTP/S proxy reached from the sandbox
 - MCP servers in SSE/WebSocket mode (server listens on a port for client connections from host)
 - Language server daemons (e.g., TypeScript language server) accessed from host IDE
 - Local dev servers (e.g., npm run dev on port 3000) accessed from host browser
@@ -157,11 +169,14 @@ No direct internet, loopback proxy only (more restrictive). Proxy
 ```
 
 The omitted `network` block uses the default-deny egress, LAN inbound, and host
-loopback posture. An explicit deny-default block is equivalent.
+loopback policy. With `runtimeConfig.networkProxy`, those defaults form model 2:
+the backend permits only outbound traffic to the exact proxy endpoint. Without
+runtime proxy configuration, they form model 3.
 
 For a host-process proxy, omit `processContainer.network.allowedProxyPeer` and
-set `ingress.hostLoopback` to `"allow"`. This explicitly opts into the
-host-loopback path instead of the contained, identity-scoped peer path.
+leave `ingress.hostLoopback` at its default unless the host also needs to
+initiate a separate connection to a sandbox listener. Reaching the proxy from
+the sandbox is outbound traffic and does not grant host-to-sandbox ingress.
 
 This schema follows container-ecosystem conventions (CIDR peers, egress/ingress, to/ports), modeled loosely on Kubernetes NetworkPolicy (the CNCF standard layered on CNI/OCI) rather than on platform firewall primitives. MXC keeps an explicit deny list and a per-direction default, which are a deliberate extension over pure Kubernetes NetworkPolicy (allow-only with `ipBlock.except`) to give an auditable default and block-precedence.
 
@@ -190,7 +205,14 @@ Ingress has no CIDR peers or port rules. `ingress.default` and
 
 ### D2: Inbound is blocked by default and opt-in where supported
 
-**Decision:** GA defines outbound configuration and inbound control. Host-to-container and external inbound traffic is blocked by default (`ingress.hostLoopback: deny`). Intra-container loopback (process-to-process within same sandbox) is always allowed. When `ingress.hostLoopback: allow`, sandbox-local listening sockets are reachable from the host over loopback only (127.0.0.1 / ::1), where the backend supports it.
+**Decision:** GA defines outbound configuration and inbound control.
+`egress` applies to every sandbox-originated connection, whether its
+destination is public internet, a private network, or the host. Host-to-sandbox
+and external inbound traffic is blocked by default. Intra-container loopback
+(process-to-process within the same sandbox) is always allowed. When
+`ingress.hostLoopback: allow`, sandbox-local listening sockets are reachable
+from the host over loopback only (127.0.0.1 / ::1), where the backend supports
+it. This ingress setting does not authorize sandbox-to-host traffic.
 
 **Why inbound is blocked by default:**
 

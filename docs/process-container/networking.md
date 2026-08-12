@@ -14,9 +14,10 @@ Each sandbox gets two enforcement primitives, scoped to its container SID and ap
 
 The examples below use the proposed schema 0.8 network shape.
 
-ProcessContainer ingress has no peer or port rules. `ingress.default` controls LAN/private-network inbound traffic;
-`ingress.hostLoopback` controls host-loopback connectivity and overrides `default` for that path. WAN inbound remains
-blocked.
+ProcessContainer ingress has no peer or port rules. `ingress.default` controls
+LAN/private-network inbound traffic; `ingress.hostLoopback` controls inbound
+host-loopback-to-sandbox traffic and overrides `default` for that path. WAN
+inbound remains blocked.
 
 ### Model 1: direct egress, WFP-filtered (least restrictive)
 
@@ -46,13 +47,15 @@ blocked.
 
 | Item | Requirement |
 |---|---|
-| Client capability | MXC adds `privateNetworkClientServer` for contained-peer proxy mode |
+| Client authorization | Exact outbound path to the configured proxy endpoint |
 | Proxy capabilities | `privateNetworkClientServer`; also `internetClient` for external destinations |
 | Peer | Package family or AppContainer profile; omit for a host-process proxy |
-| Enforcement | Per-container WinHTTP proxy plus scoped loopback; all direct egress remains blocked |
+| Enforcement | Per-container WinHTTP proxy plus endpoint-scoped outbound authorization; all other egress and policy-denied ingress remain blocked |
 
-When `runtimeConfig.networkProxy` is set, MXC adds `privateNetworkClientServer`
-unless `ingress.hostLoopback` is `"allow"`.
+Windows capabilities and loopback exemptions are backend implementation
+details, not policy. If the backend needs `privateNetworkClientServer` to reach
+the proxy, WFP and firewall rules must narrow that capability to the requested
+outbound endpoint and preserve the configured ingress policy.
 
 #### Contained AppContainer proxy (recommended)
 
@@ -79,12 +82,16 @@ itself does not use this per-BaseContainer configuration.
 MXC also sets the standard proxy environment variables for libraries that use cooperative proxying. The OS permits
 outbound traffic only to the configured loopback proxy address and port; direct or proxy-bypassing traffic is blocked.
 
-The omitted `network` block uses the default-deny posture. An explicit block with `egress.default: "deny"`,
-`ingress.default: "deny"`, and `ingress.hostLoopback: "deny"` is equivalent. Proxy mode cannot contain direct egress
-allow or deny rules.
+The omitted `network` block uses the default-deny policy. With
+`runtimeConfig.networkProxy`, an explicit block with `egress.default: "deny"`,
+`ingress.default: "deny"`, and `ingress.hostLoopback: "deny"` is equivalent and
+forms model 2. Proxy mode cannot contain direct egress allow or deny rules.
 
-The proxy endpoint is runtime metadata, not shared network policy. MXC resolves `allowedProxyPeer` when provided, adds
-`privateNetworkClientServer` unless `ingress.hostLoopback` is `"allow"`, and configures the per-container WinHTTP proxy.
+The proxy endpoint is runtime metadata, not shared network policy. MXC resolves
+`allowedProxyPeer` when provided, authorizes outbound traffic only to that peer
+and endpoint, and configures the per-container WinHTTP proxy. A host-process
+proxy is also an outbound destination; it does not require
+`ingress.hostLoopback: "allow"`.
 
 The caller creates and authorizes the proxy, starts it before the BaseContainer, keeps it alive until the client exits,
 and leaves egress deny-default with no direct allow or deny rules.
@@ -94,7 +101,10 @@ and leaves egress deny-default with no direct allow or deny rules.
 - **Capabilities:** none; no loopback exemptions.
 - **Enforcement:** no proxy; all outbound and inbound dropped.
 
-Since deny-all is the default, model 3 is also the result of providing no network policy at all: the explicit form, an omitted network block, and an empty `"network": {}` are equivalent:
+When no runtime proxy or backend proxy peer is configured, deny-all is the
+default and model 3 is also the result of providing no network policy at all:
+the explicit form, an omitted network block, and an empty `"network": {}` are
+equivalent:
 
 ```jsonc
 // explicit (canonical blocked: direct egress, default deny, no allow rules)
@@ -138,13 +148,29 @@ Both (a) WFP filter writes and (b) per-container WinHTTP proxy configuration req
 
 ### 2.1 Fail loud on version skew: never silently downgrade
 
-`CreateProcessInSandbox` could be different between builds as the network-policy surface grows over time. A machine can expose the API but not yet honor a specific policy field MXC asks for. MXC must not silently fall back to Tier 2 in that case: the two paths have different security and cleanup properties, and the operator would not know. The contract:
+`Experimental_CreateProcessInSandbox` (CPIS) could be different between builds
+as the network-policy surface grows over time. A machine can expose the API but
+not yet honor a specific policy field MXC asks for. MXC must not silently fall
+back to Tier 2 in that case: the two paths have different security and cleanup
+properties, and the operator would not know. The contract:
 
 - Fall back to Tier 2 only when the API is absent on the build, not when it is present but missing a requested field.
 - For a present-but-incomplete API, MXC rejects the launch with a typed error naming the missing capability.
+- A schema 0.8 network request may use an AppContainer compatibility fallback
+  only when WFP, firewall, and loopback rules preserve the exact egress and
+  ingress policy. If a broad capability such as `privateNetworkClientServer`
+  cannot be narrowed to the requested proxy endpoint and directions, MXC
+  rejects the launch rather than widening access.
 
 ## 3. WFP is the enforcement primitive (both tiers)
 
 **Admin requirement.** Adding WFP filters is admin-only. On Tier 1 the OS applies them in its own elevated context; on Tier 2 (Windows 23H2) MXC elevates on each launch to write the filters.
 
 **Cleanup.** Filters will need to have a lifetime ≤ sandbox lifetime. In both tiers the filters will need to be cleaned up when there are no more processes running in the container.
+
+AppContainer capabilities are coarse prerequisites, not the policy contract.
+In particular, `privateNetworkClientServer` can enable both private-network
+client and server behavior. MXC must use directional WFP and firewall
+enforcement so `egress` still governs all outbound traffic and `ingress` still
+governs all inbound traffic. A backend tier that cannot preserve those
+directions is unsupported for that request.

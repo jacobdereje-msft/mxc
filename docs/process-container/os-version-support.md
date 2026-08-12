@@ -51,13 +51,15 @@ available bounds what policy can be enforced.
 
 ## Schema 0.8 process security environment preference
 
-BaseContainer requests using schema versions through 0.7 use the SBOX contract
-and the T1/T2/T3 fallback chain above. Schema 0.8 and later prefer the PSEC
+BaseContainer requests using schema versions through 0.7 call
+`Experimental_CreateProcessInSandbox` (CPIS) with the legacy SBOX FlatBuffer
+contract and use the T1/T2/T3 fallback chain above. Schema 0.8 and later prefer
+`CreateProcessSecurityEnvironment` with the PSEC
 process-security-environment contract when its complete export set resolves and
-`QueryProcessSecurityEnvironmentSupport` succeeds. During the transition from
-the experimental SBOX API to PSEC, an ordinary schema 0.8 request falls back to
-SBOX when PSEC is unavailable, then continues through the existing AppContainer
-fallback tiers when neither BaseContainer contract is usable.
+`QueryProcessSecurityEnvironmentSupport` succeeds. During the transition, an
+ordinary schema 0.8 request falls back to the CPIS API with the SBOX contract
+when PSEC is unavailable, then continues through the existing AppContainer
+fallback tiers when neither BaseContainer path is usable.
 
 The PSEC probe requires:
 
@@ -76,21 +78,21 @@ expose the complete official V2 Learning Mode export set:
 For capture, unsupported or earlier-contract hosts fail as
 `backend_unavailable`. Ordinary ProcessContainer execution still follows the
 fallback chain. Internal validation confirmed the earlier contract on build
-`26657.1002` is rejected for capture while schema 0.7 SBOX execution remains
-functional, and the full V2 contract on build `26663.1000` is accepted. These
-builds are validation points, not a public release-floor commitment; runtime
-probing is the source of truth.
+`26657.1002` is rejected for capture while schema 0.7 CPIS execution with the
+SBOX contract remains functional, and the full V2 contract on build
+`26663.1000` is accepted. These builds are validation points, not a public
+release-floor commitment; runtime probing is the source of truth.
 
 The PSEC contract cannot represent `processContainer.leastPrivilege`, so
-ordinary schema 0.8 requests using that option use the transitional SBOX
-contract instead of failing. MXC also does not yet supply the AppContainer peer
-identity required by the current model-2 SBOX proxy contract. On hosts with
+ordinary schema 0.8 requests using that option use the transitional CPIS/SBOX
+path instead of failing. MXC also does not yet supply the AppContainer peer
+identity required by the current model-2 SBOX contract. On hosts with
 `Experimental_QuerySandboxSupport`, proxy requests therefore skip
 BaseContainer and continue to the AppContainer fallback; older query-less hosts
-retain the legacy SBOX proxy path. Similarly, `filesystem.deniedPaths` uses
+retain the legacy CPIS/SBOX proxy path. Similarly, `filesystem.deniedPaths` uses
 PSEC only when `QueryProcessSecurityEnvironmentSupport` advertises
-`PSE_SUPPORT_FS_DENY`; otherwise MXC continues through the SBOX/AppContainer
-fallback chain.
+`PSE_SUPPORT_FS_DENY`; otherwise MXC continues through the CPIS/SBOX and
+AppContainer fallback chain.
 
 ## Filesystem policy
 
@@ -122,8 +124,12 @@ Notes:
 Notes:
 - Capability- and firewall-based network enforcement is an AppContainer
   primitive and works on every release.
+- For schema 0.8, the AppContainer compatibility path is valid only when its
+  WFP, firewall, and loopback rules preserve the requested directional policy.
+  If a required capability would widen outbound or inbound access, the request
+  is rejected instead of falling back.
 - OS-configured WinHTTP proxy (passed in the FlatBuffer spec to
-  `CreateProcessInSandbox`) is used only on legacy query-less T1 hosts. The
+  CPIS) is used only on legacy query-less T1 hosts. The
   capability-aware model-2 contract requires an AppContainer proxy peer
   identity that MXC does not yet author, so those hosts use the AppContainer
   compatibility fallback.

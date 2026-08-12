@@ -22,11 +22,16 @@ Each item is prioritized within its backend and tagged with an effort tier.
       "allow": [{ "to": [{ "cidr": "140.82.112.0/20" }], "ports": [{ "protocol": "tcp", "port": 443 }] }],
       "deny": [{ "to": [{ "cidr": "10.0.0.0/8" }] }]
     },
-    "ingress": { "hostLoopback": "deny" },
-    "proxy": { "http": "127.0.0.1:8080" }
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "deny"
+    }
   }
 }
 ```
+
+Proxy endpoints are runtime data supplied separately through
+`runtimeConfig.networkProxy`; there is no caller-selected egress mode.
 
 **Naming:** the backend is "Bubblewrap" (used in headers and proper nouns like the `BubblewrapConfig` type or `Container-Bubblewrap` label); **Bwrap** is used as the short reference in tables and cross-cutting themes.
 
@@ -93,11 +98,16 @@ File:line citations reference paths under `src/backends/<backend>/...` and `src/
 | 16 | **(N4) Deny-wins precedence** | 🟡 Actionable | Already in place: iptables chain with allow/deny rules. New work: ensure deny rules inserted before allow rules for explicit block-precedence. | S |
 | 17 | **(N5) Proxy — env vars + enforcement** | 🟡 Actionable | Schema field exists, backend ignores it. Fix: inject `HTTP_PROXY`/`HTTPS_PROXY`, clear all inherited proxy vars, and restrict egress to proxy port only via iptables. | M |
 
-> **Example (N5).** Consumer starts proxy on `127.0.0.1:8080`. MXC sets `HTTP_PROXY=127.0.0.1:8080` inside the container and applies `iptables -A OUTPUT -d 127.0.0.1 --dport 8080 -j ACCEPT` + default DROP. An app ignoring the env var tries `connect(140.82.112.4:443)` → dropped.
+> **Example (N5).** The consumer supplies
+> `runtimeConfig.networkProxy: "http://127.0.0.1:8080"`. MXC maps that local
+> endpoint to the address reachable from the container's network namespace,
+> sets the proxy environment variables to the mapped endpoint, and permits only
+> that exact outbound destination and port before the default DROP. An app
+> ignoring the env var and trying `connect(140.82.112.4:443)` is dropped.
 
 | # | Item | Status | Description | Effort |
 |---|---|---|---|---|
-| 18 | **(N7) Schema migration** | 🟡 Actionable | Current schema (`allowedHosts`/`blockedHosts`/`defaultPolicy`) → GA schema (`egress.allow[]/deny[]`, `ingress.hostLoopback`, `proxy.http`). Shared parser + SDK types. | L |
+| 18 | **(N7) Schema migration** | 🟡 Actionable | Current schema (`allowedHosts`/`blockedHosts`/`defaultPolicy`) → GA schema (`egress.default/allow[]/deny[]`, `ingress.default`, `ingress.hostLoopback`) plus `runtimeConfig.networkProxy`. Shared parser + SDK types. | L |
 | 19 | **IPv6 + CIDR parsing** | 🟡 Actionable | `NetworkIptablesManager` resolves hostnames to IPv4 only. Add proper CIDR parsing + `ip6tables` for IPv6. | M |
 | 20 | **Port filtering** | 🟡 Actionable | Not implemented. iptables `--dport` natively supported. | S |
 | 21 | **Protocol filtering** | 🟡 Actionable | Not implemented. iptables `-p tcp/udp/icmp` natively supported. | S |
@@ -336,18 +346,24 @@ File:line citations reference paths under `src/backends/<backend>/...` and `src/
 |---|---|---|---|---|
 | 18 | **(N4) Deny-wins precedence** | 🟠 With SDK dep | No `egress.deny[]` path today — the builder does allow-list XOR block-list, never both, so deny-wins ordering isn't expressed. VM-level API + N7 schema needed. | S |
 
-> **Example (N4).** GA spec D4: when a connection matches both an `egress.allow` and an `egress.deny` rule, **the deny wins** (fail-closed). The canonical case is "allow everything except a few malicious IPs." Applies only in `mode: "direct"` (model 1) — `egress.allow`/`egress.deny` are rejected under `mode: "proxy"`.
+> **Example (N4).** GA spec D4: when a connection matches both an
+> `egress.allow` and an `egress.deny` rule, **the deny wins** (fail-closed).
+> The canonical case is "allow everything except a few malicious IPs." This is
+> model 1 because no runtime proxy is configured; model 2 rejects direct
+> `egress.allow`/`egress.deny` rules.
 >
 > ```json
 > {
 >   "network": {
 >     "egress": {
->       "mode": "direct",
 >       "default": "allow",
 >       "allow": [ { "to": [{ "cidr": "0.0.0.0/0" }] } ],
 >       "deny":  [ { "to": [{ "cidr": "203.0.113.0/24" }] } ]
 >     },
->     "ingress": { "hostLoopback": "deny" }
+>     "ingress": {
+>       "default": "deny",
+>       "hostLoopback": "deny"
+>     }
 >   }
 > }
 > ```
@@ -362,19 +378,34 @@ File:line citations reference paths under `src/backends/<backend>/...` and `src/
 | 20 | **(N5) Proxy — egress enforcement** | 🟠 With SDK dep | Restricting egress to proxy port only requires VM-level network policy API. Without it, proxy is advisory (apps can bypass env vars and connect directly). | M |
 | 25 | **(N5) Proxy — env-var hygiene** | 🟡 Actionable NOW | Clear all proxy vars, set only configured proxy. No SDK dependency — env manipulation at process spawn. | S |
 
-> **Example (N5).** The proxy is the **recommended GA path** (model 2, "deny-all-except-proxy"). Per GA spec: MXC does **not** run the proxy — the consumer supplies a localhost proxy and starts it; MXC restricts egress to it and points env vars at it. Crucially, the env vars are an **advisory routing hint** — the iptables DROP is the actual enforcement; "cooperation-dependent routing… is never the enforcement mechanism itself." Under `mode: "proxy"`, `egress.allow`/`deny` are rejected.
+> **Example (N5).** The proxy is the **recommended GA path** (model 2,
+> "deny-all-except-proxy"). Per GA spec, MXC does **not** run the proxy: the
+> consumer supplies and starts it, while MXC restricts outbound traffic to the
+> exact runtime endpoint and points proxy-aware clients at the backend-reachable
+> address. The env vars are an **advisory routing hint**; VM-level enforcement
+> is the containment boundary. When `runtimeConfig.networkProxy` is present,
+> direct `egress.allow`/`deny` rules are rejected.
 >
 > ```json
 > {
 >   "network": {
->     "egress": { "mode": "proxy" },
->     "proxy": { "http": "127.0.0.1:8080" },
->     "ingress": { "hostLoopback": "deny" }
+>     "egress": { "default": "deny" },
+>     "ingress": {
+>       "default": "deny",
+>       "hostLoopback": "deny"
+>     }
+>   },
+>   "runtimeConfig": {
+>     "networkProxy": "http://127.0.0.1:8080"
 >   }
 > }
 > ```
 >
-> `egress.mode: "proxy"` selects the posture; `network.proxy.http` supplies the endpoint MXC restricts egress to. The consumer must start that proxy listening before launching the workload. *(Note: the GA doc's minimal model-2 example shows only `egress.mode: "proxy"` and never defines where the host:port lives, though its text requires one "in the configuration" — the address field is carried by `network.proxy`, matching what MXC parses today.)*
+> The presence of `runtimeConfig.networkProxy` selects the proxy-only runtime
+> path; there is no caller-selected mode. `ingress.hostLoopback` remains denied
+> because the sandbox-to-proxy connection is outbound. WSLC must translate the
+> caller's local endpoint to a VM-reachable address and authorize only that
+> outbound endpoint.
 >
 > **❌ Not implemented today (but #19/#25 are unblocked).** WSLC has no proxy code at all. The env path exists — `request.env` is piped in via `WslcSetProcessSettingsEnvVariables` (`wsl_container_runner.rs:929-942`) — but nothing injects `HTTP_PROXY`/`HTTPS_PROXY` from the proxy config (#19), and the GA-mandated clearing of all inherited proxy vars (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY`, `NO_PROXY` + lowercase) isn't done (#25). Both are doable now through the existing env path — no SDK dependency — they're just unwritten.
 >
@@ -390,7 +421,11 @@ File:line citations reference paths under `src/backends/<backend>/...` and `src/
 
 > **Example (N7).** N7 is the schema/parser/SDK work to accept the GA network block — *expressing* the policy, independent of whether a backend can *enforce* it. It's the same shared parser + SDK types as LXC/Bwrap, so no WSLC SDK dependency.
 >
-> **⚠️ Today — flat legacy schema only.** The parser accepts only `defaultPolicy`/`allowedHosts`/`blockedHosts` (`config_parser.rs:778-779`, flat string lists), mapped to `policy.allowed_hosts`/`blocked_hosts`. There is no `egress`/`ingress`/`proxy` structure, no `mode`, no per-rule `to[].cidr` + `ports[]`.
+> **⚠️ Today — flat legacy schema only.** The parser accepts only
+> `defaultPolicy`/`allowedHosts`/`blockedHosts` (`config_parser.rs:778-779`,
+> flat string lists), mapped to `policy.allowed_hosts`/`blocked_hosts`. There
+> is no schema 0.8 `egress`/`ingress` structure or per-rule `to[].cidr` +
+> `ports[]`, and no `runtimeConfig.networkProxy`.
 >
 > **✅ GA target.** Parse the structured GA block (shared across all backends), with deprecation aliases from the legacy fields:
 >
@@ -398,14 +433,16 @@ File:line citations reference paths under `src/backends/<backend>/...` and `src/
 > {
 >   "network": {
 >     "egress": {
->       "mode": "direct",
 >       "default": "deny",
 >       "allow": [
 >         { "to": [{ "cidr": "140.82.112.0/20" }], "ports": [{ "protocol": "tcp", "port": 443 }] }
 >       ],
 >       "deny": []
 >     },
->     "ingress": { "hostLoopback": "deny" }
+>     "ingress": {
+>       "default": "deny",
+>       "hostLoopback": "deny"
+>     }
 >   }
 > }
 > ```
