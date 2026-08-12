@@ -9,19 +9,24 @@ Implementation companion to the parent [MXC Network Configuration, GA](../sandbo
 
 Each sandbox gets two enforcement primitives, scoped to its container SID and applied with no UAC prompt per launch:
 
-- **WFP outbound filters:** block all outbound traffic by default, then allow or block specific destinations by IP address or range, protocol, and port (a single port or a range), for both IPv4 and IPv6. An explicit block always wins over an allow, so a deny is expected to fall inside the allow it narrows; an allow and a deny matching the exact same destination, protocol, and port is rejected as an invalid policy. The rules apply only to this sandbox.
-- **Per-container WinHTTP HTTP/S proxy:** points WinHTTP-stack clients (e.g., the WinHTTP/Chromium stack) at a caller-provided loopback proxy container. MXC also sets the proxy env vars (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, plus lowercase versions) to the same loopback endpoint. Runtimes that read those variables rather than WinHTTP (Node tooling, Python `requests` / `pip`, Go `net/http`, `curl`, `git`) route through the proxy using this mechanism. These variables are a compatibility layer for well-behaved clients, not the containment boundary. All traffic not destined for the proxy loopback will be dropped.
+- **WFP internet filters:** block internet-bound traffic by default, then allow or block specific public destinations by
+  IP address or range, protocol, and port for both IPv4 and IPv6. An explicit block always wins over an allow. The rules
+  apply only to this sandbox.
+- **Per-container WinHTTP HTTP/S proxy:** points WinHTTP-stack clients at a caller-provided AppContainer proxy. MXC
+  also sets the standard proxy environment variables for other HTTP libraries. These settings are a compatibility
+  layer for well-behaved clients; the containment boundary is the absence of direct internet capability. Private
+  network traffic remains available in both directions when `ingress.default` is `"allow"`.
 
 The examples below use the proposed schema 0.8 network shape.
 
-ProcessContainer ingress has no peer or port rules. `ingress.default` controls
-LAN/private-network inbound traffic; `ingress.hostLoopback` controls inbound
-host-loopback-to-sandbox traffic and overrides `default` for that path. WAN
-inbound remains blocked.
+Windows exposes `privateNetworkClientServer` as one bidirectional AppContainer capability. ProcessContainer therefore
+maps `ingress.default: "allow"` to private-network communication in both directions. `egress` controls internet-bound
+traffic and does not independently narrow private-network client connections. `ingress.hostLoopback` remains the
+separate host-loopback control.
 
 ### Model 1: direct egress, WFP-filtered (least restrictive)
 
-- **Capabilities:** internetClient, plus a loopback exemption for same-container connections; no other network capability.
+- **Capabilities:** `internetClient`, plus `privateNetworkClientServer` only when `ingress.default` is `"allow"`.
 - **Enforcement:** WFP allow/block rules; no proxy.
 
 ```jsonc
@@ -47,16 +52,14 @@ inbound remains blocked.
 
 | Item | Requirement |
 |---|---|
-| Client authorization | Exact outbound path to the configured proxy endpoint |
+| Client capability | `privateNetworkClientServer`, enabled by `ingress.default: "allow"` |
 | Proxy capabilities | `privateNetworkClientServer`; also `internetClient` for external destinations |
-| Peer | Package family or AppContainer profile; omit for a host-process proxy |
-| Enforcement | Per-container WinHTTP proxy plus endpoint-scoped outbound authorization; all other egress and policy-denied ingress remain blocked |
+| Peer | Package family name or AppContainer profile name in `allowedProxyPeer` |
+| Enforcement | Internet blocked; private network is bidirectional |
 
-Windows capabilities and loopback exemptions are backend implementation
-details, not policy. If the backend needs `privateNetworkClientServer` to reach
-the proxy, WFP and firewall rules must narrow that capability to the requested
-outbound endpoint and preserve the configured ingress policy. This work is
-tracked by [GitHub issue #830](https://github.com/microsoft/mxc/issues/830).
+This is a ProcessContainer-specific mapping. Callers that need a private-network proxy or any other private-network
+communication must set `ingress.default` to `"allow"` and accept that Windows enables both private-network client and
+server behavior. WFP continues to enforce the separate internet-bound `egress` policy.
 
 #### Contained AppContainer proxy (recommended)
 
@@ -72,19 +75,16 @@ Code inside the ProcessContainer should use WinHTTP or an HTTP library that quer
 The OS sets the proxy configuration per BaseContainer, and the WinHTTP stack uses it transparently. The proxy process
 itself does not use this per-BaseContainer configuration.
 
-MXC also sets the standard proxy environment variables for libraries that use cooperative proxying. The OS permits
-outbound traffic only to the configured loopback proxy address and port; direct or proxy-bypassing traffic is blocked.
+MXC also sets the standard proxy environment variables for libraries that use cooperative proxying. Direct internet
+traffic that bypasses the proxy is blocked. Other private-network traffic remains available because model 2 requires
+the bidirectional private-network capability.
 
-The omitted `network` block uses the default-deny policy. With
-`runtimeConfig.networkProxy`, an explicit block with `egress.default: "deny"`,
-`ingress.default: "deny"`, and `ingress.hostLoopback: "deny"` is equivalent and
-forms model 2. Proxy mode cannot contain direct egress allow or deny rules.
+Model 2 requires `egress.default: "deny"`, `ingress.default: "allow"`, and
+`ingress.hostLoopback: "deny"`. The private-network allow is required for the AppContainer proxy path and is
+bidirectional. Proxy mode cannot contain direct egress allow or deny rules.
 
-The proxy endpoint is runtime metadata, not shared network policy. MXC resolves
-`allowedProxyPeer` when provided, authorizes outbound traffic only to that peer
-and endpoint, and configures the per-container WinHTTP proxy. A host-process
-proxy is also an outbound destination; it does not require
-`ingress.hostLoopback: "allow"`.
+The proxy endpoint is runtime metadata, not shared network policy. MXC resolves `allowedProxyPeer`, configures the
+per-container WinHTTP proxy, and grants the private-network capability selected by `ingress.default`.
 
 The caller creates and authorizes the proxy, starts it before the BaseContainer, keeps it alive until the client exits,
 and leaves egress deny-default with no direct allow or deny rules.
@@ -149,11 +149,6 @@ properties, and the operator would not know. The contract:
 
 - Fall back to Tier 2 only when the API is absent on the build, not when it is present but missing a requested field.
 - For a present-but-incomplete API, MXC rejects the launch with a typed error naming the missing capability.
-- A schema 0.8 network request may use an AppContainer compatibility fallback
-  only when WFP, firewall, and loopback rules preserve the exact egress and
-  ingress policy. If a broad capability such as `privateNetworkClientServer`
-  cannot be narrowed to the requested proxy endpoint and directions, MXC
-  rejects the launch rather than widening access.
 
 ## 3. WFP is the enforcement primitive (both tiers)
 
@@ -161,10 +156,6 @@ properties, and the operator would not know. The contract:
 
 **Cleanup.** Filters will need to have a lifetime ≤ sandbox lifetime. In both tiers the filters will need to be cleaned up when there are no more processes running in the container.
 
-AppContainer capabilities are coarse prerequisites, not the policy contract.
-In particular, `privateNetworkClientServer` can enable both private-network
-client and server behavior. MXC must use directional WFP and firewall
-enforcement so `egress` still governs all outbound traffic and `ingress` still
-governs all inbound traffic. A backend tier that cannot preserve those
-directions is unsupported for that request. See
-[GitHub issue #830](https://github.com/microsoft/mxc/issues/830).
+`internetClient` and WFP implement the internet-bound `egress` policy.
+`privateNetworkClientServer` is a separate, intentionally bidirectional Windows capability selected through
+`ingress.default`. ProcessContainer cannot represent independent private-network outbound and inbound controls.

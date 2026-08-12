@@ -124,11 +124,9 @@ Notes:
 Notes:
 - Capability- and firewall-based network enforcement is an AppContainer
   primitive and works on every release.
-- For schema 0.8, the AppContainer compatibility path is valid only when its
-  WFP, firewall, and loopback rules preserve the requested directional policy.
-  If a required capability would widen outbound or inbound access, the request
-  is rejected instead of falling back. Directional WFP narrowing is tracked by
-  [GitHub issue #830](https://github.com/microsoft/mxc/issues/830).
+- ProcessContainer maps schema 0.8 `egress` to internet-bound policy. Private-network communication is controlled by
+  `ingress.default`; `"allow"` grants the bidirectional `privateNetworkClientServer` capability on every
+  AppContainer-compatible tier.
 - OS-configured WinHTTP proxy (passed in the FlatBuffer spec to
   CPIS) is used only on legacy query-less T1 hosts. The
   capability-aware model-2 contract requires an AppContainer proxy peer

@@ -12,21 +12,18 @@ ingress policy. It also moves proxy runtime data outside the shared policy.
 | `allowedHosts` | `egress.allow[].to[].cidr` | 0.8 uses IP/CIDR only and can scope by port/protocol |
 | `blockedHosts` | `egress.deny[].to[].cidr` | 0.8 uses IP/CIDR only and deny overrides allow |
 | `enforcementMode` | Removed | The backend enforces the policy or rejects it |
-| `allowLocalNetwork` | `ingress.default` | Controls LAN/private-network inbound |
+| `allowLocalNetwork` | `ingress.default` | Controls private-network communication |
 | No equivalent | `ingress.hostLoopback` | New host-loopback inbound control |
 | `proxy.localhost` / `proxy.url` | `runtimeConfig.networkProxy` | Proxy endpoint is runtime data, not policy |
 
 `proxy.builtinTestServer` has no schema 0.8 GA equivalent.
 
-Schema 0.8 directions are platform-neutral: `egress` governs all outbound
-traffic, including public internet, private/LAN destinations, and the host;
-`ingress` governs traffic entering the sandbox. A backend capability that
-combines those directions must be narrowed by backend enforcement or the
-request must be rejected.
+On directional backends, `egress` governs all outbound traffic and `ingress` governs traffic entering the sandbox.
+ProcessContainer maps `egress` to internet-bound traffic and maps `ingress.default` to Windows'
+`privateNetworkClientServer` capability, which enables private-network communication in both directions.
 
-`allowLocalNetwork` maps only to inbound policy. Outbound migration is derived
-exclusively from `defaultPolicy`; the bidirectional shape of an AppContainer
-capability does not change this mapping.
+`allowLocalNetwork` still maps only to `ingress.default`. This preserves existing ProcessContainer private-network
+behavior while allowing directional backends to enforce independent outbound and inbound policy.
 
 ## Direct egress
 
@@ -114,7 +111,9 @@ migrates to deny-default egress with allowed private/LAN inbound:
 }
 ```
 
-It does not grant outbound private-network or internet access.
+On directional backends, this does not grant outbound private-network or internet access. On ProcessContainer,
+`ingress.default: "allow"` preserves the legacy `allowLocalNetwork` behavior by granting bidirectional private-network
+communication, while internet-bound egress remains denied.
 
 ## Backend-specific schema 0.8 configuration
 
