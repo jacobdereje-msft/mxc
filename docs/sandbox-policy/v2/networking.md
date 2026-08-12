@@ -10,6 +10,21 @@ The MXC network configuration describes what network access a sandboxed workload
 
 This document covers the GA scope for the General Availability release.
 
+> **Implementation status and GA gates:** This document is the schema 0.8
+> design target; the current parser does not yet accept this wire shape. GA
+> implementation is not complete until one implementation change:
+>
+> - updates `src/core/wxc_common/src/wire.rs`;
+> - regenerates the schema under `schemas/dev/` and
+>   `sdk/node/src/generated/wire.ts`;
+> - updates the public SDK types and conformance tests;
+> - adds backend enforcement or explicit rejection for every accepted policy;
+>   and
+> - finalizes the privileged WFP/iptables installation and cleanup design.
+>
+> Until those gates are complete, the GA enforcement statements below describe
+> required behavior rather than current support.
+
 **GA Goal:** Reduce the network surface an AI agent can use to escape its sandbox or exfiltrate data. By default, all outbound traffic is dropped. The recommended path for GA is: localhost HTTP/S proxy for application traffic (API calls, package downloads). Direct outbound connections (raw sockets, SSH, custom TCP/UDP) are blocked by default and only allowed when explicitly permitted by IP/CIDR rules. This is a hard problem to solve across multiple platforms. GitHub Copilot expects sandboxes to behave consistently cross-platform, but each platform has different enforcement primitives. This document describes what MXC can enforce on each backend, where platform limitations exist.
 
 ### GA Commitments: What Traffic Goes Where
@@ -23,6 +38,12 @@ MXC defines three outbound connectivity models, listed in increasing order of ne
 - **Direct internet + L3/L4 filtering, no proxy (least restrictive).** The sandbox reaches the internet directly over HTTP(S) (and other protocols), subject only to IP/CIDR/port/protocol allow/block rules. No proxy is configured, so there is no application-layer (domain/URL/content) inspection.
 - **No direct internet + loopback HTTP(S) proxy (more restrictive).** The sandbox has no direct internet path; the only reachable egress is the loopback proxy port, and all other outbound is dropped. Cooperating clients route their HTTP(S) to the proxy (via the proxy environment variables / platform proxy configuration), where it is fully inspectable/filterable by the consumer. A client that ignores the proxy and tries to reach the internet directly is dropped, since no other egress path exists.
 - **No direct internet + no inbound (most restrictive):** This is the most restrictive we can get. In this model all network traffic is dropped.
+
+> **Seatbelt limitation:** Because Seatbelt shares the host network stack,
+> denying host-loopback ingress also prevents the sandbox from binding TCP
+> loopback listeners. On macOS, model 3 therefore breaks intra-sandbox
+> applications that depend on localhost TCP IPC; use a sandbox-private
+> Unix-domain socket when that communication is required.
 
 There was a fourth model that was looked at Direct internet + L3/L4 filtering + loopback HTTP(S) proxy. However, unlike model 2 which only allows traffic through a specific loopback port, direct internet access greatly decreases the ways to control egress and increases the opportunities for agent bypass. It is not a model we will have for GA.
 
@@ -158,15 +179,13 @@ No direct internet, loopback proxy only (more restrictive). Proxy
   "runtimeConfig": { // runtime data passed to MXC (not policy)
     // http(s)://localhost:<port>, 127.0.0.1:<port>, or [::1]:<port>
     "networkProxy": "http://127.0.0.1:8080"
-  },
-  "processContainer": { // process-container backend data (not shared policy)
-    "network": {
-      // Package family name or AppContainer profile name of the proxy.
-      "allowedProxyPeer": "agent-proxy"
-    }
   }
 }
 ```
+
+Backend-specific proxy identity belongs outside the shared policy. See the
+canonical [ProcessContainer schema 0.8 example](../../process-container/examples/0.8.0-schema.md)
+for `processContainer.network.allowedProxyPeer`.
 
 The omitted `network` block uses the default-deny egress, LAN inbound, and host
 loopback policy. With `runtimeConfig.networkProxy`, those defaults form model 2:
@@ -222,7 +241,12 @@ it. This ingress setting does not authorize sandbox-to-host traffic.
 
 **Seatbelt caveat:** On Seatbelt there is no private loopback, so a profile that blocks host-to-container ingress (`ingress.hostLoopback: deny`) also blocks the sandbox from binding loopback listeners at all, breaking intra-sandbox loopback servers. For intra-sandbox IPC on macOS, Unix-domain sockets in a sandbox-private path rather than TCP loopback could be used. That said, Unix-domain sockets come with their own security questions and should be outlined in a separate macOS doc if necessary.
 
-**Elevation caveat:** Installing these filters (WFP on Windows, iptables on the Linux backends) generally requires elevation. Elevating on every sandbox launch is out of the question, so MXC applies them through a privileged broker/service rather than from the unelevated launch path. A per-platform, per-technology elevation story must be defined in a separate MXC elevation design doc and is a prerequisite for this enforcement.
+**Elevation caveat:** Installing these filters (WFP on Windows, iptables on
+the Linux backends) generally requires elevation. Elevating on every sandbox
+launch is out of the question, so MXC must apply them through an OS-owned API
+or a privileged broker/service rather than from the unelevated launch path.
+No cross-platform elevation design document exists yet; finalizing and linking
+that design is an explicit GA gate listed at the top of this document.
 
 ### D3: IP literals and CIDRs only (no DNS names)
 
@@ -292,8 +316,9 @@ GA includes all backends for their respective isolation capabilities. Network co
 `internetClient`, so the AppContainer reaches only the configured loopback
 proxy and all other outbound is dropped by the system. A packaged or
 unpackaged AppContainer proxy is scoped by `allowedProxyPeer`; a host-process
-proxy requires the explicit `hostLoopback: allow` opt-in. Model 1 grants
-`internetClient`, allowing direct egress under WFP IP/CIDR/port/protocol rules.
+proxy is authorized as an outbound endpoint and does not require inbound
+`hostLoopback: allow`. Model 1 grants `internetClient`, allowing direct egress
+under WFP IP/CIDR/port/protocol rules.
 
 **Model 3:** grants no internetClient and no loopback exemptions for the AppContainer SID.
 
@@ -310,6 +335,9 @@ proxy requires the explicit `hostLoopback: allow` opt-in. Model 1 grants
 | Inbound | AppContainer capabilities and loopback rules | LAN and host loopback default to deny; WAN is not enabled. |
 | DNS | DNS queries follow same IP/CIDR allow/block rules as other traffic. No domain-based filtering. | If DNS resolver IP is blocked, DNS fails. If allowed, sandbox can resolve any domain. **For HTTP(S) via the proxy, DNS resolution happens in the proxy.** |
 | Bypass resistance | High. Kernel-enforced WFP filters. Bypass requires kernel compromise or AppContainer escape (elevation). | |
+
+Directional narrowing of `privateNetworkClientServer` is tracked by
+[GitHub issue #830](https://github.com/microsoft/mxc/issues/830).
 
 **Implementation doc:** [Process Container Networking Configuration, GA](../../process-container/networking.md)
 

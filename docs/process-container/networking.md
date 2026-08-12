@@ -55,23 +55,16 @@ inbound remains blocked.
 Windows capabilities and loopback exemptions are backend implementation
 details, not policy. If the backend needs `privateNetworkClientServer` to reach
 the proxy, WFP and firewall rules must narrow that capability to the requested
-outbound endpoint and preserve the configured ingress policy.
+outbound endpoint and preserve the configured ingress policy. This work is
+tracked by [GitHub issue #830](https://github.com/microsoft/mxc/issues/830).
 
 #### Contained AppContainer proxy (recommended)
 
-```jsonc
-{
-  "runtimeConfig": { // MXC runtime metadata (not policy)
-    "networkProxy": "http://127.0.0.1:8080"
-  },
-  "processContainer": {
-    "network": {
-      // Package family name or AppContainer profile name of the proxy.
-      "allowedProxyPeer": "agent-proxy"
-    }
-  }
-}
-```
+Use the canonical
+[ProcessContainer schema 0.8 configuration](examples/0.8.0-schema.md), which
+shows `runtimeConfig.networkProxy`,
+`processContainer.network.allowedProxyPeer`, and their relationship in one
+place.
 
 #### HTTP client guidance
 
@@ -173,4 +166,5 @@ In particular, `privateNetworkClientServer` can enable both private-network
 client and server behavior. MXC must use directional WFP and firewall
 enforcement so `egress` still governs all outbound traffic and `ingress` still
 governs all inbound traffic. A backend tier that cannot preserve those
-directions is unsupported for that request.
+directions is unsupported for that request. See
+[GitHub issue #830](https://github.com/microsoft/mxc/issues/830).
