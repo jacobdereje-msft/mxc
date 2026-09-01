@@ -58,6 +58,10 @@ isolation_session = [
     "dep:isolation_session_bindings",
     "dep:isolation_session_common",
 ]
+isolation_session_lifted_msi = [
+    "isolation_session",
+    "isolation_session_common/lifted_msi",
+]
 # Forwards the test-executor-only ProcessContainer tier override.
 force-tier-testing = ["process_container_common/force-tier-testing"]
 # Forwards process_container_common/tier2_bfs. OFF by default; see process_container_common/Cargo.toml.
