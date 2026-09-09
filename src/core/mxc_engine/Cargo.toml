@@ -60,6 +60,7 @@ isolation_session = [
 ]
 isolation_session_lifted_msi = [
     "isolation_session",
+    "isolation_session_bindings/lifted",
     "isolation_session_common/lifted_msi",
 ]
 # Forwards the test-executor-only ProcessContainer tier override.
