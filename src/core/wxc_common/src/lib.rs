@@ -50,16 +50,13 @@ pub(crate) mod wire;
 // Adapters that map specific JSON contracts into the internal config input.
 pub(crate) mod config_contract_adapters;
 
-// Thin Windows-only helpers that are not backend-specific. Backend
-// runners live in dedicated crates under `backends/`; only utilities
-// shared across host tools (e.g. wxc_host_prep, mxc_diagnostic_console)
-// and ≥1 backend stay here.
+// Thin Windows-only helpers that are not backend-specific.
 #[cfg(target_os = "windows")]
 pub mod api_set;
 #[cfg(target_os = "windows")]
 pub mod diagnostic;
 #[cfg(target_os = "windows")]
-pub mod filesystem_dacl;
+pub mod filesystem_security;
 #[cfg(target_os = "windows")]
 pub mod process_util;
 #[cfg(target_os = "windows")]
@@ -75,11 +72,3 @@ pub mod interruptible_reader;
 // and Seatbelt (macOS) backends.
 #[cfg(unix)]
 pub mod unix_proxy_coordinator;
-
-/// Test-only helper for env-var serialization within this crate's
-/// `filesystem_dacl` tests. The same shape lives in
-/// `backends/process_container/common/src/test_env.rs`; each crate has its
-/// own `ENV_LOCK` because the env-var contention is only within a
-/// single test binary.
-#[cfg(all(test, target_os = "windows"))]
-pub(crate) mod test_env;

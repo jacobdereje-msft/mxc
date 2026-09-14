@@ -102,20 +102,18 @@ fn build_child_env_block(request: &ExecutionRequest) -> Result<Option<Vec<u16>>,
 
     let entries = match request.env.as_deref() {
         None => {
-            let mut entries = crate::appcontainer_runner::create_default_env_entries()?;
+            let mut entries = crate::environment::create_default_env_entries()?;
             if let Some(address) = proxy_address {
-                crate::appcontainer_runner::inject_proxy_vars(&mut entries, address);
+                crate::environment::inject_proxy_vars(&mut entries, address);
             }
             entries
         }
         Some(supplied) if request.inherit_default_env => {
-            crate::appcontainer_runner::build_inherited_entries(supplied, proxy_address)?
+            crate::environment::build_inherited_entries(supplied, proxy_address)?
         }
-        Some(supplied) => {
-            crate::appcontainer_runner::build_explicit_entries(supplied, proxy_address)
-        }
+        Some(supplied) => crate::environment::build_explicit_entries(supplied, proxy_address),
     };
-    Ok(Some(crate::appcontainer_runner::encode_env_block(&entries)))
+    Ok(Some(crate::environment::encode_env_block(&entries)))
 }
 
 const CAPTURE_API_AVAILABLE_LOG: &str =
@@ -400,7 +398,7 @@ impl BaseContainerRunner {
         // --- Learning-mode capabilities (parity with AppContainerScriptRunner) ---
         // Emit per-capability diagnostics (informational for `learningModeLogging`,
         // a security warning for `permissiveLearningMode`).
-        crate::appcontainer_runner::log_learning_mode_capability_diagnostics(
+        crate::environment::log_learning_mode_capability_diagnostics(
             &request.policy.capabilities,
             logger,
         );
@@ -1046,10 +1044,7 @@ impl BaseContainerRunner {
             let record = AuditEvent::new(AuditEventName::NetworkPolicyApplied)
                 .str("backend", ContainmentBackend::ProcessContainer.wire_name())
                 .str("identity", sanitize_identity(&identity))
-                .str(
-                    "tier",
-                    crate::fallback_detector::IsolationTier::BaseContainer.as_str(),
-                )
+                .str("tier", "base-container")
                 .str(
                     "enforcement_mode",
                     request.policy.network_enforcement_mode.as_str(),
@@ -1307,10 +1302,7 @@ impl BaseContainerSandboxProcess {
         AuditEvent::new(name)
             .str("backend", ContainmentBackend::ProcessContainer.wire_name())
             .str("identity", &self.identity)
-            .str(
-                "tier",
-                crate::fallback_detector::IsolationTier::BaseContainer.as_str(),
-            )
+            .str("tier", "base-container")
             .u64("pid", self.pid as u64)
     }
 
@@ -1954,7 +1946,7 @@ fn promote_capture_for_retention(
         .ok_or_else(|| std::io::Error::other("captureDenials working root has no parent"))?;
     let retained_root = capture_root.join(crate::capture_output::RETAINED_CAPTURE_DIR_NAME);
     std::fs::create_dir_all(&retained_root)?;
-    wxc_common::filesystem_dacl::set_owner_only_dacl(&retained_root, true)
+    wxc_common::filesystem_security::set_owner_only_dacl(&retained_root, true)
         .map_err(std::io::Error::other)?;
     let directory_name = directory.file_name().ok_or_else(|| {
         std::io::Error::other("captureDenials working directory has no file name")
@@ -1988,7 +1980,7 @@ fn managed_capture_output_path_in(
                 root.display()
             ))
         })?;
-        wxc_common::filesystem_dacl::set_owner_only_dacl(root, true).map_err(|error| {
+        wxc_common::filesystem_security::set_owner_only_dacl(root, true).map_err(|error| {
             ScriptResponse::error(&format!(
                 "captureDenials failed to secure ETL root {}: {error}",
                 root.display()
@@ -2003,7 +1995,7 @@ fn managed_capture_output_path_in(
         match std::fs::create_dir(&directory) {
             Ok(()) => {
                 if let Err(error) =
-                    wxc_common::filesystem_dacl::set_owner_only_dacl(&directory, true)
+                    wxc_common::filesystem_security::set_owner_only_dacl(&directory, true)
                 {
                     let _ = std::fs::remove_dir(&directory);
                     return Err(ScriptResponse::error(&format!(
@@ -2159,8 +2151,10 @@ mod tests {
             first.etl_path.extension().and_then(|ext| ext.to_str()),
             Some("etl")
         );
-        assert!(wxc_common::filesystem_dacl::owner_is_self(&first.directory)
-            .expect("read managed directory owner"));
+        assert!(
+            wxc_common::filesystem_security::owner_is_self(&first.directory)
+                .expect("read managed directory owner")
+        );
         drop(first);
         drop(second);
         assert!(!first_directory.exists());
@@ -3285,8 +3279,4 @@ mod tests {
             assert!(runner.validate(&request).is_ok());
         }
     }
-
-    // ETL-retention capability validation (the retainEtl gate, including the
-    // BaseContainer native-PSEC exception) is exercised as a consolidated
-    // matrix in `crate::guarded_capture`'s tests, so it is not duplicated here.
 }

@@ -193,10 +193,10 @@ fn extern_spawn_request_maps_capture_denials_to_process_container() {
 }
 
 /// A real run requires a host backend; on Windows that means an elevated,
-/// host-prepped host (see docs/host-prep.md), so this is `#[ignore]`d.
+/// PSEC-capable Windows host, so this is `#[ignore]`d.
 #[cfg(target_os = "windows")]
 #[test]
-#[ignore = "requires an elevated, host-prepped Windows host (see docs/host-prep.md)"]
+#[ignore = "requires a PSEC-capable Windows host"]
 fn extern_run_executes_command() {
     let request = CString::new(
         r#"{

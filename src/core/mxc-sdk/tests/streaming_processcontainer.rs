@@ -4,7 +4,7 @@
 //! Windows ProcessContainer streaming integration test, in its own
 //! Windows-gated file. The sibling `streaming.rs` is `#![cfg(macos)]`, which
 //! would otherwise make a `#[cfg(windows)]` test there impossible to compile.
-//! Requires an elevated, host-prepped Windows host (see docs/host-prep.md), so
+//! Requires a PSEC-capable Windows host, so
 //! it is `#[ignore]`d.
 
 #![cfg(target_os = "windows")]
@@ -12,7 +12,7 @@
 use mxc_sdk::{build_request, spawn_sandbox, SandboxPolicy, WaitOutcome};
 
 #[test]
-#[ignore = "requires an elevated, host-prepped Windows host (see docs/host-prep.md)"]
+#[ignore = "requires a PSEC-capable Windows host"]
 fn streaming_processcontainer_bidirectional_stdio() {
     use std::io::{Read, Write};
 
