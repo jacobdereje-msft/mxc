@@ -3,7 +3,7 @@ name = "isolation_session_bindings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish = false
+publish.workspace = true
 
 [dependencies]
 windows-core = { workspace = true }

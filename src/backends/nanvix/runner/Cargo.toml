@@ -3,10 +3,11 @@ name = "nanvix_runner"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 wxc_common = { workspace = true, features = ["microvm"] }
-nanvix_common = { path = "../common" }
+nanvix_common = { workspace = true }
 uuid = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

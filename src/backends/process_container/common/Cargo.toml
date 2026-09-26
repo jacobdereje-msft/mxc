@@ -3,6 +3,7 @@ name = "process_container_common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [features]
 # Enables the MXC_FORCE_TIER environment override for dedicated test executors.

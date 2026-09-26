@@ -3,6 +3,7 @@ name = "seatbelt_common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # Provides ExecutionRequest, ContainerPolicy, SeatbeltConfig, Logger, and

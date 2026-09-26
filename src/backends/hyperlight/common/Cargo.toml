@@ -3,6 +3,7 @@ name = "hyperlight_common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 wxc_common = { workspace = true }

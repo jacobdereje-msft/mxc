@@ -3,6 +3,7 @@ name = "wxc_common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [features]
 microvm = ["dep:nanvix_common", "dep:uuid"]
@@ -20,7 +21,7 @@ base64 = { workspace = true }
 cidr = { workspace = true }
 url = { workspace = true }
 getrandom = { workspace = true }
-nanvix_common = { path = "../../backends/nanvix/common", optional = true }
+nanvix_common = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 mxc_config_contract = { workspace = true }
 mxc_telemetry = { workspace = true }

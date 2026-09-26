@@ -15,6 +15,9 @@ from crates.io and npmjs, helping ensure secure and vetted consumption of thirdâ
 ### Production Build and Release pipelines
 - The ADO pipeline is the official build pipeline that signs the binaries and
   drives public releases. It runs on merge to `main` and on a nightly schedule.
+- `1ES.Publish.Rust.yml` is the manually queued private-feed pipeline for
+  packaging or publishing `mxc-sdk` and its first-party crate closure. See
+  [`docs/rust-crate-publishing.md`](../docs/rust-crate-publishing.md).
 
 ### PR Pipelines
 - GitHub Actions runs the PR validation build automatically on every pull
