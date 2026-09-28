@@ -73,9 +73,8 @@ parameters:
   displayName: Manual validation notification recipients
   type: string
   default: |
-    anisk@microsoft.com
-    sodas@microsoft.com
-    jwhites@microsoft.com
+    ejohn@microsoft.com
+    dalegg@microsoft.com
 - name: ESRPInfo
   displayName: ESRP release configuration
   type: object
