@@ -1,5 +1,4 @@
 {
-  "$schema": "../../schemas/stable/mxc-config.schema.0.9.0-alpha.json",
   "version": "0.9.0-alpha",
   "containerId": "CLI-lxc-Env-09-no_cwd",
   "containment": "lxc",

@@ -1,5 +1,4 @@
 {
-    "$schema": "../../schemas/stable/mxc-config.schema.0.8.0-alpha.json",
     "_comment": "Run a JS/Python build or test runner offline. Highlights two Seatbelt-specific behaviors: AF_UNIX sockets are governed by the FILESYSTEM policy (worker IPC keeps working with the network fully denied), and nestedPty must stay true for anything that spawns a shell or pty.",
     "version": "0.8.0-alpha",
     "containment": "seatbelt",

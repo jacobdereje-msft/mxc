@@ -1,5 +1,4 @@
 {
-    "$schema": "../../schemas/stable/mxc-config.schema.0.8.0-alpha.json",
     "_comment": "Fetch dependencies from the internet into a scratch directory while the rest of the machine stays unreachable. The inverse of 32. Shows that egress 'allow' on Seatbelt is all-or-nothing (no per-host filtering -- allowedHosts/egress.allow are rejected), and that 'allow' does NOT imply loopback: hostLoopback still has to be opted into.",
     "version": "0.8.0-alpha",
     "containment": "seatbelt",

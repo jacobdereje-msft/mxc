@@ -1,5 +1,4 @@
 {
-    "$schema": "../../schemas/stable/mxc-config.schema.0.8.0-alpha.json",
     "_comment": "Run an untrusted script or coding agent against your home directory for context, while keeping credentials unreachable and the network off. Shows that deniedPaths outranks a broad readonlyPaths grant, and that the host environment is never inherited. Scratch space is /tmp here for portability -- in real use point readwritePaths at just your output directory.",
     "version": "0.8.0-alpha",
     "containment": "seatbelt",

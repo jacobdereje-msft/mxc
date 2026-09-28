@@ -1,5 +1,4 @@
 {
-    "$schema": "../../schemas/stable/mxc-config.schema.0.8.0-alpha.json",
     "_comment": "Run a test suite that talks to a local dev server. This is the config that avoids the hostLoopback trap -- ingress.default and ingress.hostLoopback must BOTH be 'allow', and omitting the ingress block entirely would silently deny localhost even with egress allowed. Seatbelt cannot scope the inbound grant, so this necessarily opens unscoped inbound too.",
     "version": "0.8.0-alpha",
     "containment": "seatbelt",
