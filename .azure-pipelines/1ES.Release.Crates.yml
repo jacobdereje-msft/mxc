@@ -27,37 +27,6 @@ parameters:
     displayName: 'Dry run — run Cargo publication checks without uploading'
     type: boolean
     default: true
-  # Azure expands ESRP tasks before the packaging stage runs, so the ordered
-  # crate names must be available as a compile-time parameter. CI and the real
-  # publish job reject the release if this differs from Cargo's computed order.
-  - name: publishCrates
-    type: object
-    default:
-      # BEGIN MXC-SDK PUBLISH CRATES
-      - mxc-pty
-      - mxc-config-contract
-      - mxc-nanvix-common
-      - mxc-telemetry
-      - mxc-wxc-common
-      - mxc-lxc-common
-      - mxc-bwrap-common
-      - mxc-hyperlight-common
-      - mxc-isolation-session-bindings
-      - mxc-isolation-session-common
-      - mxc-learning-mode-core
-      - mxc-nanvix-runner
-      - mxc-build-common
-      - mxc-learning-mode-windows
-      - mxc-plm
-      - mxc-process-security-environment-spec
-      - mxc-process-container-common
-      - mxc-seatbelt-common
-      - mxc-windows-sandbox-common
-      - mxc-windows-sandbox-lifecycle
-      - mxc-wslc-common
-      - mxc-engine
-      - mxc-sdk
-      # END MXC-SDK PUBLISH CRATES
 
 variables:
   - group: MXC-ESRP-Signing
@@ -102,5 +71,4 @@ extends:
             clientId: $(clientId)
             OwnersEmail: $(Build.RequestedForEmail)
             ApproversEmail: $(Build.RequestedForEmail)
-          publishCrates: ${{ parameters.publishCrates }}
           dryRun: ${{ parameters.dryRun }}

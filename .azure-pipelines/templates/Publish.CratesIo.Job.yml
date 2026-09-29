@@ -17,6 +17,34 @@ parameters:
     type: object
   - name: publishCrates
     type: object
+    # Keep this list internal to the template so release operators cannot
+    # override the Cargo-validated publication order at queue time.
+    default:
+      # BEGIN MXC-SDK PUBLISH CRATES
+      - mxc-pty
+      - mxc-config-contract
+      - mxc-nanvix-common
+      - mxc-telemetry
+      - mxc-wxc-common
+      - mxc-lxc-common
+      - mxc-bwrap-common
+      - mxc-hyperlight-common
+      - mxc-isolation-session-bindings
+      - mxc-isolation-session-common
+      - mxc-learning-mode-core
+      - mxc-nanvix-runner
+      - mxc-build-common
+      - mxc-learning-mode-windows
+      - mxc-plm
+      - mxc-process-security-environment-spec
+      - mxc-process-container-common
+      - mxc-seatbelt-common
+      - mxc-windows-sandbox-common
+      - mxc-windows-sandbox-lifecycle
+      - mxc-wslc-common
+      - mxc-engine
+      - mxc-sdk
+      # END MXC-SDK PUBLISH CRATES
   - name: dryRun
     type: boolean
     default: true

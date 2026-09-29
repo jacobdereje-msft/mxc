@@ -24,7 +24,8 @@ param
 
     [string] $ManifestPath = 'src/Cargo.toml',
     [string] $RootCrate = 'mxc-sdk',
-    [string] $ReleasePipelinePath = '.azure-pipelines/1ES.Release.Crates.yml'
+    [string] $ReleasePipelinePath = '.azure-pipelines/1ES.Release.Crates.yml',
+    [string] $PublishTemplatePath = '.azure-pipelines/templates/Publish.CratesIo.Job.yml'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -119,14 +120,20 @@ Add-ReleasePackage $RootCrate
 
 if ($ValidateOnly)
 {
-    $pipelineLines = [System.IO.File]::ReadAllLines($ReleasePipelinePath)
+    $releasePipelineText = [System.IO.File]::ReadAllText($ReleasePipelinePath)
+    if ($releasePipelineText -cmatch '\bpublishCrates\b')
+    {
+        throw "$ReleasePipelinePath must not expose publishCrates as a queue-time parameter"
+    }
+
+    $pipelineLines = [System.IO.File]::ReadAllLines($PublishTemplatePath)
     $startMarker = '# BEGIN MXC-SDK PUBLISH CRATES'
     $endMarker = '# END MXC-SDK PUBLISH CRATES'
     $start = [Array]::FindIndex($pipelineLines, [Predicate[string]] { param($line) $line.Trim() -ceq $startMarker })
     $end = [Array]::FindIndex($pipelineLines, [Predicate[string]] { param($line) $line.Trim() -ceq $endMarker })
     if ($start -lt 0 -or $end -le $start)
     {
-        throw "$ReleasePipelinePath must contain ordered $startMarker and $endMarker markers"
+        throw "$PublishTemplatePath must contain ordered $startMarker and $endMarker markers"
     }
 
     $pipelineOrder = [System.Collections.Generic.List[string]]::new()
@@ -134,19 +141,19 @@ if ($ValidateOnly)
     {
         if ($pipelineLines[$index] -notmatch '^\s*-\s+(mxc-[a-z0-9]+(?:-[a-z0-9]+)*)\s*$')
         {
-            throw "$ReleasePipelinePath has an invalid publishCrates entry at line $($index + 1)"
+            throw "$PublishTemplatePath has an invalid publishCrates entry at line $($index + 1)"
         }
         $pipelineOrder.Add($Matches[1])
     }
     if ($pipelineOrder.Count -ne $order.Count)
     {
-        throw "$ReleasePipelinePath contains $($pipelineOrder.Count) publish crates, but Cargo computed $($order.Count)"
+        throw "$PublishTemplatePath contains $($pipelineOrder.Count) publish crates, but Cargo computed $($order.Count)"
     }
     for ($index = 0; $index -lt $order.Count; $index++)
     {
         if ($pipelineOrder[$index] -cne $order[$index])
         {
-            throw "$ReleasePipelinePath publishCrates[$index] is '$($pipelineOrder[$index])', but Cargo computed '$($order[$index])'"
+            throw "$PublishTemplatePath publishCrates[$index] is '$($pipelineOrder[$index])', but Cargo computed '$($order[$index])'"
         }
     }
 

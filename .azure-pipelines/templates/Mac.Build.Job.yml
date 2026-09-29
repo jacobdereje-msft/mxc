@@ -64,7 +64,7 @@ jobs:
           # macOS-only crate set; the rest of the workspace has Windows-only
           # crates that do not compile on macOS. unix_test_proxy and mxc_ffi
           # ship next to mxc-exec-mac.
-          cargoPackages: mxc_darwin,seatbelt_common,wxc_common,unix_test_proxy,mxc_ffi
+          cargoPackages: mxc_darwin,mxc-seatbelt-common,mxc-wxc-common,unix_test_proxy,mxc_ffi
 
     - ${{ else }}:
       - template: Rust.Build.Steps.Unofficial.yml@self
