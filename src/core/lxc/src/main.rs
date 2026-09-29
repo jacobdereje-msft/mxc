@@ -349,13 +349,10 @@ fn main() {
     );
 
     print!("{}", response.standard_out);
-    eprint!("{}", response.standard_err);
+    eprint!(
+        "{}",
+        wxc_common::script_runner::cli_standard_error(&response)
+    );
 
-    // Never exit non-zero on an infrastructure failure without a diagnostic:
-    // `display_script_results` only writes the error into the (buffered,
-    // non-debug-suppressed) logger, so surface it on stderr here for parity
-    // with wxc-exec (issue #564).
-    wxc_common::script_runner::emit_backend_error_envelope(&response);
-
-    process::exit(response.exit_code);
+    process::exit(wxc_common::script_runner::cli_exit_code(&response));
 }

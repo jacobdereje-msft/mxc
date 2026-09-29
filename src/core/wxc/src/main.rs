@@ -1733,9 +1733,6 @@ fn main() {
     if !response.standard_out.is_empty() {
         print!("{}", response.standard_out);
     }
-    if !response.standard_err.is_empty() {
-        eprint!("{}", response.standard_err);
-    }
     if let Some(pointer) = response
         .output_metadata
         .as_ref()
@@ -1747,13 +1744,12 @@ fn main() {
         }
     }
 
-    // Emit a structured JSON error envelope on stderr for SDK/caller consumption
-    // when the runner produced an error message (one-shot flows only).
-    // In PTY mode stderr is merged into the PTY output stream, so the envelope
-    // appears inline -- callers (e.g. copilot) can parse it from the output.
-    wxc_common::script_runner::emit_backend_error_envelope(&response);
+    eprint!(
+        "{}",
+        wxc_common::script_runner::cli_standard_error(&response)
+    );
 
-    process::exit(response.exit_code);
+    process::exit(wxc_common::script_runner::cli_exit_code(&response));
 }
 
 #[cfg(test)]

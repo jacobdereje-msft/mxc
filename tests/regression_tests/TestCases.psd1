@@ -129,4 +129,13 @@
         HarnessArguments = "Default"
         Destructive = $false
     }
+    "1247" = @{
+        FriendlyName = "Backend Rejection Classification"
+        Script = "test_cases\Invoke-Issue1247-BackendRejectionClassification.ps1"
+        ExpectedTierSupport = @("base-container-psec")
+        Prerequisites = @("wxc-exec", "PSEC BaseContainer-capable host")
+        CapabilityPreflight = $true
+        HarnessArguments = "Default"
+        Destructive = $false
+    }
 }

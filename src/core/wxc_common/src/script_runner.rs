@@ -66,44 +66,83 @@ pub fn handle_dry_run_exit(response: &ScriptResponse, logger: &mut Logger) -> ! 
         let _ = writeln!(logger, "Dry run completed. Result: validation failed");
     }
     print!("{}", logger.get_buffer());
-    std::process::exit(response.exit_code);
+    eprint!("{}", cli_standard_error(response));
+    std::process::exit(cli_exit_code(response));
 }
 
-/// Emit a structured JSON error envelope on stderr when a completed run carries
-/// an infrastructure error message.
+/// Render stderr for an executor CLI response.
 ///
-/// Shared by `wxc-exec` and `lxc-exec` so that MXC never exits non-zero on an
-/// infrastructure failure without first printing a machine-readable diagnostic
-/// (see issue #564). This deliberately keys off a **non-empty**
-/// `error_message`: a sandboxed process that merely exits non-zero on its own
-/// (a faithfully propagated guest exit code, no MXC error) leaves
-/// `error_message` empty and is intentionally not annotated here.
-///
-/// In non-debug mode the diagnostic `Logger` is buffered and never flushed, so
-/// this envelope is the only place the error surfaces to the caller.
-pub fn emit_backend_error_envelope(response: &ScriptResponse) {
-    if response.exit_code == 0 || response.error_message.is_empty() {
-        return;
+/// MXC failures use one typed JSON envelope so executor consumers can
+/// distinguish policy rejection, backend unavailability, and other backend
+/// failures. The envelope replaces the backend's duplicate bare diagnostic.
+/// Workload stderr passes through unchanged.
+pub fn cli_standard_error(response: &ScriptResponse) -> String {
+    if !is_mxc_failure(response) {
+        return response.standard_err.clone();
     }
 
+    let message = if response.error_message.is_empty() {
+        response.standard_err.trim().to_string()
+    } else {
+        response.error_message.clone()
+    };
     let mut envelope = serde_json::json!({
         "error": {
-            "code": "backend_error",
-            "message": response.error_message,
+            "code": cli_error_code(response),
+            "message": message,
         }
     });
     if !response.extended_error.is_empty() {
         envelope["error"]["extended_error"] =
             serde_json::Value::String(response.extended_error.clone());
     }
-    if let Ok(json) = serde_json::to_string(&envelope) {
-        eprintln!("{json}");
+    format!(
+        "{}\n",
+        serde_json::to_string(&envelope).unwrap_or_else(|_| {
+            r#"{"error":{"code":"backend_error","message":"failed to serialize error envelope"}}"#
+                .to_string()
+        })
+    )
+}
+
+fn is_mxc_failure(response: &ScriptResponse) -> bool {
+    use crate::models::FailurePhase;
+
+    match response.failure_phase {
+        FailurePhase::None => !response.error_message.is_empty(),
+        FailurePhase::ProcessExited => false,
+        _ => true,
+    }
+}
+
+fn cli_error_code(response: &ScriptResponse) -> &'static str {
+    use crate::models::FailurePhase;
+
+    match response.failure_phase {
+        FailurePhase::Rejected => "policy_validation",
+        FailurePhase::BackendUnavailable => "backend_unavailable",
+        _ => "backend_error",
+    }
+}
+
+/// Return the executor process exit code for a completed response.
+///
+/// Workload exit codes pass through unchanged. MXC failures use `1` rather
+/// than leaking the internal `-1` sentinel through the process boundary.
+pub fn cli_exit_code(response: &ScriptResponse) -> i32 {
+    use crate::models::FailurePhase;
+
+    match response.failure_phase {
+        FailurePhase::ProcessExited => response.exit_code,
+        FailurePhase::None if response.error_message.is_empty() => response.exit_code,
+        _ => 1,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::get_timeout_milliseconds;
+    use super::{cli_exit_code, cli_standard_error, get_timeout_milliseconds};
+    use crate::models::{FailurePhase, ScriptResponse};
 
     #[test]
     fn timeout_zero_returns_u32_max() {
@@ -119,30 +158,95 @@ mod tests {
     }
 
     #[test]
-    fn error_envelope_is_noop_without_error() {
-        use crate::models::ScriptResponse;
-        // exit 0 => no-op; non-zero but empty message (clean sandbox exit) => no-op.
-        super::emit_backend_error_envelope(&ScriptResponse {
-            exit_code: 0,
-            error_message: "ignored on success".to_string(),
-            ..Default::default()
-        });
-        super::emit_backend_error_envelope(&ScriptResponse {
-            exit_code: 1,
-            error_message: String::new(),
-            ..Default::default()
-        });
+    fn cli_exit_code_normalizes_mxc_failures() {
+        assert_eq!(
+            cli_exit_code(&ScriptResponse {
+                exit_code: -1,
+                error_message: "policy rejected".to_string(),
+                failure_phase: FailurePhase::Rejected,
+                ..Default::default()
+            }),
+            1
+        );
     }
 
     #[test]
-    fn error_envelope_emits_on_infra_failure() {
-        use crate::models::ScriptResponse;
-        // Exercises the serialization branch (writes to stderr); must not panic.
-        super::emit_backend_error_envelope(&ScriptResponse {
-            exit_code: 1,
-            error_message: "backend unavailable".to_string(),
-            extended_error: "WIN32_ERROR(1920)".to_string(),
-            ..Default::default()
-        });
+    fn cli_exit_code_normalizes_legacy_unclassified_mxc_failures() {
+        assert_eq!(cli_exit_code(&ScriptResponse::error("backend failed")), 1);
+    }
+
+    #[test]
+    fn cli_exit_code_preserves_workload_exit() {
+        assert_eq!(
+            cli_exit_code(&ScriptResponse {
+                exit_code: 42,
+                error_message: "actionable child diagnostic".to_string(),
+                failure_phase: FailurePhase::ProcessExited,
+                ..Default::default()
+            }),
+            42
+        );
+    }
+
+    #[test]
+    fn cli_exit_code_preserves_clean_nonzero_workload_exit() {
+        assert_eq!(
+            cli_exit_code(&ScriptResponse {
+                exit_code: 7,
+                failure_phase: FailurePhase::ProcessExited,
+                ..Default::default()
+            }),
+            7
+        );
+    }
+
+    #[test]
+    fn cli_standard_error_maps_policy_rejection() {
+        assert_eq!(
+            cli_standard_error(&ScriptResponse {
+                error_message: "policy rejected".to_string(),
+                standard_err: "policy rejected".to_string(),
+                failure_phase: FailurePhase::Rejected,
+                ..Default::default()
+            }),
+            "{\"error\":{\"code\":\"policy_validation\",\"message\":\"policy rejected\"}}\n"
+        );
+    }
+
+    #[test]
+    fn cli_standard_error_maps_legacy_unclassified_failure() {
+        assert_eq!(
+            cli_standard_error(&ScriptResponse {
+                error_message: "backend failed".to_string(),
+                ..Default::default()
+            }),
+            "{\"error\":{\"code\":\"backend_error\",\"message\":\"backend failed\"}}\n"
+        );
+    }
+
+    #[test]
+    fn cli_standard_error_includes_extended_detail() {
+        assert_eq!(
+            cli_standard_error(&ScriptResponse {
+                standard_err: "backend failed".to_string(),
+                error_message: "backend failed".to_string(),
+                extended_error: "HRESULT(0x80004005)".to_string(),
+                ..Default::default()
+            }),
+            "{\"error\":{\"code\":\"backend_error\",\"extended_error\":\"HRESULT(0x80004005)\",\"message\":\"backend failed\"}}\n"
+        );
+    }
+
+    #[test]
+    fn cli_standard_error_preserves_workload_stderr() {
+        assert_eq!(
+            cli_standard_error(&ScriptResponse {
+                standard_err: "child failed\n".to_string(),
+                error_message: "actionable child diagnostic".to_string(),
+                failure_phase: FailurePhase::ProcessExited,
+                ..Default::default()
+            }),
+            "child failed\n"
+        );
     }
 }

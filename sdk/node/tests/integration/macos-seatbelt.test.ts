@@ -198,9 +198,8 @@ describe('macOS Seatbelt Container', {
         blockedHosts: ['evil.example.com'],
       },
     };
-    // blockedHosts is unsupported on seatbelt; the runner rejects it and emits
-    // a structured `backend_error` envelope, so spawnSandboxAsync rejects with
-    // an MxcError (parity with wxc-exec / lxc-exec — issue #564).
+    // blockedHosts is unsupported on seatbelt; the in-process native call
+    // returns the backend failure as an MxcError.
     await assert.rejects(
       () =>
         sdk.spawnSandboxAsync(
@@ -241,9 +240,8 @@ describe('macOS Seatbelt Container', {
       version: schemaVersion,
       timeoutMs: 2000,
     };
-    // On timeout the runner kills the process and emits a structured
-    // `backend_error` envelope, so spawnSandboxAsync rejects with an MxcError
-    // (parity with wxc-exec / lxc-exec — issue #564).
+    // On timeout the in-process run reports a timed-out result, which
+    // spawnSandboxAsync converts to an MxcError.
     await assert.rejects(
       () =>
         sdk.spawnSandboxAsync(
