@@ -181,7 +181,7 @@ fn run_seatbelt(request: &ExecutionRequest, logger: &mut Logger) -> ! {
     );
 
     print!("{}", response.standard_out);
-    eprint!("{}", response.standard_err);
+    wxc_common::script_runner::emit_captured_stderr(&response);
 
     // Never exit non-zero on an infrastructure failure without a diagnostic:
     // `display_script_results` only writes the error into the (buffered,
@@ -189,7 +189,7 @@ fn run_seatbelt(request: &ExecutionRequest, logger: &mut Logger) -> ! {
     // with lxc-exec / wxc-exec (issue #564).
     wxc_common::script_runner::emit_backend_error_envelope(&response);
 
-    process::exit(response.exit_code);
+    process::exit(wxc_common::script_runner::process_exit_code(&response));
 }
 
 #[cfg(not(target_os = "macos"))]

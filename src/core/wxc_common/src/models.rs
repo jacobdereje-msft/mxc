@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 use crate::error::WxcError;
+use crate::mxc_error::MxcErrorCode;
 
 /// Selects which containment backend to use for script execution.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1291,7 +1292,7 @@ impl ExecutionRequest {
 
 /// Distinguishes whether an error occurred during process creation (launch)
 /// or after the process started but exited with a failure code.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailurePhase {
     /// No failure (process exited successfully, or has not been evaluated yet).
     #[default]
@@ -1320,6 +1321,22 @@ pub enum FailurePhase {
     /// [`LaunchFailed`] so callers can fall back to a lower tier rather than
     /// hard-fail.
     BackendUnavailable,
+}
+
+impl FailurePhase {
+    /// Wire error code for a failure in this phase.
+    ///
+    /// A rejection and an unavailable backend are the two outcomes a caller can
+    /// act on — fix the request, or fall back to another tier — so each keeps
+    /// its own code. Everything else is an infrastructure failure with no more
+    /// specific equivalent.
+    pub fn error_code(self) -> MxcErrorCode {
+        match self {
+            Self::Rejected => MxcErrorCode::PolicyValidation,
+            Self::BackendUnavailable => MxcErrorCode::BackendUnavailable,
+            _ => MxcErrorCode::BackendError,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1411,6 +1428,19 @@ impl ScriptResponse {
             standard_err: msg.to_string(),
             error_message: msg.to_string(),
             ..Default::default()
+        }
+    }
+
+    /// Create a rejection response: the request cannot be honored as written
+    /// and no retry will change that.
+    ///
+    /// Carries [`FailurePhase::Rejected`] so the executor exits 1 with a
+    /// `policy_validation` code instead of the -1 / `backend_error` that every
+    /// other failure shares.
+    pub fn rejected(msg: &str) -> Self {
+        ScriptResponse {
+            failure_phase: FailurePhase::Rejected,
+            ..Self::error(msg)
         }
     }
 }

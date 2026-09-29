@@ -485,14 +485,11 @@ impl BaseContainerRunner {
                 ))
             })?;
         if !version_supported {
-            return Err(ScriptResponse {
-                failure_phase: FailurePhase::Rejected,
-                ..ScriptResponse::error(if requires_enumerate_paths {
-                    PSEC_ENUMERATE_PATHS_UNSUPPORTED_MSG
-                } else {
-                    PSEC_INGRESS_UNSUPPORTED_MSG
-                })
-            });
+            return Err(ScriptResponse::rejected(if requires_enumerate_paths {
+                PSEC_ENUMERATE_PATHS_UNSUPPORTED_MSG
+            } else {
+                PSEC_INGRESS_UNSUPPORTED_MSG
+            }));
         }
 
         let enumerate_paths_supported = if requires_enumerate_paths {
@@ -508,10 +505,9 @@ impl BaseContainerRunner {
             true
         };
         if requires_enumerate_paths && !enumerate_paths_supported {
-            return Err(ScriptResponse {
-                failure_phase: FailurePhase::Rejected,
-                ..ScriptResponse::error(PSEC_ENUMERATE_PATHS_UNSUPPORTED_MSG)
-            });
+            return Err(ScriptResponse::rejected(
+                PSEC_ENUMERATE_PATHS_UNSUPPORTED_MSG,
+            ));
         }
 
         let network_ingress_supported =
@@ -524,10 +520,7 @@ impl BaseContainerRunner {
                     ))
                 })?;
         if requires_unrestricted_host_loopback && !network_ingress_supported {
-            return Err(ScriptResponse {
-                failure_phase: FailurePhase::Rejected,
-                ..ScriptResponse::error(PSEC_INGRESS_UNSUPPORTED_MSG)
-            });
+            return Err(ScriptResponse::rejected(PSEC_INGRESS_UNSUPPORTED_MSG));
         }
         Ok(ResolvedPsecContract {
             contract,
@@ -1447,12 +1440,12 @@ impl SandboxBackend for BaseContainerRunner {
         validate_network_policy_support(request, self.network_policy_support())?;
         let capture_denials = request.policy.capture_denials.is_some();
         if !request.policy.allowed_hosts.is_empty() || !request.policy.blocked_hosts.is_empty() {
-            return Err(ScriptResponse::error(
+            return Err(ScriptResponse::rejected(
                 wxc_common::error::HOST_LISTS_NOT_SUPPORTED_MSG,
             ));
         }
         if has_conflicting_proxy_identity(&request.policy) {
-            return Err(ScriptResponse::error(
+            return Err(ScriptResponse::rejected(
                 "processContainer.network.allowedProxyPeer grants loopback access only to the \
                  specified peer and cannot be combined with \
                  network.ingress.hostLoopback='allow', which grants unrestricted host-loopback \
@@ -1474,7 +1467,7 @@ impl SandboxBackend for BaseContainerRunner {
             });
         }
         if request.policy.least_privilege_mode {
-            return Err(ScriptResponse::error(
+            return Err(ScriptResponse::rejected(
                 "the process-security-environment path cannot be combined with \
                  processContainer.leastPrivilege because it does not support LPAC tokens",
             ));

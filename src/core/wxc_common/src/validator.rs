@@ -75,7 +75,7 @@ pub fn validate_network_policy_support(
                 directional_posture_supplied || egress.default == NetworkAction::Allow
             })
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "network.egress.default is not supported by the selected backend",
         ));
     }
@@ -87,7 +87,7 @@ pub fn validate_network_policy_support(
             .is_some_and(|egress| egress.default == NetworkAction::Deny)
         && request.policy.default_network_policy == NetworkPolicy::Allow
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "network.egress.default='deny' conflicts with the legacy outbound policy",
         ));
     }
@@ -99,7 +99,7 @@ pub fn validate_network_policy_support(
             .as_ref()
             .is_some_and(|egress| !egress.allow.is_empty() || !egress.deny.is_empty())
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "network.egress allow/deny rules are not supported by the selected backend",
         ));
     }
@@ -113,7 +113,7 @@ pub fn validate_network_policy_support(
                 directional_posture_supplied || ingress.default == NetworkAction::Allow
             })
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "network.ingress.default is not supported by the selected backend",
         ));
     }
@@ -125,7 +125,7 @@ pub fn validate_network_policy_support(
             .is_some_and(|ingress| ingress.default == NetworkAction::Deny)
         && request.policy.allow_local_network
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "network.ingress.default='deny' conflicts with the legacy inbound policy",
         ));
     }
@@ -139,7 +139,7 @@ pub fn validate_network_policy_support(
                 directional_posture_supplied || ingress.host_loopback == NetworkAction::Allow
             })
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "network.ingress.hostLoopback is not supported by the selected backend",
         ));
     }
@@ -151,7 +151,7 @@ pub fn validate_network_policy_support(
             .is_some_and(|ingress| ingress.host_loopback == NetworkAction::Deny)
         && request.policy.allow_local_network
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "network.ingress.hostLoopback='deny' conflicts with the legacy inbound policy",
         ));
     }
@@ -159,7 +159,7 @@ pub fn validate_network_policy_support(
     if !support.contains(NetworkPolicySupport::PROXY_PEER_IDENTITY)
         && request.policy.allowed_proxy_peer.is_some()
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "processContainer.network.allowedProxyPeer is not supported by the selected backend",
         ));
     }
@@ -167,7 +167,7 @@ pub fn validate_network_policy_support(
     if !support.contains(NetworkPolicySupport::RUNTIME_PROXY)
         && request.policy.runtime_network_proxy_specified
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "runtimeConfig.networkProxy is not supported by the selected backend",
         ));
     }
@@ -187,7 +187,9 @@ pub fn validate_state_aware_network_policy_support(
 /// Validates non-backend-specific parts of the request (e.g. non-empty script).
 pub fn validate_common(request: &ExecutionRequest) -> Result<(), ScriptResponse> {
     if request.script_code.is_empty() {
-        return Err(ScriptResponse::error("Script content must not be empty."));
+        return Err(ScriptResponse::rejected(
+            "Script content must not be empty.",
+        ));
     }
 
     // Enforce the testing-only-features gate centrally so it applies uniformly
@@ -196,7 +198,7 @@ pub fn validate_common(request: &ExecutionRequest) -> Result<(), ScriptResponse>
     // permissive test proxy); see `ExecutionRequest::testing_features_enabled`
     // for the rationale behind the dedicated `--allow-testing-features` axis.
     if request.policy.network_proxy.builtin_test_server && !request.testing_features_enabled {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "network.proxy.builtinTestServer is a testing-only feature and requires the \
              --allow-testing-features flag. For production, point network.proxy at a real \
              HTTP proxy via 'localhost' or 'url'.",
@@ -206,7 +208,7 @@ pub fn validate_common(request: &ExecutionRequest) -> Result<(), ScriptResponse>
     if !request.policy.enumerate_paths.is_empty()
         && request.containment != crate::models::ContainmentBackend::ProcessContainer
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "processContainer.filesystem.enumeratePaths is supported only by the Windows \
              ProcessContainer backend",
         ));

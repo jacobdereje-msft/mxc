@@ -1605,9 +1605,7 @@ fn main() {
     if !response.standard_out.is_empty() {
         print!("{}", response.standard_out);
     }
-    if !response.standard_err.is_empty() {
-        eprint!("{}", response.standard_err);
-    }
+    wxc_common::script_runner::emit_captured_stderr(&response);
     if let Some(pointer) = response
         .output_metadata
         .as_ref()
@@ -1625,7 +1623,7 @@ fn main() {
     // appears inline -- callers (e.g. copilot) can parse it from the output.
     wxc_common::script_runner::emit_backend_error_envelope(&response);
 
-    process::exit(response.exit_code);
+    process::exit(wxc_common::script_runner::process_exit_code(&response));
 }
 
 #[cfg(test)]

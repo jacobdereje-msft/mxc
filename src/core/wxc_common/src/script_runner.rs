@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::logger::Logger;
-use crate::models::{ExecutionRequest, ScriptResponse};
+use crate::models::{ExecutionRequest, FailurePhase, ScriptResponse};
 use crate::validator::{validate_common, validate_network_policy_support, NetworkPolicySupport};
 
 /// Trait for executing scripts within a containment backend.
@@ -66,7 +66,44 @@ pub fn handle_dry_run_exit(response: &ScriptResponse, logger: &mut Logger) -> ! 
         let _ = writeln!(logger, "Dry run completed. Result: validation failed");
     }
     print!("{}", logger.get_buffer());
-    std::process::exit(response.exit_code);
+    std::process::exit(process_exit_code(response));
+}
+
+/// Process exit code for a completed run.
+///
+/// A rejected request exits 1, matching a parser-side rejection, so a caller
+/// can tell a refused policy from a crash, a launch failure or a timeout — all
+/// of which report -1 (see [`FailurePhase::Timeout`]). Every other phase keeps
+/// the runner's own exit code, including a faithfully propagated guest code.
+pub fn process_exit_code(response: &ScriptResponse) -> i32 {
+    match response.failure_phase {
+        FailurePhase::Rejected => 1,
+        _ => response.exit_code,
+    }
+}
+
+/// Whether [`emit_backend_error_envelope`] will emit for this response.
+fn envelope_applies(response: &ScriptResponse) -> bool {
+    response.exit_code != 0 && !response.error_message.is_empty()
+}
+
+/// Relay a completed run's captured stderr, terminating it with a newline so
+/// that a diagnostic written afterwards starts on its own line.
+///
+/// Error responses that never ran a process copy `error_message` into
+/// `standard_err`; [`emit_backend_error_envelope`] already carries that text,
+/// so it is skipped here rather than printed twice.
+pub fn emit_captured_stderr(response: &ScriptResponse) {
+    if response.standard_err.is_empty()
+        || (envelope_applies(response) && response.standard_err == response.error_message)
+    {
+        return;
+    }
+    if response.standard_err.ends_with('\n') {
+        eprint!("{}", response.standard_err);
+    } else {
+        eprintln!("{}", response.standard_err);
+    }
 }
 
 /// Emit a structured JSON error envelope on stderr when a completed run carries
@@ -79,16 +116,20 @@ pub fn handle_dry_run_exit(response: &ScriptResponse, logger: &mut Logger) -> ! 
 /// (a faithfully propagated guest exit code, no MXC error) leaves
 /// `error_message` empty and is intentionally not annotated here.
 ///
+/// The code is derived from the response's [`FailurePhase`], so a backend
+/// rejection is reported as `policy_validation` — the same typed code a
+/// parser-side rejection produces.
+///
 /// In non-debug mode the diagnostic `Logger` is buffered and never flushed, so
 /// this envelope is the only place the error surfaces to the caller.
 pub fn emit_backend_error_envelope(response: &ScriptResponse) {
-    if response.exit_code == 0 || response.error_message.is_empty() {
+    if !envelope_applies(response) {
         return;
     }
 
     let mut envelope = serde_json::json!({
         "error": {
-            "code": "backend_error",
+            "code": response.failure_phase.error_code().as_str(),
             "message": response.error_message,
         }
     });
@@ -142,6 +183,74 @@ mod tests {
             exit_code: 1,
             error_message: "backend unavailable".to_string(),
             extended_error: "WIN32_ERROR(1920)".to_string(),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn failure_phase_selects_the_envelope_code() {
+        use crate::models::FailurePhase;
+        use crate::mxc_error::MxcErrorCode;
+
+        assert_eq!(
+            FailurePhase::Rejected.error_code(),
+            MxcErrorCode::PolicyValidation
+        );
+        assert_eq!(
+            FailurePhase::BackendUnavailable.error_code(),
+            MxcErrorCode::BackendUnavailable
+        );
+        for phase in [
+            FailurePhase::None,
+            FailurePhase::LaunchFailed,
+            FailurePhase::PostLaunchFailed,
+            FailurePhase::ProcessExited,
+            FailurePhase::Timeout,
+        ] {
+            assert_eq!(phase.error_code(), MxcErrorCode::BackendError, "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_rejection_exits_one_and_every_other_failure_keeps_its_code() {
+        use crate::models::{FailurePhase, ScriptResponse};
+
+        assert_eq!(
+            super::process_exit_code(&ScriptResponse::rejected("unsupported policy")),
+            1
+        );
+        // -1 stays -1 for a crash, a launch failure or a timeout, so a caller
+        // that sees 1 knows the request itself was refused.
+        for phase in [FailurePhase::LaunchFailed, FailurePhase::Timeout] {
+            assert_eq!(
+                super::process_exit_code(&ScriptResponse {
+                    failure_phase: phase,
+                    ..ScriptResponse::error("boom")
+                }),
+                -1
+            );
+        }
+        assert_eq!(
+            super::process_exit_code(&ScriptResponse {
+                exit_code: 3,
+                failure_phase: FailurePhase::ProcessExited,
+                ..Default::default()
+            }),
+            3
+        );
+    }
+
+    #[test]
+    fn captured_stderr_skips_the_copy_the_envelope_carries() {
+        use crate::models::ScriptResponse;
+        // A rejection duplicates its message into `standard_err`; the envelope
+        // is the machine-readable copy, so nothing is relayed bare here.
+        super::emit_captured_stderr(&ScriptResponse::rejected("unsupported policy"));
+        // Real workload stderr is relayed even when an MXC error is also set.
+        super::emit_captured_stderr(&ScriptResponse {
+            exit_code: -1,
+            standard_err: "workload wrote this".to_string(),
+            error_message: "script timed out after 2000ms".to_string(),
             ..Default::default()
         });
     }

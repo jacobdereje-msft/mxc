@@ -270,7 +270,9 @@ downlevel weakening. Legacy proxy requests retain their existing compatibility b
 requests do not fall back because AppContainer cannot preserve their peer or host-loopback requirements.
 
 The AppContainer fallback is selected only when its capability mapping preserves the request. Explicit egress rules,
-proxy peer identity, and host-loopback allow fail with a typed unsupported-policy error when PSEC cannot enforce them.
+proxy peer identity, and host-loopback allow fail with a typed unsupported-policy error when PSEC cannot enforce them:
+`wxc-exec` exits 1 and emits `{"error":{"code":"policy_validation", ...}}`, the same shape a parser-side rejection
+produces. Exit -1 is reserved for a launch failure, a crash or a timeout.
 
 ## 3. WFP enforcement
 

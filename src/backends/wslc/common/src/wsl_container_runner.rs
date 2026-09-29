@@ -683,10 +683,7 @@ impl ScriptRunner for WSLContainerRunner {
             .into_response());
         }
         policy::reject_unsupported_enforcement_mode(request).map_err(as_wslc_rejection)?;
-        // The shared validator returns an untagged response; retag it so its
-        // rejections reach SDK callers as `policy_validation` like the checks above.
-        validate_network_policy_support(request, policy::network_policy_support())
-            .map_err(|resp| WslcError::Rejected(resp.error_message).into_response())?;
+        validate_network_policy_support(request, policy::network_policy_support())?;
         policy::validate_directional_network(request).map_err(as_wslc_rejection)?;
         Ok(())
     }
@@ -2490,7 +2487,7 @@ mod tests {
 
     #[test]
     fn validate_runner_tags_shared_validator_rejections() {
-        // The shared network validator builds untagged responses; WSLc retags them
+        // The shared network validator tags its refusals as policy rejections,
         // so callers get `policy_validation` rather than an opaque backend error.
         let mut request = ExecutionRequest {
             containment: wxc_common::models::ContainmentBackend::Wslc,
