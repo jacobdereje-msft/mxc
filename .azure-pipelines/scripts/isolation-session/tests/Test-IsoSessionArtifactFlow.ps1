@@ -278,7 +278,7 @@ try {
             -OutDir $wingetOutDir `
             -MonthId $script:releaseInfo.monthId `
             -Patch $script:releaseInfo.patch `
-            -PackageIdentifier 'Microsoft.Windows.AI.IsolationSession' `
+            -PackageIdentifier 'Microsoft.AI.IsolationSession' `
             -PackageName 'Microsoft Windows AI IsolationSession' `
             -Publisher 'Microsoft Corporation' `
             -PackageUrl 'https://github.com/microsoft/mxc' `
@@ -287,10 +287,10 @@ try {
             -ShortDescription 'Installs the monthly Windows AI IsolationSession runtime.'
 
         $wingetManifestDirectory = Join-Path $wingetOutDir (
-            "manifests\m\Microsoft\Windows\AI\IsolationSession\$($script:releaseInfo.canonicalRelease)")
+            "manifests\m\Microsoft\AI\IsolationSession\$($script:releaseInfo.canonicalRelease)")
         Assert-True (
             Test-Path -LiteralPath (
-                Join-Path $wingetManifestDirectory 'Microsoft.Windows.AI.IsolationSession.installer.yaml') -PathType Leaf
+                Join-Path $wingetManifestDirectory 'Microsoft.AI.IsolationSession.installer.yaml') -PathType Leaf
         ) 'qualified release tool executes without a repository checkout'
     }
 

@@ -44,7 +44,7 @@ try {
         -OutDir $outDir `
         -MonthId '2026.09' `
         -Patch 2 `
-        -PackageIdentifier 'Microsoft.Windows.AI.IsolationSession' `
+        -PackageIdentifier 'Microsoft.AI.IsolationSession' `
         -PackageName 'Microsoft Windows AI IsolationSession' `
         -Publisher 'Microsoft Corporation' `
         -PackageUrl 'https://github.com/microsoft/mxc' `
@@ -52,10 +52,10 @@ try {
         -LicenseUrl 'https://github.com/microsoft/mxc/blob/main/LICENSE.md' `
         -ShortDescription 'Installs the monthly Windows AI IsolationSession runtime.'
 
-    $manifestDirectory = Join-Path $outDir 'manifests\m\Microsoft\Windows\AI\IsolationSession\2026.09.2'
-    $versionPath = Join-Path $manifestDirectory 'Microsoft.Windows.AI.IsolationSession.yaml'
-    $localePath = Join-Path $manifestDirectory 'Microsoft.Windows.AI.IsolationSession.locale.en-US.yaml'
-    $installerPath = Join-Path $manifestDirectory 'Microsoft.Windows.AI.IsolationSession.installer.yaml'
+    $manifestDirectory = Join-Path $outDir 'manifests\m\Microsoft\AI\IsolationSession\2026.09.2'
+    $versionPath = Join-Path $manifestDirectory 'Microsoft.AI.IsolationSession.yaml'
+    $localePath = Join-Path $manifestDirectory 'Microsoft.AI.IsolationSession.locale.en-US.yaml'
+    $installerPath = Join-Path $manifestDirectory 'Microsoft.AI.IsolationSession.installer.yaml'
     Assert-True (Test-Path -LiteralPath $versionPath -PathType Leaf) 'version manifest exists'
     Assert-True (Test-Path -LiteralPath $localePath -PathType Leaf) 'locale manifest exists'
     Assert-True (Test-Path -LiteralPath $installerPath -PathType Leaf) 'installer manifest exists'
@@ -71,7 +71,7 @@ try {
 
     $summary = Get-Content -LiteralPath (Join-Path $outDir 'winget-release.json') -Raw |
         ConvertFrom-Json
-    Assert-True ($summary.packageIdentifier -eq 'Microsoft.Windows.AI.IsolationSession') 'summary has package identifier'
+    Assert-True ($summary.packageIdentifier -eq 'Microsoft.AI.IsolationSession') 'summary has package identifier'
     Assert-True ($summary.packageVersion -eq '2026.09.2') 'summary has package version'
     Assert-True (@($summary.installers).Count -eq 2) 'summary has both installers'
 
@@ -93,7 +93,7 @@ try {
             -OutDir (Join-Path $testRoot 'missing-link') `
             -MonthId '2026.09' `
             -Patch 2 `
-            -PackageIdentifier 'Microsoft.Windows.AI.IsolationSession' `
+            -PackageIdentifier 'Microsoft.AI.IsolationSession' `
             -PackageName 'Microsoft Windows AI IsolationSession' `
             -Publisher 'Microsoft Corporation' `
             -PackageUrl 'https://github.com/microsoft/mxc' `

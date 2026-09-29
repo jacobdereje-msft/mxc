@@ -25,7 +25,7 @@ parameters:
 - name: WinGetInfo
   type: object
   default:
-    packageIdentifier: Microsoft.Windows.AI.IsolationSession
+    packageIdentifier: Microsoft.AI.IsolationSession
     packageName: Microsoft Windows AI IsolationSession
     publisher: Microsoft Corporation
     packageUrl: https://github.com/microsoft/mxc
