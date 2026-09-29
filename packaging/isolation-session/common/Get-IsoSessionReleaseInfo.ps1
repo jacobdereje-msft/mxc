@@ -21,7 +21,7 @@ if ($month -lt 1 -or $month -gt 12) {
 }
 
 $yearShort = $yearFull % 100
-$packageId = 'Microsoft.Windows.AI.IsolationSession.SDK'
+$packageId = 'Microsoft.AI.IsolationSession.SDK'
 $strippedMonthId = $MonthId.Replace('.', '')
 $monthUnderscore = $MonthId.Replace('.', '_')
 $canonicalRelease = "$MonthId.$Patch"

@@ -24,7 +24,7 @@ from crates.io and npmjs, helping ensure secure and vetted consumption of thirdâ
 2. Downloads the required IsolationSession runtime binaries and both WinMDs.
 3. Builds and Microsoft-signs x64 and ARM64 MSI/bootstrapper EXE artifacts in
    parallel.
-4. Builds `Microsoft.Windows.AI.IsolationSession.SDK` from those OS outputs,
+4. Builds `Microsoft.AI.IsolationSession.SDK` from those OS outputs,
    including the x64 activation shim and version-selection sidecar.
 5. Publishes separate x64 and ARM64 installer artifacts plus one aggregated
    release artifact with the SDK NuGet, release metadata, and provenance.

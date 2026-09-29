@@ -196,7 +196,7 @@ jobs:
           throw "MonthId '$MonthId' must contain a calendar month from 01 through 12."
       }
       $yearShort = $yearFull % 100
-      $packageId = 'Microsoft.Windows.AI.IsolationSession.SDK'
+      $packageId = 'Microsoft.AI.IsolationSession.SDK'
       $strippedMonthId = $MonthId.Replace('.', '')
       [pscustomobject][ordered]@{
           monthId = $MonthId

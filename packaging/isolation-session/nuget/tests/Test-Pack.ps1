@@ -285,8 +285,8 @@ try {
             Assert-True ($entries -notcontains $entry) "obsolete entry '$entry' is absent"
         }
 
-        $nuspecText = Get-ZipEntryTextFromPath -NupkgPath $expectedNupkg -EntryName 'Microsoft.Windows.AI.IsolationSession.SDK.nuspec'
-        Assert-True ($nuspecText -match '<id>Microsoft\.Windows\.AI\.IsolationSession\.SDK</id>') 'package id is canonical'
+        $nuspecText = Get-ZipEntryTextFromPath -NupkgPath $expectedNupkg -EntryName 'Microsoft.AI.IsolationSession.SDK.nuspec'
+        Assert-True ($nuspecText -match '<id>Microsoft\.AI\.IsolationSession\.SDK</id>') 'package id is canonical'
         Assert-True ($nuspecText -match [regex]::Escape("<version>$($releaseInfo.nugetVersion)</version>")) 'package version includes the patch'
 
         $packagedRuntimeManifestBytes = Get-ZipEntryBytesFromPath `

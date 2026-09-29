@@ -6,7 +6,7 @@
 .DESCRIPTION
     Copyright (c) Microsoft Corporation. All rights reserved.
 
-    Creates Microsoft.Windows.AI.IsolationSession.SDK from source inputs owned
+    Creates Microsoft.AI.IsolationSession.SDK from source inputs owned
     by this repository's pipeline:
 
       - metadata/windows.ai.isolationsession.winmd
@@ -379,7 +379,7 @@ try {
     }
 
     $nuspecText = Get-ZipEntryText -Archive $verify -EntryName "$($releaseInfo.packageId).nuspec"
-    if ($nuspecText -notmatch '<id>Microsoft\.Windows\.AI\.IsolationSession\.SDK</id>') {
+    if ($nuspecText -notmatch '<id>Microsoft\.AI\.IsolationSession\.SDK</id>') {
         throw 'Generated nuspec id does not match the canonical package id.'
     }
     if ($nuspecText -notmatch [regex]::Escape("<version>$($releaseInfo.nugetVersion)</version>")) {

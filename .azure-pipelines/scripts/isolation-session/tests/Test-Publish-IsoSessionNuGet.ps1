@@ -7,7 +7,7 @@ $script = Join-Path (Split-Path $PSScriptRoot -Parent) 'Publish-IsoSessionNuGet.
 
 try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
-    $packagePath = Join-Path $testRoot 'Microsoft.Windows.AI.IsolationSession.SDK.0.202608.1.nupkg'
+    $packagePath = Join-Path $testRoot 'Microsoft.AI.IsolationSession.SDK.0.202608.1.nupkg'
     Set-Content -LiteralPath $packagePath -Value 'package-bytes' -Encoding UTF8
 
     $fakeNuGet = Join-Path $testRoot 'fake-nuget.ps1'

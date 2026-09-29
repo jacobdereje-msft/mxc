@@ -12,7 +12,7 @@ required IsolationSession binaries and two WinMDs, generates the month-specific
    detached Burn engine and the complete bootstrapper EXE;
 2. records per-architecture provenance and a shared release contract;
 3. aggregates the two WinMDs and the signed x64 `IsoSessionApp.dll` activation
-   shim into `Microsoft.Windows.AI.IsolationSession.SDK`; and
+   shim into `Microsoft.AI.IsolationSession.SDK`; and
 4. publishes the per-architecture installer artifacts plus a combined release
    artifact containing the NuGet, installers, provenance, and release metadata.
 
