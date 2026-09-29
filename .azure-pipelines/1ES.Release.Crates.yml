@@ -1,0 +1,106 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
+#
+# MXC Crates.io Release Pipeline (ESRP)
+#
+# Packages mxc-sdk and its internal dependencies and submits them to crates.io
+# through ESRP.
+#
+# Crate versions come from src/Cargo.toml at that ref.
+#
+# Setup and prerequisites: .azure-pipelines/README.md
+
+trigger: none
+pr: none
+
+name: $(SourceBranchName)_$(Date:yyyyMMdd)$(Rev:.r)
+
+resources:
+  repositories:
+  - repository: 1ESPipelineTemplates
+    type: git
+    name: 1ESPipelineTemplates/1ESPipelineTemplates
+    ref: refs/tags/release
+
+parameters:
+  - name: dryRun
+    displayName: 'Dry run — run Cargo publication checks without uploading'
+    type: boolean
+    default: true
+  # Azure expands ESRP tasks before the packaging stage runs, so the ordered
+  # crate names must be available as a compile-time parameter. CI and the real
+  # publish job reject the release if this differs from Cargo's computed order.
+  - name: publishCrates
+    type: object
+    default:
+      # BEGIN MXC-SDK PUBLISH CRATES
+      - mxc-pty
+      - mxc-config-contract
+      - mxc-nanvix-common
+      - mxc-telemetry
+      - mxc-wxc-common
+      - mxc-lxc-common
+      - mxc-bwrap-common
+      - mxc-hyperlight-common
+      - mxc-isolation-session-bindings
+      - mxc-isolation-session-common
+      - mxc-learning-mode-core
+      - mxc-nanvix-runner
+      - mxc-build-common
+      - mxc-learning-mode-windows
+      - mxc-plm
+      - mxc-process-security-environment-spec
+      - mxc-process-container-common
+      - mxc-seatbelt-common
+      - mxc-windows-sandbox-common
+      - mxc-windows-sandbox-lifecycle
+      - mxc-wslc-common
+      - mxc-engine
+      - mxc-sdk
+      # END MXC-SDK PUBLISH CRATES
+
+variables:
+  - group: MXC-ESRP-Signing
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
+  parameters:
+    pool:
+      name: Azure-Pipelines-1ESPT-ExDShared
+      image: windows-2022
+      os: windows
+    customBuildTags:
+    - ES365AIMigrationTooling
+
+    sdl:
+      sourceAnalysisPool:
+        name: Azure-Pipelines-1ESPT-ExDShared
+        image: windows-latest
+        os: windows
+
+    stages:
+    # Create the crate artifact consumed by the publish stage.
+    - stage: Package_Crates_For_Release
+      displayName: 'Package Crates'
+      dependsOn: []
+      jobs:
+      - template: templates/Package.Crates.Job.yml@self
+
+    - stage: Publish_to_CratesIo
+      displayName: 'Publish Crates.io Packages'
+      dependsOn: Package_Crates_For_Release
+      condition: succeeded()
+      jobs:
+      - template: templates/Publish.CratesIo.Job.yml@self
+        parameters:
+          ESRPInfo:
+            serviceName: $(serviceName)
+            tenantId: $(tenantId)
+            azureKeyVaultName: $(azureKeyVaultName)
+            authCertName: $(authCertName)
+            signCertName: $(signCertName)
+            clientId: $(clientId)
+            OwnersEmail: $(Build.RequestedForEmail)
+            ApproversEmail: $(Build.RequestedForEmail)
+          publishCrates: ${{ parameters.publishCrates }}
+          dryRun: ${{ parameters.dryRun }}

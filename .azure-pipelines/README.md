@@ -32,6 +32,24 @@ from crates.io and npmjs, helping ensure secure and vetted consumption of thirdâ
   the fixed-version package publicly to NuGet.org through the `MXC Nuget`
   service connection.
 
+### Rust crates.io release
+
+`1ES.Release.Crates.yml` is a manual pipeline. `dryRun` defaults to `true` and
+runs `cargo publish --dry-run` from any ref after creating the release archives.
+Publishing through ESRP requires an immutable `refs/tags/v*` tag and explicitly
+setting `dryRun` to `false`.
+
+- All release crates use the workspace version, an `mxc-` package name, and
+  complete crates.io metadata.
+- `Invoke-CratePackage.ps1` enforces those rules, derives dependency order, and
+  packages each crate into its own artifact folder.
+- Azure Pipelines packages `mxc-sdk` and its internal dependencies once using
+  the private Rust toolchain and registry.
+- The release pipeline supplies the same dependency-ordered crate names as a
+  compile-time parameter. GitHub CI and real publication reject any difference
+  from Cargo's computed order. The publish job submits and waits for one ESRP
+  release per crate.
+
 ### PR Pipelines
 - GitHub Actions runs the PR validation build automatically on every pull
   request â€” it mirrors the ADO build stages on native hardware for faster
