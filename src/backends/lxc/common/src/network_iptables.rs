@@ -3452,7 +3452,7 @@ mod tests {
         assert!(needs_network(&policy));
     }
 
-    // Alpine's DHCP lease arrives around ten seconds after LXC marks the container running.
+    // A container is given its address over DHCP once its interface is up.
     #[test]
     fn a_plan_that_starts_an_interface_demands_an_address() {
         let mut policy = policy_with_enforcement_mode(NetworkEnforcementMode::Firewall);

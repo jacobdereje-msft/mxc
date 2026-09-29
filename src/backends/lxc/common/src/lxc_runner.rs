@@ -473,6 +473,13 @@ impl LxcScriptRunner {
             );
             StartNetwork::NoInterface
         } else {
+            if let Err(e) = container.skip_dhcp_duplicate_address_detection() {
+                let _ = writeln!(
+                    logger,
+                    "Warning: {}. The container will take longer to receive an address.",
+                    e
+                );
+            }
             StartNetwork::FromContainerConfig
         };
 
@@ -491,8 +498,9 @@ impl LxcScriptRunner {
         let needs_network = needs_network(&request.policy);
 
         if needs_network {
-            // Alpine DHCP leases can arrive at about nine seconds; thirty
-            // seconds leaves margin.
+            // An address arrives a few seconds after the container starts, and
+            // a DHCP client that loses its first request retries with a
+            // widening backoff; thirty seconds covers several retries.
             let timeout = Duration::from_secs(30);
             if let Some(response) = self.enforce_network_readiness(
                 &container_name,

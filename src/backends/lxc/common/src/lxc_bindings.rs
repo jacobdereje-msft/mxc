@@ -4,6 +4,11 @@
 const MANAGED_MOUNTS_BEGIN: &str = "# BEGIN MXC managed mounts (rewritten every run)";
 const MANAGED_MOUNTS_END: &str = "# END MXC managed mounts";
 
+const DHCPCD_CONF_NOARP: &str =
+    "# MXC: the bridge's DHCP server is authoritative for this subnet and\n\
+     # probes each address before it offers it.\n\
+     noarp\n";
+
 /// The filesystem type and options of one kind of `lxc.mount.entry`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MountShape {
@@ -643,6 +648,109 @@ impl LxcContainer {
 
     fn config_file_path(&self) -> String {
         format!("{}/{}/config", self.lxc_path, self.name)
+    }
+
+    /// Stops the guest DHCP client from running duplicate address detection on
+    /// the address it is offered.
+    ///
+    /// `dhcpcd` follows RFC 5227 and defends an offered address with ARP
+    /// probes before it assigns it, which delays the address by several
+    /// seconds. The bridge's DHCP server owns the lease database for the
+    /// subnet and probes each candidate itself before offering it, so the
+    /// container's own probe repeats a check that has already been made.
+    ///
+    /// Images that ship a different DHCP client have no `dhcpcd.conf` and are
+    /// left alone. The container must not be running.
+    pub fn skip_dhcp_duplicate_address_detection(&self) -> Result<(), String> {
+        let Some(rootfs) = self.rootfs_path() else {
+            return Ok(());
+        };
+        let conf_path = format!("{}/etc/dhcpcd.conf", rootfs);
+
+        match std::fs::symlink_metadata(&conf_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "Refusing to configure the container's DHCP client: {} is a symbolic link",
+                    conf_path
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(format!(
+                    "Failed to inspect the container's DHCP client configuration: {} (file: {})",
+                    e, conf_path
+                ));
+            }
+        }
+
+        let existing = std::fs::read_to_string(&conf_path).map_err(|e| {
+            format!(
+                "Failed to read the container's DHCP client configuration: {} (file: {})",
+                e, conf_path
+            )
+        })?;
+        let Some(appendix) = Self::dhcpcd_noarp_appendix(&existing) else {
+            return Ok(());
+        };
+
+        // Appending preserves the file's ownership and mode, which a rewrite
+        // through a temporary file would reset to the host's root.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&conf_path)
+            .map_err(|e| {
+                format!(
+                    "Failed to open the container's DHCP client configuration: {} (file: {})",
+                    e, conf_path
+                )
+            })?;
+        std::io::Write::write_all(&mut file, appendix.as_bytes()).map_err(|e| {
+            format!(
+                "Failed to configure the container's DHCP client: {} (file: {})",
+                e, conf_path
+            )
+        })
+    }
+
+    /// The text to append to a `dhcpcd.conf` so it skips duplicate address
+    /// detection, or `None` when the file already skips it.
+    fn dhcpcd_noarp_appendix(existing: &str) -> Option<String> {
+        if existing.lines().any(|line| line.trim() == "noarp") {
+            return None;
+        }
+        let separator = if existing.is_empty() || existing.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        Some(format!("{}{}", separator, DHCPCD_CONF_NOARP))
+    }
+
+    /// The container's root directory on the host, for the backing stores that
+    /// expose one.
+    fn rootfs_path(&self) -> Option<String> {
+        let config = std::fs::read_to_string(self.config_file_path()).ok()?;
+        Self::configured_rootfs_path(&config)
+    }
+
+    fn configured_rootfs_path(config: &str) -> Option<String> {
+        // LXC lets a later assignment replace an earlier one.
+        let value = config
+            .lines()
+            .filter_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "lxc.rootfs.path").then(|| value.trim())
+            })
+            .next_back()?;
+
+        match value.split_once(':') {
+            None => Some(value.to_string()),
+            Some(("dir", path)) => Some(path.to_string()),
+            // Every other backing store needs to be assembled before its
+            // contents are reachable through a path.
+            Some(_) => None,
+        }
     }
 
     fn current_arch() -> &'static str {
@@ -1312,6 +1420,227 @@ mod tests {
         assert!(
             unconfined.status().is_ok(),
             "a run with no chains to protect must spawn without any privilege"
+        );
+    }
+
+    #[test]
+    fn a_rootfs_directory_is_read_through_its_backing_store_prefix() {
+        assert_eq!(
+            LxcContainer::configured_rootfs_path("lxc.rootfs.path = dir:/var/lib/lxc/box/rootfs\n")
+                .as_deref(),
+            Some("/var/lib/lxc/box/rootfs")
+        );
+    }
+
+    #[test]
+    fn a_rootfs_named_without_a_backing_store_is_taken_as_a_path() {
+        assert_eq!(
+            LxcContainer::configured_rootfs_path("lxc.rootfs.path = /var/lib/lxc/box/rootfs\n")
+                .as_deref(),
+            Some("/var/lib/lxc/box/rootfs")
+        );
+    }
+
+    #[test]
+    fn a_rootfs_that_has_to_be_assembled_is_not_addressed_as_a_path() {
+        for config in [
+            "lxc.rootfs.path = overlayfs:/lower:/upper\n",
+            "lxc.rootfs.path = zfs:tank/box\n",
+            "lxc.rootfs.path = loop:/var/lib/lxc/box.img\n",
+        ] {
+            assert_eq!(
+                LxcContainer::configured_rootfs_path(config),
+                None,
+                "{} names a store that is not reachable as a directory",
+                config.trim()
+            );
+        }
+    }
+
+    #[test]
+    fn the_last_rootfs_assignment_is_the_one_lxc_uses() {
+        let config = "lxc.rootfs.path = dir:/first\nlxc.rootfs.path = dir:/second\n";
+
+        assert_eq!(
+            LxcContainer::configured_rootfs_path(config).as_deref(),
+            Some("/second")
+        );
+    }
+
+    #[test]
+    fn a_config_that_names_no_rootfs_yields_none() {
+        assert_eq!(
+            LxcContainer::configured_rootfs_path("lxc.net.0.type = veth\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dhcp_client_that_already_skips_detection_is_left_alone() {
+        for existing in ["noarp\n", "# comment\nnoarp\n", "  noarp  \n"] {
+            assert_eq!(
+                LxcContainer::dhcpcd_noarp_appendix(existing),
+                None,
+                "{:?} already skips duplicate address detection",
+                existing
+            );
+        }
+    }
+
+    #[test]
+    fn a_mention_of_the_option_that_does_not_set_it_is_not_mistaken_for_it() {
+        for existing in ["#noarp\n", "# noarp\n", "noarp_is_not_this\n"] {
+            assert!(
+                LxcContainer::dhcpcd_noarp_appendix(existing).is_some(),
+                "{:?} does not set the option",
+                existing
+            );
+        }
+    }
+
+    #[test]
+    fn an_appendix_starts_on_its_own_line() {
+        let appendix =
+            LxcContainer::dhcpcd_noarp_appendix("hostname").expect("the option is not set");
+
+        assert!(
+            appendix.starts_with('\n'),
+            "a file with no trailing newline must not have the option joined onto its last line"
+        );
+        assert!(appendix.ends_with("noarp\n"));
+    }
+
+    #[test]
+    fn an_appendix_does_not_add_a_blank_line_to_a_terminated_file() {
+        let appendix =
+            LxcContainer::dhcpcd_noarp_appendix("hostname\n").expect("the option is not set");
+
+        assert!(!appendix.starts_with('\n'));
+    }
+
+    /// Seeds a container whose rootfs is a real directory, so the DHCP client
+    /// configuration can be written and read back.
+    fn container_with_rootfs(
+        dhcpcd_conf: Option<&str>,
+    ) -> (tempfile::TempDir, LxcContainer, std::path::PathBuf) {
+        let base = tempfile::Builder::new()
+            .prefix("mxc-lxc-rootfs-")
+            .tempdir()
+            .expect("create temp LXC directory");
+        let rootfs = base.path().join("box").join("rootfs");
+        std::fs::create_dir_all(rootfs.join("etc")).expect("temp rootfs");
+        let conf = rootfs.join("etc").join("dhcpcd.conf");
+        if let Some(body) = dhcpcd_conf {
+            std::fs::write(&conf, body).expect("seed dhcpcd.conf");
+        }
+        std::fs::write(
+            base.path().join("box").join("config"),
+            format!(
+                "lxc.rootfs.path = dir:{}\n",
+                rootfs.to_str().expect("temp path must be UTF-8")
+            ),
+        )
+        .expect("seed config");
+        let container = LxcContainer::new(
+            "box",
+            Some(base.path().to_str().expect("temp path must be UTF-8")),
+        );
+        (base, container, conf)
+    }
+
+    #[test]
+    fn a_container_is_told_to_skip_duplicate_address_detection() {
+        let (_base, container, conf) = container_with_rootfs(Some("hostname\n"));
+
+        container
+            .skip_dhcp_duplicate_address_detection()
+            .expect("the option is written");
+
+        let body = std::fs::read_to_string(&conf).expect("read dhcpcd.conf");
+        assert!(
+            body.lines().any(|line| line.trim() == "noarp"),
+            "the option must be set, got {:?}",
+            body
+        );
+        assert!(
+            body.starts_with("hostname\n"),
+            "the image's own configuration must survive, got {:?}",
+            body
+        );
+    }
+
+    #[test]
+    fn a_reused_container_does_not_accumulate_the_option() {
+        let (_base, container, conf) = container_with_rootfs(Some("hostname\n"));
+
+        for _ in 0..3 {
+            container
+                .skip_dhcp_duplicate_address_detection()
+                .expect("the option is written");
+        }
+
+        let body = std::fs::read_to_string(&conf).expect("read dhcpcd.conf");
+        assert_eq!(
+            body.lines().filter(|line| line.trim() == "noarp").count(),
+            1,
+            "a container reused across runs must be configured once, got {:?}",
+            body
+        );
+    }
+
+    #[test]
+    fn an_image_with_a_different_dhcp_client_is_left_alone() {
+        let (_base, container, conf) = container_with_rootfs(None);
+
+        container
+            .skip_dhcp_duplicate_address_detection()
+            .expect("an image without dhcpcd is not an error");
+
+        assert!(
+            !conf.exists(),
+            "an image that does not ship dhcpcd must not be given a configuration for it"
+        );
+    }
+
+    #[test]
+    fn a_container_whose_rootfs_is_not_a_directory_is_left_alone() {
+        let (base, _container, _conf) = container_with_rootfs(Some("hostname\n"));
+        std::fs::write(
+            base.path().join("box").join("config"),
+            "lxc.rootfs.path = overlayfs:/lower:/upper\n",
+        )
+        .expect("rewrite config");
+        let container = LxcContainer::new(
+            "box",
+            Some(base.path().to_str().expect("temp path must be UTF-8")),
+        );
+
+        container
+            .skip_dhcp_duplicate_address_detection()
+            .expect("a store that is not a directory is not an error");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dhcp_client_configuration_that_is_a_symlink_is_refused() {
+        let (base, container, conf) = container_with_rootfs(None);
+        let target = base.path().join("outside");
+        std::fs::write(&target, "hostname\n").expect("seed link target");
+        std::os::unix::fs::symlink(&target, &conf).expect("link dhcpcd.conf");
+
+        let error = container
+            .skip_dhcp_duplicate_address_detection()
+            .expect_err("a symbolic link must not be followed out of the rootfs");
+
+        assert!(
+            error.contains("symbolic link"),
+            "the refusal must say why, got {:?}",
+            error
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read link target"),
+            "hostname\n",
+            "the file the link points at must be untouched"
         );
     }
 }
