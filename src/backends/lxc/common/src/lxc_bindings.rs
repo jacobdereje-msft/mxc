@@ -660,71 +660,182 @@ impl LxcContainer {
     /// container's own probe repeats a check that has already been made.
     ///
     /// Images that ship a different DHCP client have no `dhcpcd.conf` and are
-    /// left alone. The container must not be running.
+    /// left alone. The container must not be running: its root filesystem is
+    /// read and written from the host, and a container that is executing can
+    /// replace the paths involved.
     pub fn skip_dhcp_duplicate_address_detection(&self) -> Result<(), String> {
         let Some(rootfs) = self.rootfs_path() else {
             return Ok(());
         };
-        let conf_path = format!("{}/etc/dhcpcd.conf", rootfs);
+        let Some(directory) = Self::resolve_inside_rootfs(&rootfs, "etc")? else {
+            return Ok(());
+        };
+        let conf_path = directory.join("dhcpcd.conf");
+        let displayed = conf_path.display().to_string();
 
-        match std::fs::symlink_metadata(&conf_path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
+        let mut file = match Self::open_guest_file(&conf_path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            // `O_NOFOLLOW` reports a symbolic link in the final position as a
+            // loop rather than opening what it points at.
+            Err(e) if Self::is_symlink_refusal(&e) => {
                 return Err(format!(
                     "Refusing to configure the container's DHCP client: {} is a symbolic link",
-                    conf_path
+                    displayed
                 ));
             }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => {
                 return Err(format!(
-                    "Failed to inspect the container's DHCP client configuration: {} (file: {})",
-                    e, conf_path
+                    "Failed to open the container's DHCP client configuration: {} (file: {})",
+                    e, displayed
                 ));
             }
-        }
+        };
 
-        let existing = std::fs::read_to_string(&conf_path).map_err(|e| {
+        // Everything below works through this one descriptor, so the file that
+        // was inspected is the file that is read and rewritten.
+        let metadata = file.metadata().map_err(|e| {
             format!(
-                "Failed to read the container's DHCP client configuration: {} (file: {})",
-                e, conf_path
+                "Failed to inspect the container's DHCP client configuration: {} (file: {})",
+                e, displayed
             )
         })?;
-        let Some(appendix) = Self::dhcpcd_noarp_appendix(&existing) else {
+        if !metadata.is_file() {
+            return Err(format!(
+                "Refusing to configure the container's DHCP client: {} is not a regular file",
+                displayed
+            ));
+        }
+
+        let mut existing = String::new();
+        std::io::Read::read_to_string(&mut file, &mut existing).map_err(|e| {
+            format!(
+                "Failed to read the container's DHCP client configuration: {} (file: {})",
+                e, displayed
+            )
+        })?;
+        let Some(updated) = Self::dhcpcd_conf_skipping_detection(&existing) else {
             return Ok(());
         };
 
-        // Appending preserves the file's ownership and mode, which a rewrite
-        // through a temporary file would reset to the host's root.
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&conf_path)
-            .map_err(|e| {
-                format!(
-                    "Failed to open the container's DHCP client configuration: {} (file: {})",
-                    e, conf_path
-                )
-            })?;
-        std::io::Write::write_all(&mut file, appendix.as_bytes()).map_err(|e| {
+        // Rewriting through the open descriptor keeps the file's ownership and
+        // mode, which replacing it through a temporary file would reset to the
+        // host's root.
+        Self::rewrite(&mut file, &updated).map_err(|e| {
             format!(
                 "Failed to configure the container's DHCP client: {} (file: {})",
-                e, conf_path
+                e, displayed
             )
         })
     }
 
-    /// The text to append to a `dhcpcd.conf` so it skips duplicate address
-    /// detection, or `None` when the file already skips it.
-    fn dhcpcd_noarp_appendix(existing: &str) -> Option<String> {
-        if existing.lines().any(|line| line.trim() == "noarp") {
+    fn rewrite(file: &mut std::fs::File, contents: &str) -> std::io::Result<()> {
+        use std::io::{Seek, Write};
+
+        file.seek(std::io::SeekFrom::Start(0))?;
+        file.write_all(contents.as_bytes())?;
+        file.set_len(contents.len() as u64)
+    }
+
+    fn open_guest_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // `O_NOFOLLOW` refuses a symbolic link left in place of the file,
+            // and `O_NONBLOCK` stops a device node or FIFO from stalling the
+            // open of a container that is about to start.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        options.open(path)
+    }
+
+    #[cfg(unix)]
+    fn is_symlink_refusal(error: &std::io::Error) -> bool {
+        error.raw_os_error() == Some(libc::ELOOP) || error.raw_os_error() == Some(libc::EMLINK)
+    }
+
+    #[cfg(not(unix))]
+    fn is_symlink_refusal(_error: &std::io::Error) -> bool {
+        false
+    }
+
+    /// Resolves `relative` beneath the container's root filesystem, refusing a
+    /// path that leaves it.
+    ///
+    /// The guest owns everything under its root and can replace a directory
+    /// with a link to one of the host's. Resolving the whole path and checking
+    /// where it lands keeps a link inside the container, where it is ordinary,
+    /// from reaching the host's own configuration.
+    fn resolve_inside_rootfs(
+        rootfs: &str,
+        relative: &str,
+    ) -> Result<Option<std::path::PathBuf>, String> {
+        let root = std::fs::canonicalize(rootfs).map_err(|e| {
+            format!(
+                "Failed to resolve the container's root filesystem: {} (directory: {})",
+                e, rootfs
+            )
+        })?;
+        let resolved = match std::fs::canonicalize(root.join(relative)) {
+            Ok(path) => path,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(format!(
+                    "Failed to resolve {} inside the container's root filesystem: {}",
+                    relative, e
+                ));
+            }
+        };
+
+        if !resolved.starts_with(&root) {
+            return Err(format!(
+                "Refusing to read {} inside the container: it resolves to {}, outside the \
+                 container's root filesystem",
+                relative,
+                resolved.display()
+            ));
+        }
+        Ok(Some(resolved))
+    }
+
+    /// The `dhcpcd.conf` rewritten so its global section skips duplicate
+    /// address detection, or `None` when that section already skips it.
+    ///
+    /// An option only applies to the `interface`, `profile` or `ssid` section
+    /// it follows, so the option is placed ahead of the first section rather
+    /// than at the end of the file, where it would bind to whichever section
+    /// happens to be last.
+    fn dhcpcd_conf_skipping_detection(existing: &str) -> Option<String> {
+        let boundary = Self::first_section_offset(existing);
+        let global = &existing[..boundary];
+        if global.lines().any(|line| line.trim() == "noarp") {
             return None;
         }
-        let separator = if existing.is_empty() || existing.ends_with('\n') {
-            ""
-        } else {
-            "\n"
-        };
-        Some(format!("{}{}", separator, DHCPCD_CONF_NOARP))
+
+        let mut out = String::with_capacity(existing.len() + DHCPCD_CONF_NOARP.len() + 1);
+        out.push_str(global);
+        if !global.is_empty() && !global.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(DHCPCD_CONF_NOARP);
+        out.push_str(&existing[boundary..]);
+        Some(out)
+    }
+
+    /// Where the first `interface`, `profile` or `ssid` section begins, or the
+    /// end of the file when it declares none.
+    fn first_section_offset(config: &str) -> usize {
+        let mut offset = 0;
+        for line in config.split_inclusive('\n') {
+            let keyword = line.split_whitespace().next().unwrap_or("");
+            if matches!(keyword, "interface" | "profile" | "ssid") {
+                return offset;
+            }
+            offset += line.len();
+        }
+        config.len()
     }
 
     /// The container's root directory on the host, for the backing stores that
@@ -1479,7 +1590,7 @@ mod tests {
     fn a_dhcp_client_that_already_skips_detection_is_left_alone() {
         for existing in ["noarp\n", "# comment\nnoarp\n", "  noarp  \n"] {
             assert_eq!(
-                LxcContainer::dhcpcd_noarp_appendix(existing),
+                LxcContainer::dhcpcd_conf_skipping_detection(existing),
                 None,
                 "{:?} already skips duplicate address detection",
                 existing
@@ -1491,7 +1602,7 @@ mod tests {
     fn a_mention_of_the_option_that_does_not_set_it_is_not_mistaken_for_it() {
         for existing in ["#noarp\n", "# noarp\n", "noarp_is_not_this\n"] {
             assert!(
-                LxcContainer::dhcpcd_noarp_appendix(existing).is_some(),
+                LxcContainer::dhcpcd_conf_skipping_detection(existing).is_some(),
                 "{:?} does not set the option",
                 existing
             );
@@ -1499,23 +1610,76 @@ mod tests {
     }
 
     #[test]
-    fn an_appendix_starts_on_its_own_line() {
-        let appendix =
-            LxcContainer::dhcpcd_noarp_appendix("hostname").expect("the option is not set");
+    fn the_option_is_placed_ahead_of_the_first_section() {
+        for header in ["interface wlan0", "profile static_eth0", "ssid home"] {
+            let existing = format!("hostname\n{}\nstatic ip_address=10.0.0.5/24\n", header);
 
-        assert!(
-            appendix.starts_with('\n'),
-            "a file with no trailing newline must not have the option joined onto its last line"
-        );
-        assert!(appendix.ends_with("noarp\n"));
+            let updated = LxcContainer::dhcpcd_conf_skipping_detection(&existing)
+                .expect("the global section does not set the option");
+
+            let option = updated.find("\nnoarp\n").expect("the option is written");
+            let section = updated.find(header).expect("the section survives");
+            assert!(
+                option < section,
+                "the option must not land inside {:?}, got {:?}",
+                header,
+                updated
+            );
+            assert!(
+                updated.contains("static ip_address=10.0.0.5/24"),
+                "the section's own options must survive, got {:?}",
+                updated
+            );
+        }
     }
 
     #[test]
-    fn an_appendix_does_not_add_a_blank_line_to_a_terminated_file() {
-        let appendix =
-            LxcContainer::dhcpcd_noarp_appendix("hostname\n").expect("the option is not set");
+    fn an_option_belonging_to_another_section_does_not_count_as_the_global_one() {
+        let existing = "hostname\ninterface wlan0\nnoarp\n";
 
-        assert!(!appendix.starts_with('\n'));
+        let updated = LxcContainer::dhcpcd_conf_skipping_detection(existing)
+            .expect("only wlan0 skips detection, so the global section still probes");
+
+        assert!(
+            updated.starts_with("hostname\n"),
+            "the global section must keep what it had, got {:?}",
+            updated
+        );
+        let option = updated.find("\nnoarp\n").expect("the option is written");
+        let section = updated
+            .find("interface wlan0")
+            .expect("the section survives");
+        assert!(
+            option < section,
+            "the option must be added globally rather than counted from wlan0, got {:?}",
+            updated
+        );
+    }
+
+    #[test]
+    fn a_file_that_declares_no_section_is_given_the_option_at_the_end() {
+        let updated = LxcContainer::dhcpcd_conf_skipping_detection("hostname\nduid\n")
+            .expect("the option is not set");
+
+        assert!(
+            updated.starts_with("hostname\nduid\n"),
+            "the image's own configuration must survive, got {:?}",
+            updated
+        );
+        assert!(updated.trim_end().ends_with("noarp"));
+    }
+
+    #[test]
+    fn a_global_section_with_no_trailing_newline_keeps_the_option_on_its_own_line() {
+        let updated = LxcContainer::dhcpcd_conf_skipping_detection("hostname")
+            .expect("the option is not set");
+
+        assert!(
+            updated.starts_with("hostname\n"),
+            "the option must not be joined onto the last line, got {:?}",
+            updated
+        );
+        assert!(updated.contains("\nnoarp\n"));
     }
 
     /// Seeds a container whose rootfs is a real directory, so the DHCP client
@@ -1589,6 +1753,26 @@ mod tests {
     }
 
     #[test]
+    fn rewriting_a_longer_configuration_leaves_nothing_of_the_shorter_one() {
+        let (_base, container, conf) = container_with_rootfs(Some(
+            "hostname\ninterface eth0\nstatic ip_address=10.0.0.5/24\n",
+        ));
+
+        container
+            .skip_dhcp_duplicate_address_detection()
+            .expect("the option is written");
+
+        let body = std::fs::read_to_string(&conf).expect("read dhcpcd.conf");
+        assert_eq!(
+            body,
+            "hostname\n# MXC: the bridge's DHCP server is authoritative for this subnet and\n\
+             # probes each address before it offers it.\nnoarp\n\
+             interface eth0\nstatic ip_address=10.0.0.5/24\n",
+            "the rewrite must leave the file exactly as intended"
+        );
+    }
+
+    #[test]
     fn an_image_with_a_different_dhcp_client_is_left_alone() {
         let (_base, container, conf) = container_with_rootfs(None);
 
@@ -1641,6 +1825,56 @@ mod tests {
             std::fs::read_to_string(&target).expect("read link target"),
             "hostname\n",
             "the file the link points at must be untouched"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_rootfs_whose_etc_leaves_the_container_is_refused() {
+        let (base, _container, _conf) = container_with_rootfs(None);
+        let outside = base.path().join("host-etc");
+        std::fs::create_dir_all(&outside).expect("host etc");
+        let host_conf = outside.join("dhcpcd.conf");
+        std::fs::write(&host_conf, "hostname\n").expect("seed the host's own configuration");
+
+        let rootfs = base.path().join("box").join("rootfs");
+        std::fs::remove_dir_all(rootfs.join("etc")).expect("clear the container's etc");
+        std::os::unix::fs::symlink(&outside, rootfs.join("etc")).expect("link etc out");
+        let container = LxcContainer::new(
+            "box",
+            Some(base.path().to_str().expect("temp path must be UTF-8")),
+        );
+
+        let error = container
+            .skip_dhcp_duplicate_address_detection()
+            .expect_err("a directory link that leaves the container must not be followed");
+
+        assert!(
+            error.contains("outside the container's root filesystem"),
+            "the refusal must say why, got {:?}",
+            error
+        );
+        assert_eq!(
+            std::fs::read_to_string(&host_conf).expect("read the host's configuration"),
+            "hostname\n",
+            "the host's own configuration must be untouched"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dhcp_client_configuration_that_is_a_fifo_is_refused_rather_than_waited_on() {
+        let (_base, container, conf) = container_with_rootfs(None);
+        nix::unistd::mkfifo(&conf, nix::sys::stat::Mode::S_IRWXU).expect("make a fifo");
+
+        let error = container
+            .skip_dhcp_duplicate_address_detection()
+            .expect_err("a fifo must not be read as a configuration file");
+
+        assert!(
+            error.contains("not a regular file"),
+            "the refusal must say why, got {:?}",
+            error
         );
     }
 }
