@@ -624,6 +624,28 @@ host probe fails closed, which is why [`platform_support`] drops `"wslc"`, and a
 `Containment::Wslc` run then fails with an error naming the directory it
 searched.
 
+#### Host-gated tests
+
+`tests/wslc_state_aware.rs` drives the live lifecycle — provision, start, exec,
+deprovision — against a host running WSL2 with the WSLC runtime. A cargo
+integration test runs from `target/<profile>/deps/`, one directory below where
+the profile build stages the runtime files, so the suite copies both of them
+beside its own binary first. Without that copy the host probe finds no
+`wslcsdk.dll`, drops `"wslc"`, and every test skips on a host that can run it.
+
+Build the daemon before running the suite, because `--features wslc` does not
+pull it into the dependency graph:
+
+```text
+cargo build -p wxc_wslc_daemon -p mxc-sdk --features mxc-sdk/wslc
+cargo test -p mxc-sdk --features wslc --test wslc_state_aware
+```
+
+| Variable | Effect |
+|----------|--------|
+| `MXC_WSLC_TESTS_REQUIRED=1` | Turns every skip into a failure, so a run that tested nothing is distinguishable from one that passed. |
+| `MXC_WSLC_TEST_IMAGE` | Selects the image to provision from; the default `alpine:latest` is expected to be cached already. |
+
 ## Telemetry consent
 
 MXC only ever collects telemetry on Windows, and only after the end user has

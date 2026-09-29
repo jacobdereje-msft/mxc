@@ -747,7 +747,13 @@ exception messages and stack traces. See
   The isolation-session end-to-end tests skip unless `GetAvailableBackends()`
   reports that backend, which needs both a build with
   `-p:MxcWithIsolationSession=true` and a host running the OS-side service. Set
-  `MXC_ISO_TESTS_REQUIRED=1` (or `true`) to turn those skips into failures.
+  `MXC_ISO_TESTS_REQUIRED=1` (or `true`) to turn those skips into failures. The
+  WSLC end-to-end tests work the same way against
+  `-p:MxcWithWslc=true` and a host running WSL2 with the WSLC runtime, with
+  `MXC_WSLC_TESTS_REQUIRED=1` as their gate and `MXC_WSLC_TEST_IMAGE` selecting
+  the image to provision from (the default `alpine:latest` is expected to be
+  cached already). Both live-host suites share one xUnit collection, so they
+  never run concurrently.
 
 Build/test everything: `dotnet test --solution sdk/dotnet/Microsoft.Mxc.Sdk.slnx`.
 
