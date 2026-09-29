@@ -13,8 +13,9 @@ the individual local test scripts are documented in
 
 - Validation tests **never build from source**. They download the artifacts
   produced by `Build.Windows.Job.yml` / `Build.Linux.Job.yml` /
-  `Build.MacOS.Job.yml` in the same workflow run, so what gets tested is exactly
-  what got built.
+  `Build.MacOS.Job.yml`, and for IsolationSession the test bundle from
+  `Package.IsolationSession.TestBundle.Job.yml`, in the same workflow run, so
+  what gets tested is exactly what got built.
 - The matrix is **declarative**. `scripts/ci/validation-test-matrix.json` is the
   only file you edit to change *what runs where*;
   `scripts/ci/resolve-validation-test-matrix.mjs` validates it and expands a
@@ -27,6 +28,8 @@ the individual local test scripts are documented in
 |------|------|
 | `.github/workflows/Validation.Tests.Scheduled.yml` | Scheduled entry point. Builds artifacts, then calls the matrix job. |
 | `.github/workflows/Validation.Tests.Matrix.Job.yml` | `workflow_call`-only. Resolves the plan and runs the per-family test jobs. |
+| `.github/workflows/Package.IsolationSession.TestBundle.Job.yml` | `workflow_call`-only. Builds the IsolationSession test bundle natively on x64 and arm64 and uploads it as `isolation-session-test-bundle-<target>`. |
+| `scripts/ci/build-isolation-session-test-bundle.ps1` | Builds and assembles the IsolationSession test bundle, and checks that each payload discovers its tests. |
 | `scripts/ci/validation-test-matrix.json` | The matrix: OS versions, backends, triggers, job staggering. |
 | `scripts/ci/resolve-validation-test-matrix.mjs` | Matrix validator + plan expander. Emits the GitHub Actions matrices. |
 | `scripts/ci/prepare-windows-host.ps1` | Per-backend Windows host preparation / prerequisite assertions, plus the `winget` repair and the workload-tooling install. Runs in Windows PowerShell, because it installs the `pwsh` the steps after it use. |
@@ -41,9 +44,10 @@ the individual local test scripts are documented in
 Validation.Tests.Scheduled.yml
   └─ dependency-feed-check
       ├─ windows / linux / macos    →  Build.*.Job.yml  (upload artifacts)
+      ├─ isolation-session-bundle   →  Package.IsolationSession.TestBundle.Job.yml  (upload bundle)
       └─ test-nightly / test-weekly →  Validation.Tests.Matrix.Job.yml
             └─ resolve  →  resolve-validation-test-matrix.mjs --plan <plan>
-                 ├─ windows job (matrix) → download artifact → prepare-windows-host.ps1 → run_backend_validation_tests.ps1
+                 ├─ windows job (matrix) → download artifact (+ bundle for isolation-session) → prepare-windows-host.ps1 → run_backend_validation_tests.ps1
                  ├─ linux   job (matrix) → download artifact → prepare-linux-host.sh   → run_backend_validation_tests.sh
                  └─ macos   job (matrix) → download artifact → prepare-macos-host.sh  → run_backend_validation_tests.sh
 ```
@@ -61,17 +65,20 @@ test jobs only ever `download-artifact`.
 | `windows` | `Build.Windows.Job.yml` — x64 + arm64 release build, unit tests, uploads `wxc-binaries-<target>`. |
 | `linux` | `Build.Linux.Job.yml` — x64 + arm64 release build, unit tests, `wxc_e2e_tests`, uploads `lxc-binaries-<target>`. |
 | `macos` | `Build.MacOS.Job.yml` — arm64 release build, unit + `wxc_e2e_tests`, uploads `mxc-binaries-aarch64-apple-darwin`. |
+| `isolation-session-bundle` | `Package.IsolationSession.TestBundle.Job.yml` — uploads `isolation-session-test-bundle-<target>` for x64 + arm64. |
 | `test-nightly` | Calls the matrix job with `plan: nightly`. Runs on every schedule tick and on a `nightly` dispatch. |
 | `test-weekly` | Calls the matrix job with `plan: weekly`. Runs only on the Sunday cron and on a `weekly` dispatch. |
 
-Build artifacts are kept for 1 day — they exist only to feed these jobs.
+Build artifacts are kept for 1 day — they exist only to feed these jobs. The
+test jobs need the three builds; a failed bundle fails only the IsolationSession
+jobs, at their bundle download.
 
 ### `Validation.Tests.Matrix.Job.yml` — "Create Validation Test Matrix"
 
 | Job | Runner | What it does |
 |-----|--------|--------------|
 | `resolve` | `ubuntu-latest` | Runs the resolver, emits one matrix per OS family plus `has_<family>` flags so an empty family is skipped rather than failing on an empty matrix. |
-| `windows` | `A self-hosted 1ES Pool` | Download artifact → `prepare-windows-host.ps1 -Backend <backend id>` → `run_backend_validation_tests.ps1 -Backend <backend id>`. |
+| `windows` | `A self-hosted 1ES Pool` | Download artifact (plus the test bundle for `isolation-session`) → `prepare-windows-host.ps1 -Backend <backend id>` → `run_backend_validation_tests.ps1 -Backend <backend id>`. |
 | `linux` | `A self-hosted 1ES Pool` | Download artifact → `prepare-linux-host.sh <backend id>` → `run_backend_validation_tests.sh <backend id>` (under `sudo` for LXC). |
 | `macos` | GitHub-hosted `${{ matrix.runner }}` | Download artifact → `prepare-macos-host.sh <backend id>` → `chmod +x` → `run_backend_validation_tests.sh <backend id>`. |
 
@@ -95,7 +102,6 @@ a capability declaration, not a schedule.
 | `id` | Stable key referenced by `triggers`. Also the value shown in job names. |
 | `displayName` | Human label (emitted as `os_name`). |
 | `family` | `windows` \| `linux` \| `macos` — selects the matrix job and the dispatcher. |
-| `prerelease` | `true` marks an unreleased Windows image. Its `id` must be a neutral alias matching `windows-prerelease-<name>`, because the id is public in job names. |
 | `architectures.<x64\|arm64>.target` | Rust target triple. |
 | `architectures.<…>.artifact` | Build artifact name to download. |
 | `architectures.<…>.pool` | 1ES pool name (Windows/Linux). **An empty string means "declared but never scheduled"** — the entry stays documented but dormant. |
@@ -108,6 +114,7 @@ Current platforms:
 |-------------|--------|----------|------------|--------------------------|------------|
 | `windows-prerelease-process-container` | windows | `1es-mxc-windows-prerelease-t1-x64` | `1es-mxc-windows-prerelease-t1-arm64` | process-t1, isolation-session, wslc, windows-sandbox, microvm | process-t1, isolation-session |
 | `windows-prerelease-isolation-session` | windows | `1es-mxc-e2e-win-prerelease-isolationsesh-x64` | `1es-mxc-e2e-win-prerelease-isolationsesh-arm64` | same as above | same as above |
+| `windows-prerelease-26h1` | windows | `1es-mxc-windows-prerelease-26h1-x64` | `1es-mxc-windows-prerelease-26h1-arm64` | process-t1, wslc, windows-sandbox, microvm | process-t1 |
 | `windows-25h2` | windows | `1es-mxc-e2e-windows-25h2-pro-x64` | `1es-mxc-e2e-windows-25h2-pro-arm64` | process-t1, wslc, windows-sandbox, microvm | process-t1, isolation-session |
 | `windows-24h2` | windows | `1es-mxc-e2e-windows-24h2-pro-x64` | `1es-mxc-e2e-windows-24h2-pro-arm64` | process-t1, wslc, windows-sandbox, microvm | process-t1, isolation-session |
 | `windows-23h2` | windows | `1es-mxc-e2e-windows-23h2-enterprise-x64` | *(dormant)* | process-t3, wslc, windows-sandbox, microvm | — |
@@ -182,7 +189,7 @@ backend **and** has a non-empty pool.
 
 | Plan | Wired to | Contents today |
 |------|----------|----------------|
-| `nightly` | scheduled Mon–Sun | 5 Windows platforms, 4 Linux platforms, 3 MacOS platforms |
+| `nightly` | scheduled Mon–Sun | All tests. |
 | `weekly` | scheduled Sunday | empty |
 | `pr` | *(nothing — `Build.yml` does not call the matrix job)* | empty; reserved for a potential future PR-time subset |
 | `enabled` | *(nothing — resolvable locally only)* | reserved for testing this infrastructure and rapid iteration |
@@ -221,7 +228,7 @@ get fixed or wired.
 | Bubblewrap | ✅ Good | |
 | LXC | ✅ Good | Some networking tests fail on distros other than Ubuntu 24.04; seems to be an issue with MXC. |
 | WSLC | ✅ Good | Might have to retry hung jobs - this is an issue with overzealous agent reclaiming. |
-| IsolationSession | ✅ Good | Runs the one-shot suite plus state aware tests (provision/start/exec/stop/deprovision lifecycle). |
+| IsolationSession | ✅ Good | Runs the one-shot and state-aware suites, the Rust SDK in-process and helper tests, the C# end-to-end tests, the Node SDK suite and the COM apartment probe. Fails when the host cannot run isolation sessions, when a suite executes nothing, or when the run changes the set of local accounts. |
 | Windows Sandbox | ⛔ Blocked | Images don't support `Containers-DisposableClientVM` opt. feature |
 | MicroVM | ⛔ Not working | Windows cold and warm starts hang; no Linux suite. The artifact payload is currently commented out in the build jobs. |
 | Seatbelt | ✅ Good | Failures are genuine MXC bugs. |
@@ -269,9 +276,11 @@ a process-container job selects follows from that build.
   (apt/dnf/yum/microdnf), verifies their required commands, and relaxes
   `kernel.apparmor_restrict_unprivileged_userns` (ephemeral CI hosts only).
 - `lxc` — installs the LXC stack, reloads the AppArmor profile, starts and waits
-  for `lxcbr0`, enables bridge netfilter, and makes sure the bridge's NAT rule
-  is in place. On RHEL-likes it needs EPEL first, because Red Hat dropped LXC
-  after RHEL 7 and ships no replacement.
+  for `lxcbr0`, and moves the bridge into firewalld's trusted zone on a host
+  running firewalld. On RHEL-likes it needs EPEL first, because Red Hat dropped
+  LXC after RHEL 7 and ships no replacement. Without the zone assignment the
+  default zone rejects the container's IPv4 DHCP, and a container holding only
+  an IPv6 address fails every network test.
 - `microvm` — asserts the NanVix payload exists.
 
 Every install above goes through two shared helpers rather than its own
@@ -383,6 +392,9 @@ upload directory without CI having to know a single filename.
 Linux and macOS need none of this — those suites log to stdout, and the run
 step tees that into `$RUNNER_TEMP/mxc-ci.log`.
 
+The IsolationSession test bundle downloads under `artifacts/bin`, outside
+`$RUNNER_TEMP`, so it is not uploaded again with the logs.
+
 ## Runbook
 
 Always finish with a local resolve, which runs the full catalog validation:
@@ -442,14 +454,12 @@ passing a distinguishing argument later without touching the matrix.
    already baked into the image — the jobs verify but never enable them.
 2. Add a `platforms` entry: `id`, `displayName`, `family`, and per-architecture
    `target`, `artifact`, `pool`/`runner`, and `backends`.
-3. For a Windows prerelease image set `"prerelease": true` and use a neutral
-   `windows-prerelease-<name>` id — the id appears in public job names.
-4. For a new Linux distro, check that `prepare-linux-host.sh` handles its
+3. For a new Linux distro, check that `prepare-linux-host.sh` handles its
    package manager and service layout. A new package-manager family needs one
    arm in `install_packages` and one entry in `resolve_package_manager`; a
    family whose package *names* differ also needs its column in the tables in
    `install_lxc` and `install_bubblewrap`.
-5. Add it to a plan's `triggers`, then resolve locally.
+4. Add it to a plan's `triggers`, then resolve locally.
 
 ### Wire an unwired backend to a suite
 
@@ -482,8 +492,9 @@ cron *and* a job condition *and* a dispatch choice.
 1. Add the key to `triggers` in the catalog. That is what defines the plan —
    `resolve-validation-test-matrix.mjs` derives its plan list from these keys,
    so it needs no edit.
-2. Add a job that calls `Validation.Tests.Matrix.Job.yml` with that plan, plus a
-   `workflow_dispatch` choice if it should be runnable on demand.
+2. Copy the `test-weekly` job for it, changing the cron and plan in its `if:`
+   and its `plan` input, and add a `workflow_dispatch` choice if it should be
+   runnable on demand.
 
 ### Enable ARM64
 
@@ -533,8 +544,15 @@ jobs:
     needs: dependency-feed-check
     uses: ./.github/workflows/Build.MacOS.Job.yml
 
+  isolation-session-bundle:
+    needs: dependency-feed-check
+    uses: ./.github/workflows/Package.IsolationSession.TestBundle.Job.yml
+
   test:
-    needs: [windows, linux, macos]
+    needs: [windows, linux, macos, isolation-session-bundle]
+    if: >-
+      ${{ !cancelled() && needs.windows.result == 'success' && needs.linux.result == 'success'
+      && needs.macos.result == 'success' }}
     uses: ./.github/workflows/Validation.Tests.Matrix.Job.yml
     with:
       plan: # YOUR PLAN HERE
@@ -542,11 +560,10 @@ jobs:
 
 ## Important to Note
 
-- **A green job does not prove a suite ran.** Several suites (notably
-  IsolationSession) print `SKIPPED` and exit 0 on an unsupported host, and the
-  dispatchers propagate only the exit code. A matrix entry asserts the host
-  *should* support the backend, so a silent skip there is a coverage gap — check
-  the `SKIPPED` line or the executed count in the log, not just the exit status.
+- **A green job does not prove a suite ran.** Several suites print `SKIPPED`
+  and exit 0 on an unsupported host. A matrix entry asserts the host *should*
+  support the backend, so a silent skip there is a coverage gap — check the
+  `SKIPPED` line or the executed count in the log, not just the exit status.
 - **Empty pool = invisible.** A trigger entry pointing at a platform whose pool
   is blank resolves to zero jobs and reports nothing. Resolve locally after any
   catalog edit.
