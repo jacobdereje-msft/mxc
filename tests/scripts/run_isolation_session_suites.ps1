@@ -182,7 +182,7 @@ function Invoke-ScriptSuite {
 
     # The backend probe passed, so a suite-level skip means the suite gave up on
     # a backend that is present.
-    if (@($lines | Where-Object { $_ -match '^SKIPPED:' }).Count -gt 0) {
+    if (@($lines | Where-Object { $_ -cmatch '^SKIPPED:' }).Count -gt 0) {
         return New-SuiteResult -Skipped 1 -Failure 'the suite reported SKIPPED although the backend is available'
     }
     # The script's exit code is the oracle; its summary line only supplies counts.
@@ -384,11 +384,17 @@ foreach ($name in $selected) {
         $result = New-SuiteResult -Failure "payload missing: $($suites[$name].Requires -join ', ')"
     }
     else {
+        # Some suites resolve their own cwd, so pin it: hosts differ (the OS
+        # lab relaunches into %SystemRoot%\system32).
+        Push-Location -LiteralPath $BundleRoot
         try {
             $result = & $suites[$name].Run
         }
         catch {
             $result = New-SuiteResult -Failure $_.Exception.Message
+        }
+        finally {
+            Pop-Location
         }
     }
 
