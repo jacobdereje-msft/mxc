@@ -349,14 +349,14 @@ impl LxcScriptRunner {
                 &normalized
             }
             Ok(None) => request,
-            Err(msg) => return Err(ScriptResponse::error(&msg)),
+            Err(msg) => return Err(ScriptResponse::rejected(&msg)),
         };
         if let Err(msg) = wxc_common::filesystem_access::check_delegation(&request.policy) {
-            return Err(ScriptResponse::error(&msg));
+            return Err(ScriptResponse::rejected(&msg));
         }
 
         if self.config.distribution.is_empty() || self.config.release.is_empty() {
-            return Err(ScriptResponse::error(
+            return Err(ScriptResponse::rejected(
                 "LXC distribution and release are required \
                  (e.g., \"distribution\": \"alpine\", \"release\": \"3.23\")",
             ));
@@ -375,7 +375,7 @@ impl LxcScriptRunner {
             .map(|address| address.to_url())
         {
             if wxc_common::proxy_env::proxy_url_has_credentials(&url) {
-                return Err(ScriptResponse::error(&format!(
+                return Err(ScriptResponse::rejected(&format!(
                     "LXC: network.proxy.url must not carry credentials ('{}'). LXC passes the \
                      proxy URL to lxc-attach as a --set-var command-line argument, and process \
                      arguments are world-readable through /proc/<pid>/cmdline, so the password \
@@ -393,7 +393,7 @@ impl LxcScriptRunner {
             &request.policy,
             uses_directional_keys(&request.policy),
         ) {
-            return Err(ScriptResponse::error(&msg));
+            return Err(ScriptResponse::rejected(&msg));
         }
 
         if self.destroy_on_exit {
@@ -840,11 +840,11 @@ fn lxc_network_policy_support() -> NetworkPolicySupport {
 impl ScriptRunner for LxcScriptRunner {
     fn validate_runner(&self, request: &ExecutionRequest) -> Result<(), ScriptResponse> {
         if request.policy.runtime_network_proxy_specified {
-            return Err(ScriptResponse::error(LXC_RUNTIME_PROXY_UNSUPPORTED));
+            return Err(ScriptResponse::rejected(LXC_RUNTIME_PROXY_UNSUPPORTED));
         }
         validate_network_policy_support(request, lxc_network_policy_support())?;
         if asks_for_capabilities_enforcement(request) {
-            return Err(ScriptResponse::error(LXC_CAPABILITIES_MODE_UNSUPPORTED));
+            return Err(ScriptResponse::rejected(LXC_CAPABILITIES_MODE_UNSUPPORTED));
         }
         Ok(())
     }

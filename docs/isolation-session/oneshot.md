@@ -248,10 +248,12 @@ the rationale for each disposition, and the error mapping live in
 | `isolationSession` / one-shot `appId` | rejected as `malformed_request` — IsolationSession one-shot configuration uses only the stable top-level policy |
 | `processContainer` / `lxc` / `seatbelt` / another backend's section | rejected — only the section matching `containment` is accepted |
 
-Refusals surface as a non-zero exit with the reason on stderr. Refusals raised
-by the shared network-policy validator exit 1 with `error.code =
-"policy_validation"`; the backend's own one-shot refusals still exit -1 with
-`error.code = "backend_error"` and the reason in the message. On the
+Refusals surface as a non-zero exit with the reason on stderr. Policy refusals
+exit 1 with `error.code = "policy_validation"` — both those raised by the shared
+network-policy validator and the backend's own one-shot checks. A host whose
+IsolationSession service is unavailable exits -1 with `error.code =
+"backend_unavailable"`; launch failures, crashes, and timeouts exit -1 with
+`error.code = "backend_error"`. On the
 state-aware surface, structurally representable backend policy failures emit
 `policy_validation`; fields excluded by an exact phase root fail earlier as
 `malformed_request`.

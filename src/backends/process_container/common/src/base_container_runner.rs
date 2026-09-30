@@ -406,24 +406,21 @@ impl BaseContainerRunner {
         );
 
         let psec_version = Self::choose_min_required_psec_version_for_request(request);
-        let version_supported =
-            secenv::supports_version(psec_version).map_err(|error| ScriptResponse {
-                failure_phase: FailurePhase::BackendUnavailable,
-                ..ScriptResponse::error(&format!(
-                    "failed to query Process Security Environment contract support: {error}"
-                ))
-            })?;
+        let version_supported = secenv::supports_version(psec_version).map_err(|error| {
+            ScriptResponse::unavailable(&format!(
+                "failed to query Process Security Environment contract support: {error}"
+            ))
+        })?;
         if !version_supported {
-            return Err(ScriptResponse {
-                failure_phase: FailurePhase::Rejected,
-                ..ScriptResponse::error(if !request.policy.enumerate_paths.is_empty() {
+            return Err(ScriptResponse::rejected(
+                if !request.policy.enumerate_paths.is_empty() {
                     PSEC_ENUMERATE_PATHS_UNSUPPORTED_MSG
                 } else if unrestricted_host_loopback_allowed(&request.policy) {
                     PSEC_INGRESS_UNSUPPORTED_MSG
                 } else {
                     "the required Process Security Environment schema version is not supported"
-                })
-            });
+                },
+            ));
         }
 
         // Launch builtin test proxy if requested (before building spec so we have the port).
@@ -1169,13 +1166,10 @@ impl SandboxBackend for BaseContainerRunner {
         if !self.request_serviceability_confirmed
             && !Self::can_backend_service_request(request).can_service_request()
         {
-            return Err(ScriptResponse {
-                failure_phase: FailurePhase::BackendUnavailable,
-                ..ScriptResponse::error(
-                    "the request cannot be represented by the process security environment \
-                     available on this host",
-                )
-            });
+            return Err(ScriptResponse::unavailable(
+                "the request cannot be represented by the process security environment \
+                 available on this host",
+            ));
         }
         if request.policy.least_privilege_mode {
             return Err(ScriptResponse::rejected(

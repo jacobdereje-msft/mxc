@@ -1306,9 +1306,10 @@ pub enum FailurePhase {
     /// the VM/sandbox bring-up, or a transient resource contention (e.g. a
     /// single-instance backend already running). Generally worth retrying.
     LaunchFailed,
-    /// The request cannot be honored and will not succeed on a blind retry
-    /// without changing the input or host: a policy rejection, or a missing
-    /// host prerequisite (backend/runtime not installed).
+    /// The request's own policy was refused: it cannot be honored as written
+    /// and will not succeed on a blind retry without changing the input. A host
+    /// that cannot run the backend at all is [`BackendUnavailable`] instead, so
+    /// that a caller can tell "fix the request" from "try another tier".
     Rejected,
     /// The launch command succeeded but the guest/sandbox infrastructure failed
     /// before or while running user code (agent rendezvous, channel connect, or
@@ -1445,6 +1446,19 @@ impl ScriptResponse {
     pub fn rejected(msg: &str) -> Self {
         ScriptResponse {
             failure_phase: FailurePhase::Rejected,
+            ..Self::error(msg)
+        }
+    }
+
+    /// Create an unavailable-backend response: this host cannot run the
+    /// selected backend, so a caller may fall back to another tier rather than
+    /// treat the request as refused.
+    ///
+    /// Carries [`FailurePhase::BackendUnavailable`] so the failure reports a
+    /// `backend_unavailable` code.
+    pub fn unavailable(msg: &str) -> Self {
+        ScriptResponse {
+            failure_phase: FailurePhase::BackendUnavailable,
             ..Self::error(msg)
         }
     }

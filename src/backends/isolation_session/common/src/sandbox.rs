@@ -61,14 +61,11 @@ pub fn spawn_one_shot(
 /// workload exits, and whose relay scope borrows the process — into a
 /// non-blocking start with detached relays.
 fn inherit_not_served() -> ScriptResponse {
-    ScriptResponse {
-        failure_phase: FailurePhase::Rejected,
-        ..ScriptResponse::error(
-            "the isolation session backend does not yet support inherited stdio; it serves piped \
-             stdio, which is what an in-process caller receives. Run it through wxc-exec to have \
-             the workload relayed onto this process's own stdio.",
-        )
-    }
+    ScriptResponse::rejected(
+        "the isolation session backend does not yet support inherited stdio; it serves piped \
+         stdio, which is what an in-process caller receives. Run it through wxc-exec to have \
+         the workload relayed onto this process's own stdio.",
+    )
 }
 
 impl SandboxBackend for IsolationSessionRunner {

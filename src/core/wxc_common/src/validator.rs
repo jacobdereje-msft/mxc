@@ -65,13 +65,13 @@ fn validate_legacy_host_lists(request: &ExecutionRequest) -> Result<(), ScriptRe
         && policy.allowed_hosts.is_empty()
         && !policy.blocked_hosts.is_empty()
     {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "blockedHosts requires allowedHosts when network.defaultPolicy='block'",
         ));
     }
 
     if policy.default_network_policy == NetworkPolicy::Allow && !policy.allowed_hosts.is_empty() {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "allowedHosts requires network.defaultPolicy='block'",
         ));
     }

@@ -87,22 +87,38 @@ fn envelope_applies(response: &ScriptResponse) -> bool {
     response.exit_code != 0 && !response.error_message.is_empty()
 }
 
-/// Relay a completed run's captured stderr, terminating it with a newline so
-/// that a diagnostic written afterwards starts on its own line.
+/// Whether the workload itself ran, so `standard_err` holds its output rather
+/// than a copy of an MXC error message.
+fn workload_ran(phase: FailurePhase) -> bool {
+    matches!(phase, FailurePhase::ProcessExited | FailurePhase::Timeout)
+}
+
+/// The captured stderr to relay for a completed run, terminated with a newline
+/// so that a diagnostic written afterwards starts on its own line, or `None`
+/// when there is nothing to relay.
 ///
-/// Error responses that never ran a process copy `error_message` into
+/// A response for a workload that never ran copies `error_message` into
 /// `standard_err`; [`emit_backend_error_envelope`] already carries that text,
-/// so it is skipped here rather than printed twice.
-pub fn emit_captured_stderr(response: &ScriptResponse) {
-    if response.standard_err.is_empty()
-        || (envelope_applies(response) && response.standard_err == response.error_message)
-    {
-        return;
+/// so it is not printed a second time. A workload that did run keeps its stderr
+/// even when a backend mirrors it into `error_message`.
+fn captured_stderr_to_emit(response: &ScriptResponse) -> Option<String> {
+    let duplicates_envelope = !workload_ran(response.failure_phase)
+        && envelope_applies(response)
+        && response.standard_err == response.error_message;
+    if response.standard_err.is_empty() || duplicates_envelope {
+        return None;
     }
     if response.standard_err.ends_with('\n') {
-        eprint!("{}", response.standard_err);
+        Some(response.standard_err.clone())
     } else {
-        eprintln!("{}", response.standard_err);
+        Some(format!("{}\n", response.standard_err))
+    }
+}
+
+/// Relay a completed run's captured stderr.
+pub fn emit_captured_stderr(response: &ScriptResponse) {
+    if let Some(text) = captured_stderr_to_emit(response) {
+        eprint!("{text}");
     }
 }
 
@@ -243,15 +259,62 @@ mod tests {
     #[test]
     fn captured_stderr_skips_the_copy_the_envelope_carries() {
         use crate::models::ScriptResponse;
+
         // A rejection duplicates its message into `standard_err`; the envelope
         // is the machine-readable copy, so nothing is relayed bare here.
-        super::emit_captured_stderr(&ScriptResponse::rejected("unsupported policy"));
+        assert_eq!(
+            super::captured_stderr_to_emit(&ScriptResponse::rejected("unsupported policy")),
+            None
+        );
         // Real workload stderr is relayed even when an MXC error is also set.
-        super::emit_captured_stderr(&ScriptResponse {
-            exit_code: -1,
-            standard_err: "workload wrote this".to_string(),
-            error_message: "script timed out after 2000ms".to_string(),
-            ..Default::default()
-        });
+        assert_eq!(
+            super::captured_stderr_to_emit(&ScriptResponse {
+                exit_code: -1,
+                standard_err: "workload wrote this".to_string(),
+                error_message: "script timed out after 2000ms".to_string(),
+                ..Default::default()
+            })
+            .as_deref(),
+            Some("workload wrote this\n")
+        );
+    }
+
+    #[test]
+    fn a_workload_that_ran_keeps_stderr_mirrored_into_the_error_message() {
+        use crate::models::{FailurePhase, ScriptResponse};
+
+        // Windows Sandbox mirrors a non-zero guest's stderr into
+        // `error_message`; the guest's own output must still reach the caller.
+        for phase in [FailurePhase::ProcessExited, FailurePhase::Timeout] {
+            assert_eq!(
+                super::captured_stderr_to_emit(&ScriptResponse {
+                    exit_code: 42,
+                    standard_err: "boom".to_string(),
+                    error_message: "boom".to_string(),
+                    failure_phase: phase,
+                    ..Default::default()
+                })
+                .as_deref(),
+                Some("boom\n"),
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn captured_stderr_is_terminated_exactly_once() {
+        use crate::models::{FailurePhase, ScriptResponse};
+
+        let relayed = |stderr: &str| {
+            super::captured_stderr_to_emit(&ScriptResponse {
+                exit_code: 1,
+                standard_err: stderr.to_string(),
+                failure_phase: FailurePhase::ProcessExited,
+                ..Default::default()
+            })
+        };
+        assert_eq!(relayed("line\n").as_deref(), Some("line\n"));
+        assert_eq!(relayed("line").as_deref(), Some("line\n"));
+        assert_eq!(relayed(""), None);
     }
 }

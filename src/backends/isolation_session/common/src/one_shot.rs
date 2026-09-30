@@ -34,13 +34,13 @@ use super::IsolationSessionRunner;
 ///   anything applied — so there is nothing to retain.
 fn reject_unsupported_lifecycle(request: &ExecutionRequest) -> Result<(), ScriptResponse> {
     if !request.lifecycle.destroy_on_exit {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "lifecycle.destroyOnExit=false is not supported by the isolation session backend; \
              the session is always stopped and the agent user removed",
         ));
     }
     if request.lifecycle.preserve_policy {
-        return Err(ScriptResponse::error(
+        return Err(ScriptResponse::rejected(
             "lifecycle.preservePolicy=true is not supported by the isolation session backend; \
              it installs no persistent filesystem or network enforcement, so there is none \
              to preserve",

@@ -417,7 +417,7 @@ $null = $results.Add((Run-IsolationSessionTest "legacy network posture rejected"
 # than accepted and dropped. Presence drives the refusal (UiPolicy's default is
 # full lockdown, so an explicit lockdown `ui` is indistinguishable by value).
 $null = $results.Add((Run-IsolationSessionTest "isolation_session_one_shot_ui_rejected.json" `
-    -ExpectedExit -1 `
+    -ExpectedExit 1 `
     -OutputContains @("UI policy is not supported")))
 
 # One-shot lifecycle rejection: the in-proc API exposes no session-lifetime
@@ -425,7 +425,7 @@ $null = $results.Add((Run-IsolationSessionTest "isolation_session_one_shot_ui_re
 # returning. `destroyOnExit: true` (the default) matches that and is accepted;
 # `false` asks for something the backend cannot deliver.
 $null = $results.Add((Run-IsolationSessionTest "isolation_session_one_shot_lifecycle_rejected.json" `
-    -ExpectedExit -1 `
+    -ExpectedExit 1 `
     -OutputContains @("lifecycle.destroyOnExit=false")))
 
 # ---------------- Concurrent one-shot test ----------------

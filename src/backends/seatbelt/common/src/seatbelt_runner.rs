@@ -133,8 +133,9 @@ impl SandboxBackend for SeatbeltScriptRunner {
         // Seatbelt's own invariants — the only home for them, so a caller that
         // builds an ExecutionRequest directly gets the same rules.
         crate::seatbelt_policy::validate_seatbelt_network_policy(&request.policy)
-            .map_err(error_response)?;
-        crate::seatbelt_policy::validate_seatbelt_ui_policy(request).map_err(error_response)?;
+            .map_err(|message| ScriptResponse::rejected(&message))?;
+        crate::seatbelt_policy::validate_seatbelt_ui_policy(request)
+            .map_err(|message| ScriptResponse::rejected(&message))?;
 
         Ok(())
     }
@@ -168,12 +169,15 @@ impl SandboxBackend for SeatbeltScriptRunner {
                     logger,
                 )
                 .map_err(|err| {
-                    error_response(format!("Seatbelt: failed to start network proxy: {err}"))
+                    ScriptResponse::error(&format!(
+                        "Seatbelt: failed to start network proxy: {err}"
+                    ))
                 })?;
         }
         // Build the Seatbelt profile now that the proxy address is resolved, so
         // the reachability rule can be scoped to the proxy's exact host + port.
-        let profile = build_profile_with_proxy(request, proxy.address()).map_err(error_response)?;
+        let profile = build_profile_with_proxy(request, proxy.address())
+            .map_err(|message| ScriptResponse::error(&message))?;
         log_generated_profile(&profile, logger);
 
         // Determine launch method + GUI access from the seatbelt config.
@@ -209,8 +213,8 @@ fn spawn_exec(
     proxy: UnixProxyCoordinator,
 ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
     if gui_access && stdio == StdioMode::Pipes {
-        return Err(error_response(
-            "Seatbelt guiAccess requires inherited stdio and cannot stream over pipes".to_string(),
+        return Err(ScriptResponse::rejected(
+            "Seatbelt guiAccess requires inherited stdio and cannot stream over pipes",
         ));
     }
 
@@ -247,7 +251,7 @@ fn spawn_exec(
     ) {
         Ok(cwd) => cwd,
         Err(e) => {
-            return Err(error_response(format!(
+            return Err(ScriptResponse::error(&format!(
                 "failed to read the current directory to anchor the relative seatbelt working directory: {e}"
             )))
         }
@@ -281,7 +285,7 @@ fn spawn_exec(
 
     let mut child = command
         .spawn()
-        .map_err(|error| error_response(spawn_error(&error)))?;
+        .map_err(|error| ScriptResponse::error(&spawn_error(&error)))?;
 
     let (stdin, stdout, stderr) = match stdio {
         StdioMode::Pipes => (child.stdin.take(), child.stdout.take(), child.stderr.take()),
@@ -301,7 +305,7 @@ fn spawn_exec(
                 let _ = child.kill();
                 let _ = child.wait();
                 let error = out_result.err().or(err_result.err());
-                return Err(error_response(format!(
+                return Err(ScriptResponse::error(&format!(
                     "Seatbelt: failed to wrap stdio pipes: {}",
                     error.map_or_else(|| "unknown error".to_string(), |e| e.to_string()),
                 )));
@@ -335,9 +339,8 @@ fn spawn_open(
     proxy: UnixProxyCoordinator,
 ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
     if stdio == StdioMode::Pipes {
-        return Err(error_response(
-            "Seatbelt launchMethod 'open' launches Terminal.app and cannot stream over pipes"
-                .to_string(),
+        return Err(ScriptResponse::rejected(
+            "Seatbelt launchMethod 'open' launches Terminal.app and cannot stream over pipes",
         ));
     }
 
@@ -349,7 +352,11 @@ fn spawn_open(
     // 1. Write the profile to a secure temp file.
     let profile_path = match write_secure_temp_file("mxc_sb_profile_", profile, 0o600) {
         Ok(p) => p,
-        Err(e) => return Err(error_response(format!("failed to write profile: {e}"))),
+        Err(e) => {
+            return Err(ScriptResponse::error(&format!(
+                "failed to write profile: {e}"
+            )))
+        }
     };
 
     // 2. Resolve the working directory the way the exec path does. Terminal
@@ -366,14 +373,14 @@ fn spawn_open(
         Ok(cwd) => cwd,
         Err(e) => {
             let _ = fs::remove_file(&profile_path);
-            return Err(error_response(format!(
+            return Err(ScriptResponse::error(&format!(
                 "failed to read the current directory to anchor the relative seatbelt working directory: {e}"
             )));
         }
     };
     if let Some(reason) = working_directory_error(&cwd) {
         let _ = fs::remove_file(&profile_path);
-        return Err(error_response(reason));
+        return Err(ScriptResponse::rejected(&reason));
     }
     // An unresolved cwd starts the child at `/`, which is no one's home.
     let home_dir = resolved_cwd.as_ref().map(|_| cwd.clone());
@@ -407,7 +414,7 @@ fn spawn_open(
         Ok(p) => p,
         Err(e) => {
             let _ = fs::remove_file(&profile_path);
-            return Err(error_response(format!(
+            return Err(ScriptResponse::error(&format!(
                 "failed to write helper script: {e}"
             )));
         }
@@ -423,14 +430,16 @@ fn spawn_open(
                 let _ = fs::remove_file(&p);
                 let _ = fs::remove_file(&profile_path);
                 let _ = fs::remove_file(&helper_path);
-                return Err(error_response(format!("failed to rename to .command: {e}")));
+                return Err(ScriptResponse::error(&format!(
+                    "failed to rename to .command: {e}"
+                )));
             }
             new_path
         }
         Err(e) => {
             let _ = fs::remove_file(&profile_path);
             let _ = fs::remove_file(&helper_path);
-            return Err(error_response(format!(
+            return Err(ScriptResponse::error(&format!(
                 "failed to write .command file: {e}"
             )));
         }
@@ -449,7 +458,9 @@ fn spawn_open(
         Ok(c) => c,
         Err(e) => {
             cleanup_files(&[&profile_path, &helper_path, &command_path]);
-            return Err(error_response(format!("failed to launch via open: {e}")));
+            return Err(ScriptResponse::error(&format!(
+                "failed to launch via open: {e}"
+            )));
         }
     };
 
@@ -655,8 +666,9 @@ fn build_sandbox_command(
     new_group: bool,
     logger: &mut Logger,
 ) -> Result<Command, ScriptResponse> {
-    let profile_cstr = CString::new(profile)
-        .map_err(|e| error_response(format!("seatbelt profile contains embedded NUL byte: {e}")))?;
+    let profile_cstr = CString::new(profile).map_err(|e| {
+        ScriptResponse::error(&format!("seatbelt profile contains embedded NUL byte: {e}"))
+    })?;
 
     let _ = writeln!(logger, "Seatbelt: applying sandbox via sandbox_init");
 
@@ -735,14 +747,6 @@ fn log_generated_profile(profile: &str, logger: &mut Logger) {
         let _ = writeln!(logger, "{line}");
     }
     let _ = writeln!(logger, "{PROFILE_LOG_END}");
-}
-
-fn error_response(message: String) -> ScriptResponse {
-    ScriptResponse {
-        exit_code: -1,
-        error_message: message,
-        ..Default::default()
-    }
 }
 
 /// The optional run timeout — `None` when `scriptTimeout` is 0 (wait forever).
