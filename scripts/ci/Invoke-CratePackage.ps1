@@ -165,7 +165,7 @@ foreach ($crate in $order)
     $packageArgs.Add($crate)
 }
 Write-Host "packaging $($order.Count) crates at version $releaseVersion"
-$cargoArgs = @('package', '--locked', '--no-verify', '--manifest-path', $ManifestPath) + [string[]] $packageArgs
+$cargoArgs = @('package', '--locked', '--no-verify', '--registry', 'crates-io', '--manifest-path', $ManifestPath) + [string[]] $packageArgs
 cargo @cargoArgs
 if ($LASTEXITCODE -ne 0) { throw "cargo package failed with exit $LASTEXITCODE" }
 
