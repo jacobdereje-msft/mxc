@@ -88,6 +88,7 @@ pub fn spawn_runner(
 /// `extended_error` detail into the message — rather than flattening
 /// everything to a generic `BackendError`.
 fn map_spawn_error(resp: ScriptResponse) -> MxcError {
+    let code = resp.wire_error_code();
     let mut message = resp.error_message;
     if !resp.extended_error.is_empty() {
         if message.is_empty() {
@@ -96,7 +97,7 @@ fn map_spawn_error(resp: ScriptResponse) -> MxcError {
             message = format!("{message} ({})", resp.extended_error);
         }
     }
-    MxcError::new(resp.failure_phase.error_code(), message)
+    MxcError::new(code, message)
 }
 
 #[cfg(target_os = "linux")]

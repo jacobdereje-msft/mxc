@@ -177,13 +177,14 @@ impl ScriptRunner for IsolationSessionRunner {
             },
             // A spent deadline is an MXC failure, not the workload's own
             // result: it exits -1 with `backend_error`, distinct from the 1
-            // that a refused policy carries.
+            // that a refused policy carries. The diagnostic stays in
+            // `error_message`; `standard_err` is reserved for the workload's
+            // own bytes, which the executor relays for a phase that ran.
             ExecOutcome::TimedOut => ScriptResponse {
+                exit_code: FailurePhase::Timeout.mxc_exit_code(),
+                error_message: format!("Script execution timed out after {} ms", timeout_ms),
                 failure_phase: FailurePhase::Timeout,
-                ..ScriptResponse::error(&format!(
-                    "Script execution timed out after {} ms",
-                    timeout_ms
-                ))
+                ..Default::default()
             },
         }
     }

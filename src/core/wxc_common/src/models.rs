@@ -1377,6 +1377,15 @@ pub struct ScriptResponse {
     /// Structured metadata produced after the sandboxed process exits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_metadata: Option<Box<SandboxOutputMetadata>>,
+    /// Wire error code, when the phase alone is not precise enough.
+    ///
+    /// [`FailurePhase`] crosses the WSLc daemon IPC boundary, where a cached
+    /// image may predate the host, so it cannot gain a variant per code. This
+    /// optional override lets a refusal name a code the phase cannot —
+    /// structurally malformed input, say, rather than a policy refusal —
+    /// while older peers that omit it keep falling back to the phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<MxcErrorCode>,
 }
 
 impl Default for ScriptResponse {
@@ -1389,6 +1398,7 @@ impl Default for ScriptResponse {
             extended_error: String::new(),
             failure_phase: FailurePhase::None,
             output_metadata: None,
+            error_code: None,
         }
     }
 }
@@ -1476,6 +1486,26 @@ impl ScriptResponse {
             failure_phase: FailurePhase::BackendUnavailable,
             ..Self::error(msg)
         }
+    }
+
+    /// Create a malformed-request response: the request is structurally
+    /// invalid rather than refused on policy grounds.
+    ///
+    /// Exits 1 like any other refusal, but reports `malformed_request` so that
+    /// a one-shot caller and a state-aware caller name the same condition the
+    /// same way.
+    pub fn malformed(msg: &str) -> Self {
+        ScriptResponse {
+            error_code: Some(MxcErrorCode::MalformedRequest),
+            ..Self::rejected(msg)
+        }
+    }
+
+    /// The wire error code for this response: the explicit override when one
+    /// is set, otherwise the code its [`FailurePhase`] implies.
+    pub fn wire_error_code(&self) -> MxcErrorCode {
+        self.error_code
+            .unwrap_or_else(|| self.failure_phase.error_code())
     }
 }
 

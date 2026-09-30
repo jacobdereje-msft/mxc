@@ -210,7 +210,9 @@ pub fn validate_state_aware_network_policy_support(
 /// Validates non-backend-specific parts of the request (e.g. non-empty script).
 pub fn validate_common(request: &ExecutionRequest) -> Result<(), ScriptResponse> {
     if request.script_code.is_empty() {
-        return Err(ScriptResponse::rejected(
+        // Structurally invalid rather than refused on policy grounds, and
+        // named the same way as the state-aware `validate_exec_common`.
+        return Err(ScriptResponse::malformed(
             "Script content must not be empty.",
         ));
     }

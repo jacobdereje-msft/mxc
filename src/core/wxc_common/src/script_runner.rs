@@ -150,9 +150,10 @@ pub fn emit_captured_stderr(response: &ScriptResponse) {
 /// exit 1) — the same contract [`emit_backend_error_envelope`] applies once a
 /// response exists.
 ///
-/// The envelope carries the message, so it is not also printed bare.
+/// The buffered diagnostics go to stdout, as [`handle_dry_run_exit`] does, so
+/// that stderr carries the envelope alone and stays machine-parseable.
 pub fn emit_mxc_error_exit(error: &MxcError, logger: &mut Logger) -> ! {
-    eprint!("{}", logger.get_buffer());
+    print!("{}", logger.get_buffer());
     if let Ok(json) = serde_json::to_string(&ResponseEnvelope::<()>::from_error(error)) {
         eprintln!("{json}");
     }
@@ -182,7 +183,7 @@ pub fn emit_backend_error_envelope(response: &ScriptResponse) {
 
     let mut envelope = serde_json::json!({
         "error": {
-            "code": response.failure_phase.error_code().as_str(),
+            "code": response.wire_error_code().as_str(),
             "message": response.error_message,
         }
     });
@@ -262,6 +263,25 @@ mod tests {
         ] {
             assert_eq!(phase.error_code(), MxcErrorCode::BackendError, "{phase:?}");
         }
+    }
+
+    #[test]
+    fn an_explicit_code_outranks_the_phase_it_was_built_from() {
+        use crate::models::{FailurePhase, ScriptResponse};
+        use crate::mxc_error::MxcErrorCode;
+
+        // A malformed request is refused like a policy failure — exit 1 — but
+        // names itself precisely, matching the state-aware surface.
+        let malformed = ScriptResponse::malformed("Script content must not be empty.");
+        assert_eq!(malformed.failure_phase, FailurePhase::Rejected);
+        assert_eq!(super::process_exit_code(&malformed), 1);
+        assert_eq!(malformed.wire_error_code(), MxcErrorCode::MalformedRequest);
+
+        // Without an override the phase still decides.
+        assert_eq!(
+            ScriptResponse::rejected("unsupported policy").wire_error_code(),
+            MxcErrorCode::PolicyValidation
+        );
     }
 
     #[test]

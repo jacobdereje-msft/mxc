@@ -733,14 +733,21 @@ impl LxcScriptRunner {
             },
             // A spent deadline is an MXC failure like any other here — both
             // exit -1 with `backend_error` — but the phase keeps them apart for
-            // diagnostics and telemetry.
-            Err(e) => ScriptResponse {
-                failure_phase: match e {
+            // diagnostics and telemetry. Neither carries workload output, so
+            // the diagnostic stays in `error_message`: `standard_err` is
+            // relayed bare for a phase that ran, which would duplicate it.
+            Err(e) => {
+                let failure_phase = match e {
                     AttachError::Timeout(_) => FailurePhase::Timeout,
                     AttachError::Failed(_) => FailurePhase::PostLaunchFailed,
-                },
-                ..ScriptResponse::error(&format!("Execution failed: {}", e))
-            },
+                };
+                ScriptResponse {
+                    exit_code: failure_phase.mxc_exit_code(),
+                    error_message: format!("Execution failed: {}", e),
+                    failure_phase,
+                    ..Default::default()
+                }
+            }
         };
 
         prepared.tear_down(self.cleanup_policy, self.destroy_on_exit, logger);

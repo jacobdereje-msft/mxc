@@ -602,7 +602,7 @@ impl HyperlightScriptRunner {
                     .map(|p| p.as_os_str().is_empty() || p.exists())
                     .unwrap_or(false);
                 if !parent_ok {
-                    return Err(RunnerError::Policy(format!(
+                    return Err(RunnerError::Setup(format!(
                         "mount path {host:?} does not exist and its parent doesn't either; \
                          refusing to auto-create (fix the path or `mkdir -p` manually)"
                     )));
