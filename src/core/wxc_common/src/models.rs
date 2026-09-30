@@ -1345,6 +1345,18 @@ impl FailurePhase {
             _ => MxcErrorCode::BackendError,
         }
     }
+
+    /// Exit code to report when MXC itself fails a run in this phase.
+    ///
+    /// A rejection exits 1, matching a parser-side rejection, so a refused
+    /// request is distinguishable from an infrastructure failure. A workload
+    /// that ran carries its own code and never consults this.
+    pub fn mxc_exit_code(self) -> i32 {
+        match self {
+            Self::Rejected => 1,
+            _ => -1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1442,11 +1454,12 @@ impl ScriptResponse {
     /// Create a rejection response: the request cannot be honored as written
     /// and no retry will change that.
     ///
-    /// Carries [`FailurePhase::Rejected`] so the executor exits 1 with a
+    /// Carries [`FailurePhase::Rejected`] so the failure reports exit 1 with a
     /// `policy_validation` code. Other MXC failures report -1 with
     /// `backend_error`, while a workload that ran keeps its own exit code.
     pub fn rejected(msg: &str) -> Self {
         ScriptResponse {
+            exit_code: FailurePhase::Rejected.mxc_exit_code(),
             failure_phase: FailurePhase::Rejected,
             ..Self::error(msg)
         }

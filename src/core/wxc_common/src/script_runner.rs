@@ -82,9 +82,12 @@ pub fn handle_dry_run_exit(response: &ScriptResponse, logger: &mut Logger) -> ! 
 /// can tell a refused policy from an MXC-side launch, lifecycle or timeout
 /// failure — all of which report -1. Every other phase keeps the runner's own
 /// exit code, including a faithfully propagated guest code.
+///
+/// A rejection built in-process already carries that code; the mapping also
+/// covers a response decoded from a peer that did not.
 pub fn process_exit_code(response: &ScriptResponse) -> i32 {
     match response.failure_phase {
-        FailurePhase::Rejected => 1,
+        FailurePhase::Rejected => FailurePhase::Rejected.mxc_exit_code(),
         _ => response.exit_code,
     }
 }

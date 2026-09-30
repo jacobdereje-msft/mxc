@@ -59,7 +59,7 @@ impl OneShotError {
         };
 
         ScriptResponse {
-            exit_code: -1,
+            exit_code: failure_phase.mxc_exit_code(),
             standard_err: summary.to_string(),
             error_message: summary.to_string(),
             extended_error: detail,

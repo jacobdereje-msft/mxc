@@ -1108,7 +1108,7 @@ mod tests {
         request.policy.blocked_hosts = vec!["evil.example.com".into()];
         let runner = SeatbeltScriptRunner::new();
         let response = runner.validate(&request).unwrap_err();
-        assert_eq!(response.exit_code, -1);
+        assert_eq!(response.exit_code, 1);
         assert_eq!(
             response.error_message,
             "macOS Seatbelt does not support per-host network filtering. \

@@ -76,6 +76,7 @@ fn inherit_not_served() -> ScriptResponse {
 fn classify_validation_failure(resp: ScriptResponse) -> ScriptResponse {
     if resp.failure_phase == FailurePhase::None {
         ScriptResponse {
+            exit_code: FailurePhase::Rejected.mxc_exit_code(),
             failure_phase: FailurePhase::Rejected,
             ..resp
         }

@@ -2259,7 +2259,11 @@ mod tests {
         let mut runner = WSLContainerRunner::new(&WslcConfig::default());
         let response = runner.execute(&request, &mut logger);
 
-        assert_eq!(response.exit_code, -1, "overlap must fail the run");
+        assert_eq!(response.exit_code, 1, "overlap must be refused");
+        assert_eq!(
+            response.failure_phase,
+            wxc_common::models::FailurePhase::Rejected
+        );
         assert!(
             response.error_message.contains("cannot be enforced"),
             "expected the overlap error, got: {}",
