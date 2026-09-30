@@ -828,8 +828,12 @@ fn launch_working_directory(
             "failed to read the current directory to anchor the relative seatbelt working directory: {e}"
         ))
     })?;
+    // Every branch of `working_directory_error` reports host state — a path
+    // that is a file here, missing search permission, or absent — so the same
+    // request can succeed once the directory is created or its mode repaired.
+    // That is a mixed cause rather than a refusal, so it stays a backend error.
     if let Some(reason) = working_directory_error(&cwd) {
-        return Err(ScriptResponse::rejected(&reason));
+        return Err(ScriptResponse::error(&reason));
     }
     Ok((cwd, resolved_cwd))
 }
