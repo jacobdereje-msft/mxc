@@ -143,6 +143,7 @@ extends:
                       'manifest.json',
                       'bin\x64\wxc-exec.exe',
                       'inproc\mxc-sdk-isolation-session-tests.exe',
+                      'inproc\mxc-sdk-helpers-tests.exe',
                       'inproc\sta_probe.exe',
                       'dotnet\Microsoft.Mxc.Sdk.Tests.exe',
                       'dotnet\mxc_ffi.dll',

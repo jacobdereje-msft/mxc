@@ -106,10 +106,11 @@ jobs:
       try {
           & cargo test --locked --release --target "$(triplet)" `
               -p mxc-sdk --features isolation_session `
-              --test isolation_session --no-run --message-format=json `
+              --test isolation_session --test sdk_helpers `
+              --no-run --message-format=json `
               > $messagesPath
           if ($LASTEXITCODE -ne 0) {
-              throw "Building the mxc-sdk IsolationSession test executable failed with exit code $LASTEXITCODE"
+              throw "Building the mxc-sdk IsolationSession test executables failed with exit code $LASTEXITCODE"
           }
 
           & cargo build --locked --release --target "$(triplet)" `
@@ -138,6 +139,21 @@ jobs:
 
       Write-Host "##vso[task.setvariable variable=mxcSdkIsolationSessionTestExe]$testExe"
       Write-Host "  -> $testExe"
+
+      $helpersExe = Get-Content -LiteralPath $messagesPath | ForEach-Object {
+          try { $_ | ConvertFrom-Json -ErrorAction Stop } catch { $null }
+      } | Where-Object {
+          $_.reason -eq 'compiler-artifact' -and
+          $_.target.name -eq 'sdk_helpers' -and
+          $_.executable
+      } | Select-Object -Last 1 -ExpandProperty executable
+
+      if (-not $helpersExe -or -not (Test-Path -LiteralPath $helpersExe -PathType Leaf)) {
+          throw "Cargo did not report the mxc-sdk SDK helper test executable"
+      }
+
+      Write-Host "##vso[task.setvariable variable=mxcSdkHelpersTestExe]$helpersExe"
+      Write-Host "  -> $helpersExe"
 
       $probeExe = Get-Content -LiteralPath $probeMessagesPath | ForEach-Object {
           try { $_ | ConvertFrom-Json -ErrorAction Stop } catch { $null }
@@ -255,6 +271,8 @@ jobs:
       # in-process rather than through wxc-exec.
       Copy-Item "$(mxcSdkIsolationSessionTestExe)" "$out/inproc/mxc-sdk-isolation-session-tests.exe"
       Write-Host "  -> inproc/mxc-sdk-isolation-session-tests.exe"
+      Copy-Item "$(mxcSdkHelpersTestExe)" "$out/inproc/mxc-sdk-helpers-tests.exe"
+      Write-Host "  -> inproc/mxc-sdk-helpers-tests.exe"
       Copy-Item "$(mxcStaProbeExe)" "$out/inproc/sta_probe.exe"
       Write-Host "  -> inproc/sta_probe.exe"
 
@@ -449,6 +467,20 @@ jobs:
       }
       if (($testList -join "`n") -notmatch '(?m)^[1-9][0-9]* tests, 0 benchmarks\r?$') {
           throw "Packaged in-process test discovery did not find any tests"
+      }
+
+      $helpersExe = "$(outputDirectory)/inproc/mxc-sdk-helpers-tests.exe"
+      if (-not (Test-Path -LiteralPath $helpersExe -PathType Leaf)) {
+          throw "Packaged SDK helper test executable not found: $helpersExe"
+      }
+
+      $helpersList = @(& $helpersExe --list)
+      $helpersList | ForEach-Object { Write-Host $_ }
+      if ($LASTEXITCODE -ne 0) {
+          throw "Packaged SDK helper test discovery failed with exit code $LASTEXITCODE"
+      }
+      if (($helpersList -join "`n") -notmatch '(?m)^[1-9][0-9]* tests, 0 benchmarks\r?$') {
+          throw "Packaged SDK helper test discovery did not find any tests"
       }
 
       $probeExe = "$(outputDirectory)/inproc/sta_probe.exe"
