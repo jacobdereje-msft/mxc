@@ -41,6 +41,8 @@ pub struct MxcErrorDetail {
     pub native_code_utf8: *mut c_char,
     /// An actionable hint, when the failure carries one. Null otherwise.
     pub remediation_utf8: *mut c_char,
+    /// Backend-specific details as owned JSON, or null.
+    pub details_json_utf8: *mut c_char,
 }
 
 impl MxcErrorDetail {
@@ -51,6 +53,7 @@ impl MxcErrorDetail {
             operation_utf8: ptr::null_mut(),
             native_code_utf8: ptr::null_mut(),
             remediation_utf8: ptr::null_mut(),
+            details_json_utf8: ptr::null_mut(),
         }
     }
 
@@ -71,6 +74,9 @@ impl MxcErrorDetail {
             operation_utf8: opt_cstring(error.operation.as_deref()),
             native_code_utf8: opt_cstring(error.native_code.as_deref()),
             remediation_utf8: opt_cstring(error.remediation.as_deref()),
+            details_json_utf8: opt_cstring(
+                error.details.as_ref().map(ToString::to_string).as_deref(),
+            ),
         }
     }
 
@@ -81,6 +87,7 @@ impl MxcErrorDetail {
         free_cstr(&mut self.operation_utf8);
         free_cstr(&mut self.native_code_utf8);
         free_cstr(&mut self.remediation_utf8);
+        free_cstr(&mut self.details_json_utf8);
     }
 }
 
@@ -139,6 +146,37 @@ mod tests {
         error.native_code = Some("0x80070490".into());
         error.remediation = Some("Provision the session first.".into());
         error
+    }
+
+    #[test]
+    fn legacy_backend_details_do_not_appear_in_native_output() {
+        let internal = wxc_common::mxc_error::MxcError::backend_error("legacy truncation")
+            .with_details(serde_json::json!({ "exitCode": 3 }));
+        let mut detail = MxcErrorDetail::from_error(&Error::from(internal));
+        assert!(detail.details_json_utf8.is_null());
+        assert_eq!(
+            read(detail.message_utf8).as_deref(),
+            Some("legacy truncation")
+        );
+        detail.free_strings();
+    }
+
+    #[test]
+    fn policy_enforcement_details_are_owned_and_freed_with_the_native_error() {
+        let mut error = sdk_error_with_detail();
+        error.details = Some(Box::new(serde_json::json!({
+            "policyEnforcement": {"requiredValue": "18446744073709551615"},
+            "outputMetadata": {
+                "captureDenialsError": {"message": "capture failed", "etlPath": "retained.etl"}
+            }
+        })));
+        let mut detail = MxcErrorDetail::from_error(&error);
+        let decoded: serde_json::Value =
+            serde_json::from_str(&read(detail.details_json_utf8).unwrap()).unwrap();
+        assert_eq!(Some(&decoded), error.details.as_deref());
+        detail.free_strings();
+        assert!(detail.details_json_utf8.is_null());
+        detail.free_strings();
     }
 
     /// The whole detail crosses the boundary, not just the message.

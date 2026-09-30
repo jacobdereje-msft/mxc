@@ -31,12 +31,14 @@ internal static unsafe class NativeError
         MxcErrorDetail detail,
         string fallbackMessage)
     {
+        var detailsJson = ToStringOrNull(detail.details_json_utf8);
         return new MxcException(
             (ErrorCode)status,
             ToStringOrNull(detail.message_utf8) ?? fallbackMessage,
             ToStringOrNull(detail.operation_utf8),
             ToStringOrNull(detail.native_code_utf8),
-            ToStringOrNull(detail.remediation_utf8));
+            ToStringOrNull(detail.remediation_utf8),
+            detailsJson is null ? null : System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(detailsJson));
     }
 
     /// <summary>

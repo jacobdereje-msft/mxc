@@ -80,7 +80,7 @@ impl From<MxcErrorCode> for ErrorCode {
 /// this facades already are: read the fields, and build one with
 /// [`Error::new`] rather than by literal, so a later field costs a downstream
 /// crate nothing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Error {
     /// The closed error code.
@@ -96,6 +96,24 @@ pub struct Error {
     pub native_code: Option<String>,
     /// An actionable "how to fix it" hint, when the failure carries one.
     pub remediation: Option<String>,
+    /// Backend-specific structured information, including creation-policy results.
+    pub details: Option<Box<serde_json::Value>>,
+}
+
+impl std::fmt::Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("Error");
+        debug
+            .field("code", &self.code)
+            .field("message", &self.message)
+            .field("operation", &self.operation)
+            .field("native_code", &self.native_code)
+            .field("remediation", &self.remediation);
+        if self.details.is_some() {
+            debug.field("details", &self.details);
+        }
+        debug.finish()
+    }
 }
 
 impl Error {
@@ -108,6 +126,7 @@ impl Error {
             operation: None,
             native_code: None,
             remediation: None,
+            details: None,
         }
     }
 }
@@ -132,7 +151,8 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl From<MxcError> for Error {
-    fn from(error: MxcError) -> Self {
+    fn from(mut error: MxcError) -> Self {
+        let details = error.take_forwarded_details().map(Box::new);
         let (operation, native_code) = match error.api_failure {
             Some(failure) => {
                 let failure = *failure;
@@ -146,6 +166,7 @@ impl From<MxcError> for Error {
             operation,
             native_code,
             remediation: error.remediation,
+            details,
         }
     }
 }
@@ -154,6 +175,52 @@ impl From<MxcError> for Error {
 mod tests {
     use super::*;
     use wxc_common::mxc_error::{ApiFailure as InnerFailure, MxcError};
+
+    #[test]
+    fn legacy_debug_diagnostics_preserve_compact_and_pretty_output() {
+        let error = Error::new(ErrorCode::BackendError, "legacy failure");
+        assert_eq!(
+            format!("{error:?}"),
+            "Error { code: BackendError, message: \"legacy failure\", operation: None, native_code: None, remediation: None }"
+        );
+        assert_eq!(
+            format!("{error:#?}"),
+            "Error {\n    code: BackendError,\n    message: \"legacy failure\",\n    operation: None,\n    native_code: None,\n    remediation: None,\n}"
+        );
+        let converted = Error::from(
+            MxcError::backend_error("legacy failure")
+                .with_details(serde_json::json!({ "exitCode": 3 })),
+        );
+        assert_eq!(format!("{converted:?}"), format!("{error:?}"));
+    }
+
+    #[test]
+    fn legacy_backend_internal_details_do_not_change_public_errors() {
+        let message = "legacy attached output was truncated";
+        let internal =
+            MxcError::backend_error(message).with_details(serde_json::json!({ "exitCode": 3 }));
+        assert_eq!(
+            internal.to_envelope().details,
+            Some(serde_json::json!({ "exitCode": 3 }))
+        );
+        assert_eq!(
+            Error::from(internal),
+            Error::new(ErrorCode::BackendError, message)
+        );
+    }
+
+    #[test]
+    fn policy_enforcement_details_survive_the_sdk_facade() {
+        let details = serde_json::json!({
+            "policyEnforcement": {"requiredValue": "18446744073709551615"}
+        });
+        let envelope = MxcError::policy_validation("blocked")
+            .with_details(details.clone())
+            .to_envelope();
+        let error = Error::from(MxcError::from_envelope(envelope));
+        assert_eq!(error.details.as_deref(), Some(&details));
+        assert!(format!("{error:?}").contains("details: Some"));
+    }
 
     /// The conversion carries the API detail across, rather than keeping only
     /// the code and message.

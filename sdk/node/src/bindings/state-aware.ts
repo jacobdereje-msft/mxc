@@ -88,6 +88,7 @@ function createStateAwareResult(): StateAwareNativeResult {
       operation: null,
       nativeCode: null,
       remediation: null,
+      detailsJson: null,
     },
   };
 }

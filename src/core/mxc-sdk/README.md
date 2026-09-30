@@ -201,6 +201,11 @@ names the call it failed in without supplying a status is a normal, tested
 shape. [`Error::remediation`] is present whenever the failure has an actionable
 hint.
 
+[`Error::details`] holds optional owned JSON explicitly returned through the
+structured-error path. It does not expose every pre-existing backend-internal
+diagnostic automatically. Bindings copy these details before freeing native
+storage; callers should treat them as optional and continue branching on `code`.
+
 [`Error`] is `#[non_exhaustive]` — read its fields freely, but build one with
 [`Error::new`] rather than by literal, so a field added later costs you nothing.
 

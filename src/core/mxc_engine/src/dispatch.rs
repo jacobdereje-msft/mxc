@@ -90,6 +90,17 @@ pub fn spawn_runner(
 fn map_spawn_error(resp: ScriptResponse) -> MxcError {
     use wxc_common::models::FailurePhase;
 
+    if let Some(error) = resp.error {
+        let mut error = MxcError::from_envelope(*error);
+        if !resp.extended_error.is_empty() {
+            if error.message.is_empty() {
+                error.message = resp.extended_error;
+            } else {
+                error.message = format!("{} ({})", error.message, resp.extended_error);
+            }
+        }
+        return error;
+    }
     let mut message = resp.error_message;
     if !resp.extended_error.is_empty() {
         if message.is_empty() {
@@ -304,6 +315,22 @@ mod tests {
     use wxc_common::logger::{Logger, Mode};
     use wxc_common::models::ContainmentBackend;
     use wxc_common::mxc_error::MxcErrorCode;
+
+    #[test]
+    fn policy_enforcement_error_mapping_keeps_extended_launch_diagnostics() {
+        let mut response = wxc_common::models::ScriptResponse::from_mxc_error(
+            wxc_common::mxc_error::MxcError::backend_error("launch failed")
+                .with_details(serde_json::json!({"policyEnforcement": {"reportVersion": 1}})),
+            wxc_common::models::FailurePhase::LaunchFailed,
+        );
+        response.extended_error = "CreateProcessW: 0x80070005".into();
+        let error = map_spawn_error(response);
+        assert!(error.message.contains("0x80070005"));
+        assert_eq!(
+            error.details.unwrap()["policyEnforcement"]["reportVersion"],
+            1
+        );
+    }
 
     fn minimal_policy() -> SandboxPolicy {
         SandboxPolicy {

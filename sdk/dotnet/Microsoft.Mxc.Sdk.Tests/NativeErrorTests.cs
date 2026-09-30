@@ -3,6 +3,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using Microsoft.Mxc.Sdk;
 using Microsoft.Mxc.Sdk.Native;
 using Xunit;
@@ -26,6 +27,30 @@ namespace Microsoft.Mxc.Sdk.Tests;
 /// </remarks>
 public unsafe class NativeErrorTests
 {
+    [Fact]
+    public void StructuredDetailsRemainOwnedAfterNativeStorageIsReleased()
+    {
+        var storage = Marshal.StringToCoTaskMemUTF8(
+            """{"diagnostic":{"value":"9007199254740993","phases":["prepare","launch"]},"outputMetadata":{"captureDenialsError":{"message":"capture failed","etlPath":"retained.etl"}}}""");
+        MxcException exception;
+        try
+        {
+            exception = NativeError.ToException((int)ErrorCode.BackendError,
+                new MxcErrorDetail { details_json_utf8 = (byte*)storage }, "generic failure");
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(storage);
+        }
+        JsonElement diagnostic = exception.Details!.Value.GetProperty("diagnostic");
+        Assert.Equal("9007199254740993", diagnostic.GetProperty("value").GetString());
+        Assert.Equal("launch", diagnostic.GetProperty("phases")[1].GetString());
+        Assert.Equal("retained.etl", exception.Details.Value
+            .GetProperty("outputMetadata").GetProperty("captureDenialsError").GetProperty("etlPath").GetString());
+        Assert.Equal(ErrorCode.BackendError, exception.Code);
+        Assert.Equal("generic failure", exception.Message);
+    }
+
     /// <summary>
     /// Allocate a native UTF-8 string, keeping <see langword="null"/> distinct
     /// from the empty string — the distinction the native contract rests on.

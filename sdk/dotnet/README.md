@@ -966,6 +966,11 @@ account, so a caller in that position still has to deprovision.
 
 ## ABI stability
 
+`MxcException.Details` exposes optional owned JSON explicitly returned through
+the structured-error path. It remains valid after native error storage is freed.
+Existing backend-internal details are not automatically made public; continue
+branching on `Code`, and treat diagnostic fields as optional.
+
 The native `mxc_ffi` C ABI is **not a stable external contract**. This C# SDK
 and the native library are built and versioned **together** from this
 repository at the same version, and the P/Invoke layer is generated from the

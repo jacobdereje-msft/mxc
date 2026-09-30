@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System.Text.Json.Serialization;
+
 namespace Microsoft.Mxc.Sdk;
 
 /// <summary>
@@ -37,6 +39,9 @@ public sealed class MxcException : Exception
     /// <see langword="null"/> otherwise.
     /// </summary>
     public string? Remediation { get; }
+    /// <summary>Backend-specific structured diagnostics supplied by the native runtime.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public System.Text.Json.JsonElement? Details { get; }
 
     /// <summary>Create an exception with the given code and message.</summary>
     public MxcException(ErrorCode code, string message)
@@ -53,13 +58,15 @@ public sealed class MxcException : Exception
         string message,
         string? operation,
         string? nativeCode,
-        string? remediation)
+        string? remediation,
+        System.Text.Json.JsonElement? details = null)
         : base(message)
     {
         Code = code;
         Operation = operation;
         NativeCode = nativeCode;
         Remediation = remediation;
+        Details = details;
     }
 
     /// <summary>

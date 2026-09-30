@@ -41,6 +41,15 @@ child.on('close', (code) => console.log('exit:', code));
 
 ---
 
+## Structured errors and native compatibility
+
+Backend errors can include owned structured JSON in `MxcError.details`.
+Data explicitly returned through the structured-error path survives the native
+buffer lifetime; existing internal-only backend diagnostics are not
+automatically exposed. Treat details as optional and branch on `code`.
+Use SDK bindings and the native library from the same build: the native error
+layout is co-versioned and is not a stable external ABI.
+
 ## Compatibility
 
 <!--

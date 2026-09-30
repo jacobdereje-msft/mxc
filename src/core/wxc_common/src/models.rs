@@ -1327,7 +1327,7 @@ pub enum FailurePhase {
     BackendUnavailable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ScriptResponse {
     pub exit_code: i32,
@@ -1342,9 +1342,31 @@ pub struct ScriptResponse {
     /// Indicates at what phase the failure occurred.
     #[serde(default)]
     pub failure_phase: FailurePhase,
+    /// Structured infrastructure failure, when the backend supplies one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Box<crate::mxc_error::ErrorEnvelope>>,
     /// Structured metadata produced after the sandboxed process exits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_metadata: Option<Box<SandboxOutputMetadata>>,
+}
+
+impl std::fmt::Debug for ScriptResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("ScriptResponse");
+        debug
+            .field("exit_code", &self.exit_code)
+            .field("standard_out", &self.standard_out)
+            .field("standard_err", &self.standard_err)
+            .field("error_message", &self.error_message)
+            .field("extended_error", &self.extended_error)
+            .field("failure_phase", &self.failure_phase);
+        if self.error.is_some() {
+            debug.field("error", &self.error);
+        }
+        debug
+            .field("output_metadata", &self.output_metadata)
+            .finish()
+    }
 }
 
 impl Default for ScriptResponse {
@@ -1356,6 +1378,7 @@ impl Default for ScriptResponse {
             error_message: String::new(),
             extended_error: String::new(),
             failure_phase: FailurePhase::None,
+            error: None,
             output_metadata: None,
         }
     }
@@ -1409,6 +1432,14 @@ impl CaptureDenialsOutput {
 }
 
 impl ScriptResponse {
+    pub fn from_mxc_error(error: crate::mxc_error::MxcError, phase: FailurePhase) -> Self {
+        Self {
+            error: Some(Box::new(error.to_envelope())),
+            failure_phase: phase,
+            ..Self::error(&error.message)
+        }
+    }
+
     /// Create an error response with the given message and exit code -1.
     pub fn error(msg: &str) -> Self {
         ScriptResponse {
@@ -1439,6 +1470,24 @@ mod tests {
         ] {
             assert_eq!(sandbox_absolute_path(input), expected, "input {input:?}");
         }
+    }
+
+    #[test]
+    fn legacy_response_debug_preserves_error_fields() {
+        let response = ScriptResponse::error("legacy failure");
+        assert_eq!(
+            format!("{response:?}"),
+            "ScriptResponse { exit_code: -1, standard_out: \"\", standard_err: \"legacy failure\", error_message: \"legacy failure\", extended_error: \"\", failure_phase: None, output_metadata: None }"
+        );
+        assert_eq!(
+            format!("{response:#?}"),
+            "ScriptResponse {\n    exit_code: -1,\n    standard_out: \"\",\n    standard_err: \"legacy failure\",\n    error_message: \"legacy failure\",\n    extended_error: \"\",\n    failure_phase: None,\n    output_metadata: None,\n}"
+        );
+        let reported = ScriptResponse::from_mxc_error(
+            crate::mxc_error::MxcError::backend_error("reported"),
+            FailurePhase::LaunchFailed,
+        );
+        assert!(format!("{reported:?}").contains("error: Some"));
     }
 
     #[test]

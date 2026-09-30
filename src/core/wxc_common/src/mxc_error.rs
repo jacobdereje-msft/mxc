@@ -118,7 +118,7 @@ impl ApiFailure {
 /// describes the platform call and on `MxcError` when it describes the
 /// failure; *backend-specific* structured data belongs in `details`, which
 /// stays open for that purpose.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MxcError {
     pub code: MxcErrorCode,
@@ -128,6 +128,20 @@ pub struct MxcError {
     pub api_failure: Option<Box<ApiFailure>>,
     /// An actionable "how to fix it" hint, when the failure has one.
     pub remediation: Option<String>,
+    // Public SDK details require an explicit structured-envelope handoff.
+    forward_details: bool,
+}
+
+impl fmt::Debug for MxcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MxcError")
+            .field("code", &self.code)
+            .field("message", &self.message)
+            .field("details", &self.details)
+            .field("api_failure", &self.api_failure)
+            .field("remediation", &self.remediation)
+            .finish()
+    }
 }
 
 /// Renders `code: message`, then the API detail in brackets when present —
@@ -155,6 +169,34 @@ impl fmt::Display for MxcError {
 impl std::error::Error for MxcError {}
 
 impl MxcError {
+    pub fn from_envelope(error: ErrorEnvelope) -> Self {
+        Self {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            api_failure: error.operation.map(|operation| {
+                Box::new(ApiFailure {
+                    operation,
+                    native_code: error.native_code,
+                })
+            }),
+            remediation: error.remediation,
+            forward_details: true,
+        }
+    }
+
+    /// Take details explicitly forwarded through the structured error envelope.
+    /// Other backend-internal details remain available on the existing raw wire.
+    pub fn take_forwarded_details(&mut self) -> Option<Value> {
+        if self.forward_details {
+            self.details.take()
+        } else {
+            None
+        }
+    }
+}
+
+impl MxcError {
     pub fn new(code: MxcErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -162,6 +204,7 @@ impl MxcError {
             details: None,
             api_failure: None,
             remediation: None,
+            forward_details: false,
         }
     }
 

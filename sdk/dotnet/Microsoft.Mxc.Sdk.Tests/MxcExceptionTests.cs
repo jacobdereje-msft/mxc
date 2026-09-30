@@ -3,6 +3,7 @@
 
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.Mxc.Sdk;
 using Xunit;
 
@@ -20,6 +21,14 @@ namespace Microsoft.Mxc.Sdk.Tests;
 /// </remarks>
 public class MxcExceptionTests
 {
+    [Fact]
+    public void AbsentStructuredDetailsDoNotAddJsonProperties()
+    {
+        var exception = new MxcException(ErrorCode.BackendError, "legacy failure");
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(exception));
+        Assert.False(json.RootElement.TryGetProperty(nameof(MxcException.Details), out _));
+    }
+
     [Fact]
     public void OnlyTheCodeAndMessageConstructorIsPublic()
     {

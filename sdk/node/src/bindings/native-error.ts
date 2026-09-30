@@ -11,6 +11,7 @@ export interface AbiErrorDetail {
   operation: unknown | null;
   nativeCode: unknown | null;
   remediation: unknown | null;
+  detailsJson: unknown | null;
 }
 
 export const AbiErrorDetailType = koffi.struct('MxcNodeJsonErrorDetail', {
@@ -18,6 +19,7 @@ export const AbiErrorDetailType = koffi.struct('MxcNodeJsonErrorDetail', {
   operation: 'void *',
   nativeCode: 'void *',
   remediation: 'void *',
+  detailsJson: 'void *',
 });
 
 export function decodeString(pointer: unknown): string | undefined {
@@ -55,13 +57,18 @@ export function nativeStatusError(
   detail: Partial<AbiErrorDetail> = {},
   fallback = `native runtime failed with status ${status}`,
 ): MxcError {
+  const json = decodeString(detail.detailsJson);
+  const details: unknown = json === undefined ? {} : JSON.parse(json);
+  if (details === null || typeof details !== 'object' || Array.isArray(details)) {
+    throw new MxcError('backend_error', 'native runtime returned malformed error details');
+  }
   return new MxcError({
     code: _errorCodeForNativeStatus(status),
     message: decodeString(detail.message) ?? fallback,
     operation: decodeString(detail.operation),
     nativeCode: decodeString(detail.nativeCode),
     remediation: decodeString(detail.remediation),
-    details: { ffiStatus: status },
+    details: { ...details, ffiStatus: status },
   });
 }
 
