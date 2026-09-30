@@ -97,9 +97,13 @@ so read it again after `Wait`, `WaitAsync` or `Kill` to see them.
 Use `ProcessContainerContainment.PolicyEnforcement` with schema
 `0.10.0-alpha`. Leaving the property null preserves legacy behavior without
 new policy reports. An explicit `new PolicyEnforcementOptions()` requests
-pass-through; an omitted `Mode` selects pass-through and needs no experimental opt-in.
-Mutation and `maxAttempts` are not accepted inputs.
-Without CPSE2, the reporting settings are ignored; normal sandbox
+pass-through; its `Mode` defaults to pass-through and needs no experimental opt-in.
+`Mutate` permits only supported tightening and additionally requires
+`SandboxRequest.Experimental = true` when CPSE2 is available.
+`MaxAttempts` counts CPSE2 negotiation calls including the first, defaults to 8,
+and accepts 1-64. Initial decision-free unavailability may additionally invoke
+legacy creation once.
+Without CPSE2, the settings and additional gate are ignored; normal sandbox
 restrictions and tier selection are preserved.
 
 Successful runs expose `OutputMetadata.PolicyEnforcement`; live handles expose
@@ -116,9 +120,9 @@ describes the evaluation; `Result.Details` contains a bounded, non-exhaustive
 list of `NativePolicyDetail` constraints. Default serialization preserves the
 array and lossless uint64 strings. The earlier single-detail report is rejected.
 The native library and OS must implement the matching multi-action layout.
-The attempt journal retains the native decision without modifying the caller's
-request; policy refusals and workloads are not retried. See the
-[backend reporting contract](../../docs/process-container/guide.md#creation-policy-results).
+The attempt journal describes normalized configuration changes without modifying
+the caller's request, and no workload is retried. See the
+[backend contract and repair limits](../../docs/process-container/guide.md#creation-policy-results-and-mutation).
 Existing public exception constructors and error fields are unchanged. New
 null diagnostic properties are omitted from default JSON serialization.
 Deploy the SDK and native library from the same build together: the enlarged
