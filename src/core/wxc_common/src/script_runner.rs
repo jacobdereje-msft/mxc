@@ -3,6 +3,7 @@
 
 use crate::logger::Logger;
 use crate::models::{ExecutionRequest, FailurePhase, ScriptResponse};
+use crate::mxc_error::{MxcError, ResponseEnvelope};
 use crate::validator::{validate_common, validate_network_policy_support, NetworkPolicySupport};
 
 /// Trait for executing scripts within a containment backend.
@@ -136,6 +137,26 @@ pub fn emit_captured_stderr(response: &ScriptResponse) {
         Some((text, false)) => eprint!("{text}"),
         None => {}
     }
+}
+
+/// Emit a structured JSON error envelope for a failure raised *before* any run
+/// produced a [`ScriptResponse`], then exit with the code it maps to.
+///
+/// Backend selection fails before a response exists, so the typed
+/// [`MxcErrorCode`] the engine already carries is the only classification
+/// available. Preserving it keeps an unusable host (`backend_unavailable`,
+/// exit -1) distinguishable from a request the caller must change
+/// (`policy_validation` / `unsupported_containment` / `malformed_request`,
+/// exit 1) — the same contract [`emit_backend_error_envelope`] applies once a
+/// response exists.
+///
+/// The envelope carries the message, so it is not also printed bare.
+pub fn emit_mxc_error_exit(error: &MxcError, logger: &mut Logger) -> ! {
+    eprint!("{}", logger.get_buffer());
+    if let Ok(json) = serde_json::to_string(&ResponseEnvelope::<()>::from_error(error)) {
+        eprintln!("{json}");
+    }
+    std::process::exit(error.code.mxc_exit_code());
 }
 
 /// Emit a structured JSON error envelope on stderr when a completed run carries

@@ -23,7 +23,7 @@ use std::time::Instant;
 use wxc_common::models::ScriptResponse;
 
 #[cfg(target_os = "macos")]
-use wxc_common::script_runner::handle_dry_run_exit;
+use wxc_common::script_runner::{emit_mxc_error_exit, handle_dry_run_exit};
 
 #[derive(Parser)]
 #[command(name = "mxc-exec-mac", about = "macOS sandbox executor for MXC")]
@@ -156,11 +156,7 @@ fn run_seatbelt(request: &ExecutionRequest, logger: &mut Logger) -> ! {
     let run_start = Instant::now();
     let response = match mxc_engine::run(request, logger) {
         Ok(response) => response,
-        Err(e) => {
-            eprintln!("error: {}", e.message);
-            eprint!("{}", logger.get_buffer());
-            process::exit(1);
-        }
+        Err(e) => emit_mxc_error_exit(&e.to_mxc_error(), logger),
     };
     let run_elapsed = run_start.elapsed();
     let _ = writeln!(logger, "Runner completed in {}ms", run_elapsed.as_millis());

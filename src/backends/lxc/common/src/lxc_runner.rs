@@ -8,14 +8,14 @@ use std::time::{Duration, Instant};
 
 use wxc_common::logger::Logger;
 use wxc_common::models::{
-    ContainerPolicy, ExecutionRequest, LifecycleConfig, LxcConfig, NetworkEnforcementMode,
-    ScriptResponse,
+    ContainerPolicy, ExecutionRequest, FailurePhase, LifecycleConfig, LxcConfig,
+    NetworkEnforcementMode, ScriptResponse,
 };
 use wxc_common::script_runner::ScriptRunner;
 use wxc_common::validator::{validate_network_policy_support, NetworkPolicySupport};
 
 use crate::filesystem_mounts;
-use crate::lxc_bindings::{ContainerFirewall, LxcContainer, StartNetwork};
+use crate::lxc_bindings::{AttachError, ContainerFirewall, LxcContainer, StartNetwork};
 use crate::network_ingress::IngressManager;
 use crate::network_iptables::{
     needs_network, plan_network, uses_directional_keys, EgressHookPoint, NetworkIptablesManager,
@@ -676,7 +676,16 @@ impl LxcScriptRunner {
                 error_message: String::new(),
                 ..Default::default()
             },
-            Err(e) => ScriptResponse::error(&format!("Execution failed: {}", e)),
+            // A spent deadline is an MXC failure like any other here — both
+            // exit -1 with `backend_error` — but the phase keeps them apart for
+            // diagnostics and telemetry.
+            Err(e) => ScriptResponse {
+                failure_phase: match e {
+                    AttachError::Timeout(_) => FailurePhase::Timeout,
+                    AttachError::Failed(_) => FailurePhase::PostLaunchFailed,
+                },
+                ..ScriptResponse::error(&format!("Execution failed: {}", e))
+            },
         };
 
         prepared.tear_down(self.cleanup_policy, self.destroy_on_exit, logger);

@@ -26,7 +26,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use wxc_common::logger::{Logger, Mode};
 #[cfg(test)]
 use wxc_common::models::NetworkPolicy;
-use wxc_common::models::{ExecutionRequest, ScriptResponse, WslcConfig};
+use wxc_common::models::{ExecutionRequest, FailurePhase, ScriptResponse, WslcConfig};
 use wxc_common::mxc_error::MxcError;
 use wxc_common::sandbox_process::StdioMode;
 use wxc_common::script_runner::ScriptRunner;
@@ -1319,6 +1319,15 @@ impl WSLContainerRunner {
             exit_code: if outcome.timed_out() { -1 } else { exit_code },
             standard_out: stdout,
             standard_err: stderr,
+            // A spent deadline is an MXC failure, not the workload's own
+            // result. An unconfirmed stop is reported as a post-launch failure
+            // instead: the deadline is only half the story when the container
+            // may still be running.
+            failure_phase: match outcome {
+                WaitOutcome::Exited => FailurePhase::None,
+                WaitOutcome::TimedOutTerminated => FailurePhase::Timeout,
+                WaitOutcome::TimedOutUnconfirmed => FailurePhase::PostLaunchFailed,
+            },
             // The unconfirmed wording is not pedantry: the stop is only ever a
             // request, so claiming a termination the SDK never confirmed can
             // tell a caller their sandboxed code is dead while it is running.

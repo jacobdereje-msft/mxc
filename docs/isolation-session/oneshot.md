@@ -259,9 +259,10 @@ exit 1 with `error.code = "policy_validation"` — both those raised by the shar
 network-policy validator and the backend's own one-shot checks. A host whose
 IsolationSession service is unavailable exits -1 with `error.code =
 "backend_unavailable"`; MXC-side launch, lifecycle, and timeout failures exit -1
-with `error.code = "backend_error"`. Once `create_process` succeeds the
-workload's own exit code is propagated, so a crashing workload keeps its status
-rather than reporting -1. On the
+with `error.code = "backend_error"`. A workload that ran to completion
+propagates its own exit code, so a crashing workload keeps its status rather
+than reporting -1; a workload that outran `scriptTimeout` does not, since a
+spent deadline is an MXC failure. On the
 state-aware surface, structurally representable backend policy failures emit
 `policy_validation`; fields excluded by an exact phase root fail earlier as
 `malformed_request`.
