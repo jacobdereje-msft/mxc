@@ -44,11 +44,12 @@ setting `dryRun` to `false`.
 - `Invoke-CratePackage.ps1` enforces those rules, derives dependency order, and
   packages each crate into its own artifact folder.
 - Azure Pipelines packages `mxc-sdk` and its internal dependencies once using
-  the private Rust toolchain and registry.
-- The release pipeline supplies the same dependency-ordered crate names as a
-  compile-time parameter. GitHub CI and real publication reject any difference
-  from Cargo's computed order. The publish job submits and waits for one ESRP
-  release per crate.
+  the private Rust toolchain and dependency feed.
+- The publish template owns the dependency-ordered crate list; release operators
+  cannot override it at queue time. GitHub CI rejects any difference from
+  Cargo's computed order.
+- Every release runs Cargo's crates.io dry run before the publish job submits
+  and waits for one ESRP release per crate.
 
 ### PR Pipelines
 - GitHub Actions runs the PR validation build automatically on every pull

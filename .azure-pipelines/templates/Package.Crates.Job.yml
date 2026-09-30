@@ -2,7 +2,8 @@
 # Licensed under the MIT License.
 #
 # Packages mxc-sdk and its internal dependencies into .crate files using
-# `cargo package --no-verify`. Publication checks belong to the publish job.
+# `cargo package --no-verify`. The publish template always performs Cargo's
+# crates.io dry run before a production ESRP release.
 #
 # The steps hold no logic: Invoke-CratePackage.ps1 does the packaging and
 # derives the crate list from the workspace, so adding a crate needs no edit
@@ -23,7 +24,6 @@ jobs:
 
     variables:
       outDir: $(Build.SourcesDirectory)/out/crates
-      cargoRegistry: Mxc-Azure-Feed
 
     templateContext:
       rust:
@@ -47,7 +47,7 @@ jobs:
         inputs:
           targetType: filePath
           filePath: $(Build.SourcesDirectory)/scripts/ci/Invoke-CratePackage.ps1
-          arguments: -OutDir '$(outDir)' -Registry '$(cargoRegistry)'
+          arguments: -OutDir '$(outDir)'
           pwsh: true
           workingDirectory: $(Build.SourcesDirectory)
 

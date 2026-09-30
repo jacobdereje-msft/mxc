@@ -16,9 +16,6 @@ param
     [Parameter(Mandatory, ParameterSetName = 'Package')]
     [string] $OutDir,
 
-    [Parameter(ParameterSetName = 'Package')]
-    [string] $Registry,
-
     [Parameter(Mandatory, ParameterSetName = 'Validate')]
     [switch] $ValidateOnly,
 
@@ -167,12 +164,6 @@ foreach ($crate in $order)
     $packageArgs.Add('-p')
     $packageArgs.Add($crate)
 }
-if ($Registry)
-{
-    $packageArgs.Add('--registry')
-    $packageArgs.Add($Registry)
-}
-
 Write-Host "packaging $($order.Count) crates at version $releaseVersion"
 $cargoArgs = @('package', '--locked', '--no-verify', '--manifest-path', $ManifestPath) + [string[]] $packageArgs
 cargo @cargoArgs
