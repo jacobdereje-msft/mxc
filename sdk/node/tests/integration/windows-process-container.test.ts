@@ -156,7 +156,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
         'processcontainer',
         `proxy-builtin-${schemaVersion}`,
       );
-      config.version = '0.8.0-alpha';
+      config.version = '0.9.0-alpha';
       config.processContainer!.capabilities = ['internetClient'];
       config.network = {
         proxy: { builtinTestServer: true },
@@ -197,7 +197,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
         'processcontainer',
         `proxy-ext-${schemaVersion}`,
       );
-      config.version = '0.8.0-alpha';
+      config.version = '0.9.0-alpha';
       config.processContainer!.capabilities = ['internetClient'];
       config.network = {
         proxy: { localhost: port },

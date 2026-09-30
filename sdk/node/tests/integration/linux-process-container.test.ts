@@ -48,7 +48,7 @@ async function runLxc(
 }
 
 function outboundNetwork(version: (typeof supportedVersions)[number]) {
-  return version.compare('0.8.0-alpha') >= 0
+  return version.compare('0.9.0-alpha') >= 0
     ? { egress: { default: 'allow' as const } }
     : { allowOutbound: true };
 }
@@ -200,7 +200,7 @@ describe('Linux LXC Container default-deny network posture', {
       "echo \"ifaces=[$(awk 'NR>2 {sub(/:.*/, \"\", $1); print $1}' /proc/net/dev | sort | tr '\\n' ' ')]\"; " +
       "ip -4 addr show lo 2>/dev/null | grep -q '127.0.0.1' && echo 'loopback=up' || echo 'loopback=down'";
     const config: ContainerConfig = {
-      version: '0.8.0-alpha',
+      version: '0.9.0-alpha',
       containment: 'lxc',
       containerId: 'lxc-deny-080',
       process: { commandLine: probe },

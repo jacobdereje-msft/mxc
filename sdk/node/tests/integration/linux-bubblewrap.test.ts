@@ -93,7 +93,7 @@ describe(`Linux Bubblewrap (schema ${schemaVersion})`, {
 // `defaultPolicy` and `allowedHosts` were removed in 0.9, and below 0.8 they
 // run on the shared host network, so this block needs no slirp4netns. The 0.9
 // spelling is covered separately below.
-const PROXY_SCHEMA = '0.7.0-alpha';
+const PROXY_SCHEMA = '0.9.0-alpha';
 describe(`Linux Bubblewrap network proxy, legacy shape (schema ${PROXY_SCHEMA})`, {
   skip: !isLinuxBubblewrap
     ? 'Linux Bubblewrap proxy tests require Linux with bwrap installed'

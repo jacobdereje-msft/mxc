@@ -186,7 +186,7 @@ for existing adapter implementations.
 
 #### Bubblewrap proxy-only egress (Linux)
 
-Schema `0.8.0-alpha`+ `network.proxy` needs host tooling and kernel permissions
+Schema `0.9.0-alpha` `network.proxy` needs host tooling and kernel permissions
 that not every Linux host grants. Bubblewrap reports whether this host can
 enforce it as the `ProxyEnforcement` capability, and names what is missing in
 `Warnings` when it cannot. The TypeScript and Rust SDKs surface the same answer
@@ -352,7 +352,7 @@ hosts fail rather than broadening the policy.
 
 Capability names and backend combinations are validated by the native SDK.
 `LearningMode`, denial capture, and ProcessContainer directional networking
-require schema `0.8.0-alpha` or later.
+require schema `0.9.0-alpha` or later.
 
 #### Seatbelt options
 
@@ -481,7 +481,7 @@ proxy-only runtime override through `WslcExecOptions.RuntimeConfig`.
 
 ### Directional networking (schema 0.8)
 
-Schema `0.8.0-alpha` adds directional egress, ingress/host-loopback, CIDR,
+Schema `0.9.0-alpha` adds directional egress, ingress/host-loopback, CIDR,
 protocol, and port rules, plus a runtime proxy value:
 
 ```csharp
