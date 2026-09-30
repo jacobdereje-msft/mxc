@@ -429,7 +429,7 @@ $null = $results.Add((Run-IsolationSessionTest "isolation_session_one_shot_lifec
     -OutputContains @("lifecycle.destroyOnExit=false")))
 
 $null = $results.Add((Run-IsolationSessionTest "isolation_session_one_shot_env_rejected.json" `
-    -ExpectedExit -1 `
+    -ExpectedExit 1 `
     -OutputContains @("process.env without process.inheritDefaultEnv=true is not supported")))
 
 # ---------------- Concurrent one-shot test ----------------
