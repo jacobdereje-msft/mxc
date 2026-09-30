@@ -1158,24 +1158,35 @@ impl SandboxBackend for BaseContainerRunner {
                  access",
             ));
         }
-        // Dry-run validates the schema and policy shape without selecting or
-        // probing a host capture provider.
-        if request.dry_run {
-            return Ok(());
-        }
-        if !self.request_serviceability_confirmed
-            && !Self::can_backend_service_request(request).can_service_request()
-        {
-            return Err(ScriptResponse::unavailable(
-                "the request cannot be represented by the process security environment \
-                 available on this host",
-            ));
-        }
         if request.policy.least_privilege_mode {
             return Err(ScriptResponse::rejected(
                 "the process-security-environment path cannot be combined with \
                  processContainer.leastPrivilege because it does not support LPAC tokens",
             ));
+        }
+        // Dry-run validates the schema and policy shape without selecting or
+        // probing a host capture provider.
+        if request.dry_run {
+            return Ok(());
+        }
+        if !self.request_serviceability_confirmed {
+            match Self::can_backend_service_request(request) {
+                BaseContainerRequestDecision::Serviceable => {}
+                // A policy this path cannot represent is the caller's to change;
+                // every other verdict is a host capability to route around.
+                BaseContainerRequestDecision::PolicyIncompatible => {
+                    return Err(ScriptResponse::rejected(
+                        "the process security environment cannot enforce this request's \
+                         policy as written",
+                    ));
+                }
+                _ => {
+                    return Err(ScriptResponse::unavailable(
+                        "the request cannot be represented by the process security \
+                         environment available on this host",
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -3265,6 +3276,28 @@ mod tests {
             .validate(&request)
             .expect_err("blockedHosts is not yet supported");
         assert!(err.error_message.contains("blockedHosts"));
+    }
+
+    #[test]
+    fn validate_runner_rejects_least_privilege_before_host_probing() {
+        let runner = BaseContainerRunner::new();
+        let mut request = ExecutionRequest {
+            dry_run: true,
+            ..Default::default()
+        };
+        request.policy.least_privilege_mode = true;
+
+        // The LPAC refusal is the caller's to fix, so it must precede both the
+        // dry-run return and the serviceability probe that would otherwise
+        // report it as an unavailable host.
+        let err = runner
+            .validate(&request)
+            .expect_err("leastPrivilege is not supported on this path");
+        assert!(err.error_message.contains("leastPrivilege"));
+        assert_eq!(
+            err.failure_phase,
+            wxc_common::models::FailurePhase::Rejected
+        );
     }
 
     #[test]
