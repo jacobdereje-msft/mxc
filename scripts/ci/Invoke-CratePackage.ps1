@@ -35,6 +35,7 @@ foreach ($package in $metadata.packages) { $members[$package.name] = $package }
 if (-not $members.ContainsKey($RootCrate)) { throw "root crate '$RootCrate' is not a member of $ManifestPath" }
 
 $releaseVersion = $members[$RootCrate].version
+$rootManifestPath = $members[$RootCrate].manifest_path
 $releaseRequirement = "^$releaseVersion"
 $visited = [System.Collections.Generic.HashSet[string]]::new()
 $visiting = [System.Collections.Generic.HashSet[string]]::new()
@@ -158,6 +159,10 @@ if ($ValidateOnly)
     return
 }
 
+Write-Host "fetching locked $RootCrate dependencies"
+cargo fetch --locked --manifest-path $rootManifestPath
+if ($LASTEXITCODE -ne 0) { throw "cargo fetch failed with exit $LASTEXITCODE" }
+
 $packageArgs = [System.Collections.Generic.List[string]]::new()
 foreach ($crate in $order)
 {
@@ -165,7 +170,7 @@ foreach ($crate in $order)
     $packageArgs.Add($crate)
 }
 Write-Host "packaging $($order.Count) crates at version $releaseVersion"
-$cargoArgs = @('package', '--locked', '--no-verify', '--registry', 'crates-io', '--manifest-path', $ManifestPath) + [string[]] $packageArgs
+$cargoArgs = @('package', '--offline', '--locked', '--no-verify', '--registry', 'crates-io', '--manifest-path', $ManifestPath) + [string[]] $packageArgs
 cargo @cargoArgs
 if ($LASTEXITCODE -ne 0) { throw "cargo package failed with exit $LASTEXITCODE" }
 
