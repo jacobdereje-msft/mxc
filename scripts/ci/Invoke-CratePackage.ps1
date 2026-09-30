@@ -21,6 +21,7 @@ param
 
     [string] $ManifestPath = 'src/Cargo.toml',
     [string] $RootCrate = 'mxc-sdk',
+    [string] $PackageRegistry = 'crates-io',
     [string] $ReleasePipelinePath = '.azure-pipelines/1ES.Release.Crates.yml',
     [string] $PublishTemplatePath = '.azure-pipelines/templates/Publish.CratesIo.Job.yml'
 )
@@ -170,7 +171,7 @@ foreach ($crate in $order)
     $packageArgs.Add($crate)
 }
 Write-Host "packaging $($order.Count) crates at version $releaseVersion"
-$cargoArgs = @('package', '--offline', '--locked', '--no-verify', '--registry', 'crates-io', '--manifest-path', $ManifestPath) + [string[]] $packageArgs
+$cargoArgs = @('package', '--offline', '--locked', '--no-verify', '--registry', $PackageRegistry, '--manifest-path', $ManifestPath) + [string[]] $packageArgs
 cargo @cargoArgs
 if ($LASTEXITCODE -ne 0) { throw "cargo package failed with exit $LASTEXITCODE" }
 

@@ -47,7 +47,7 @@ jobs:
         inputs:
           targetType: filePath
           filePath: $(Build.SourcesDirectory)/scripts/ci/Invoke-CratePackage.ps1
-          arguments: -OutDir '$(outDir)'
+          arguments: -OutDir '$(outDir)' -PackageRegistry 'Mxc-Azure-Feed'
           pwsh: true
           workingDirectory: $(Build.SourcesDirectory)
 
