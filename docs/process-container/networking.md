@@ -272,7 +272,8 @@ requests do not fall back because AppContainer cannot preserve their peer or hos
 The AppContainer fallback is selected only when its capability mapping preserves the request. Explicit egress rules,
 proxy peer identity, and host-loopback allow fail with a typed unsupported-policy error when PSEC cannot enforce them:
 `wxc-exec` exits 1 and emits `{"error":{"code":"policy_validation", ...}}`, the same shape a parser-side rejection
-produces. Every other failure — a launch failure, a crash, a timeout, or an unavailable backend — retains exit -1.
+produces. MXC infrastructure failures — a launch failure, a timeout, or an unavailable backend — retain exit -1,
+while a workload that actually ran propagates its own exit code.
 
 ## 3. WFP enforcement
 

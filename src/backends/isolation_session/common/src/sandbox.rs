@@ -68,17 +68,27 @@ fn inherit_not_served() -> ScriptResponse {
     )
 }
 
+/// Tag an unclassified validation refusal as a policy rejection.
+///
+/// A check that already classified itself keeps that phase: a host missing the
+/// runtime API is not a refused request, and the dispatcher reads the phase
+/// back to tell the two apart.
+fn classify_validation_failure(resp: ScriptResponse) -> ScriptResponse {
+    if resp.failure_phase == FailurePhase::None {
+        ScriptResponse {
+            failure_phase: FailurePhase::Rejected,
+            ..resp
+        }
+    } else {
+        resp
+    }
+}
+
 impl SandboxBackend for IsolationSessionRunner {
     fn validate(&self, request: &ExecutionRequest) -> Result<(), ScriptResponse> {
         // One-shot runs the whole lifecycle, so provision-phase rules apply to
         // the whole call — the same check the run-to-completion path makes.
-        //
-        // Everything it refuses is a caller-fixable request problem, and the
-        // phase is what the dispatcher reads back to classify it.
-        ScriptRunner::validate_runner(self, request).map_err(|resp| ScriptResponse {
-            failure_phase: FailurePhase::Rejected,
-            ..resp
-        })
+        ScriptRunner::validate_runner(self, request).map_err(classify_validation_failure)
     }
 
     /// Provision, start, and hand back the exec's live pipes.
@@ -382,6 +392,26 @@ impl Drop for OneShotSandboxProcess {
 mod tests {
     use super::*;
     use wxc_common::mxc_error::MxcErrorCode;
+
+    /// An unclassified refusal is the caller's to fix, but a check that already
+    /// named its phase keeps it — otherwise an unavailable host would be
+    /// reported as a refused policy and exit 1.
+    #[test]
+    fn validation_tagging_only_fills_in_an_unclassified_phase() {
+        assert_eq!(
+            classify_validation_failure(ScriptResponse::error("no phase set")).failure_phase,
+            FailurePhase::Rejected
+        );
+        assert_eq!(
+            classify_validation_failure(ScriptResponse::unavailable("runtime API missing"))
+                .failure_phase,
+            FailurePhase::BackendUnavailable
+        );
+        assert_eq!(
+            classify_validation_failure(ScriptResponse::rejected("bad policy")).failure_phase,
+            FailurePhase::Rejected
+        );
+    }
 
     /// A launch failure that also failed to clean up keeps its own
     /// classification, so a caller still branches on the real cause.

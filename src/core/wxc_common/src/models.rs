@@ -1441,8 +1441,8 @@ impl ScriptResponse {
     /// and no retry will change that.
     ///
     /// Carries [`FailurePhase::Rejected`] so the executor exits 1 with a
-    /// `policy_validation` code instead of the -1 / `backend_error` that every
-    /// other failure shares.
+    /// `policy_validation` code. Other MXC failures report -1 with
+    /// `backend_error`, while a workload that ran keeps its own exit code.
     pub fn rejected(msg: &str) -> Self {
         ScriptResponse {
             failure_phase: FailurePhase::Rejected,

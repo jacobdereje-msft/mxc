@@ -72,9 +72,9 @@ pub fn handle_dry_run_exit(response: &ScriptResponse, logger: &mut Logger) -> ! 
 /// Process exit code for a completed run.
 ///
 /// A rejected request exits 1, matching a parser-side rejection, so a caller
-/// can tell a refused policy from a crash, a launch failure or a timeout — all
-/// of which report -1 (see [`FailurePhase::Timeout`]). Every other phase keeps
-/// the runner's own exit code, including a faithfully propagated guest code.
+/// can tell a refused policy from an MXC-side launch, lifecycle or timeout
+/// failure — all of which report -1. Every other phase keeps the runner's own
+/// exit code, including a faithfully propagated guest code.
 pub fn process_exit_code(response: &ScriptResponse) -> i32 {
     match response.failure_phase {
         FailurePhase::Rejected => 1,
@@ -93,32 +93,34 @@ fn workload_ran(phase: FailurePhase) -> bool {
     matches!(phase, FailurePhase::ProcessExited | FailurePhase::Timeout)
 }
 
-/// The captured stderr to relay for a completed run, terminated with a newline
-/// so that a diagnostic written afterwards starts on its own line, or `None`
-/// when there is nothing to relay.
+/// The captured stderr to relay for a completed run, paired with whether a
+/// terminating newline still has to be written so that a diagnostic printed
+/// afterwards starts on its own line. `None` when there is nothing to relay.
+///
+/// Borrows `standard_err` rather than copying it: captured workload output is
+/// unbounded and every executor binary relays it through here.
 ///
 /// A response for a workload that never ran copies `error_message` into
 /// `standard_err`; [`emit_backend_error_envelope`] already carries that text,
 /// so it is not printed a second time. A workload that did run keeps its stderr
 /// even when a backend mirrors it into `error_message`.
-fn captured_stderr_to_emit(response: &ScriptResponse) -> Option<String> {
+fn captured_stderr_to_emit(response: &ScriptResponse) -> Option<(&str, bool)> {
     let duplicates_envelope = !workload_ran(response.failure_phase)
         && envelope_applies(response)
         && response.standard_err == response.error_message;
     if response.standard_err.is_empty() || duplicates_envelope {
         return None;
     }
-    if response.standard_err.ends_with('\n') {
-        Some(response.standard_err.clone())
-    } else {
-        Some(format!("{}\n", response.standard_err))
-    }
+    let text = response.standard_err.as_str();
+    Some((text, !text.ends_with('\n')))
 }
 
 /// Relay a completed run's captured stderr.
 pub fn emit_captured_stderr(response: &ScriptResponse) {
-    if let Some(text) = captured_stderr_to_emit(response) {
-        eprint!("{text}");
+    match captured_stderr_to_emit(response) {
+        Some((text, true)) => eprintln!("{text}"),
+        Some((text, false)) => eprint!("{text}"),
+        None => {}
     }
 }
 
@@ -235,7 +237,7 @@ mod tests {
             super::process_exit_code(&ScriptResponse::rejected("unsupported policy")),
             1
         );
-        // -1 stays -1 for a crash, a launch failure or a timeout, so a caller
+        // -1 is an MXC-side launch, lifecycle or timeout failure, so a caller
         // that sees 1 knows the request itself was refused.
         for phase in [FailurePhase::LaunchFailed, FailurePhase::Timeout] {
             assert_eq!(
@@ -274,8 +276,8 @@ mod tests {
                 error_message: "script timed out after 2000ms".to_string(),
                 ..Default::default()
             })
-            .as_deref(),
-            Some("workload wrote this\n")
+            .map(|(text, newline)| (text.to_string(), newline)),
+            Some(("workload wrote this".to_string(), true))
         );
     }
 
@@ -294,8 +296,8 @@ mod tests {
                     failure_phase: phase,
                     ..Default::default()
                 })
-                .as_deref(),
-                Some("boom\n"),
+                .map(|(text, newline)| (text.to_string(), newline)),
+                Some(("boom".to_string(), true)),
                 "{phase:?}"
             );
         }
@@ -312,9 +314,11 @@ mod tests {
                 failure_phase: FailurePhase::ProcessExited,
                 ..Default::default()
             })
+            .map(|(text, newline)| (text.to_string(), newline))
         };
-        assert_eq!(relayed("line\n").as_deref(), Some("line\n"));
-        assert_eq!(relayed("line").as_deref(), Some("line\n"));
+        // Already terminated, so no second newline is added.
+        assert_eq!(relayed("line\n"), Some(("line\n".to_string(), false)));
+        assert_eq!(relayed("line"), Some(("line".to_string(), true)));
         assert_eq!(relayed(""), None);
     }
 }

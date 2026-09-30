@@ -252,8 +252,10 @@ Refusals surface as a non-zero exit with the reason on stderr. Policy refusals
 exit 1 with `error.code = "policy_validation"` — both those raised by the shared
 network-policy validator and the backend's own one-shot checks. A host whose
 IsolationSession service is unavailable exits -1 with `error.code =
-"backend_unavailable"`; launch failures, crashes, and timeouts exit -1 with
-`error.code = "backend_error"`. On the
+"backend_unavailable"`; MXC-side launch, lifecycle, and timeout failures exit -1
+with `error.code = "backend_error"`. Once `create_process` succeeds the
+workload's own exit code is propagated, so a crashing workload keeps its status
+rather than reporting -1. On the
 state-aware surface, structurally representable backend policy failures emit
 `policy_validation`; fields excluded by an exact phase root fail earlier as
 `malformed_request`.

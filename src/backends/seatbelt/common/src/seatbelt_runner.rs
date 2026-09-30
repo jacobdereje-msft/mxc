@@ -243,19 +243,7 @@ fn spawn_exec(
     //
     // The cwd is anchored first: `current_dir` resolves a relative value against
     // the launching process, so `HOME` must name that same absolute path.
-    let resolved_cwd = resolved_working_directory_opt(request);
-    let cwd = match absolute_working_directory(
-        resolved_cwd
-            .as_deref()
-            .unwrap_or(UNRESOLVED_WORKING_DIRECTORY),
-    ) {
-        Ok(cwd) => cwd,
-        Err(e) => {
-            return Err(ScriptResponse::error(&format!(
-                "failed to read the current directory to anchor the relative seatbelt working directory: {e}"
-            )))
-        }
-    };
+    let (cwd, resolved_cwd) = launch_working_directory(request)?;
     let home_dir = resolved_cwd.as_ref().map(|_| cwd.as_str());
     apply_clean_environment(&mut command, request, proxy.address(), home_dir);
 
@@ -364,24 +352,13 @@ fn spawn_open(
     //    itself, and needs an absolute target. Fail here rather than inside a
     //    Terminal window: `open -W` reports its own exit status, not the
     //    helper's.
-    let resolved_cwd = resolved_working_directory_opt(request);
-    let cwd = match absolute_working_directory(
-        resolved_cwd
-            .as_deref()
-            .unwrap_or(UNRESOLVED_WORKING_DIRECTORY),
-    ) {
-        Ok(cwd) => cwd,
+    let (cwd, resolved_cwd) = match launch_working_directory(request) {
+        Ok(resolved) => resolved,
         Err(e) => {
             let _ = fs::remove_file(&profile_path);
-            return Err(ScriptResponse::error(&format!(
-                "failed to read the current directory to anchor the relative seatbelt working directory: {e}"
-            )));
+            return Err(e);
         }
     };
-    if let Some(reason) = working_directory_error(&cwd) {
-        let _ = fs::remove_file(&profile_path);
-        return Err(ScriptResponse::rejected(&reason));
-    }
     // An unresolved cwd starts the child at `/`, which is no one's home.
     let home_dir = resolved_cwd.as_ref().map(|_| cwd.clone());
 
@@ -830,6 +807,28 @@ fn working_directory_error(path: &str) -> Option<String> {
             "seatbelt working directory '{path}' cannot be used: {e}"
         )),
     }
+}
+
+/// The absolute cwd to launch in, plus the request's own resolved value so a
+/// caller can tell an explicit directory from the inherited one.
+fn launch_working_directory(
+    request: &ExecutionRequest,
+) -> Result<(String, Option<String>), ScriptResponse> {
+    let resolved_cwd = resolved_working_directory_opt(request);
+    let cwd = absolute_working_directory(
+        resolved_cwd
+            .as_deref()
+            .unwrap_or(UNRESOLVED_WORKING_DIRECTORY),
+    )
+    .map_err(|e| {
+        ScriptResponse::error(&format!(
+            "failed to read the current directory to anchor the relative seatbelt working directory: {e}"
+        ))
+    })?;
+    if let Some(reason) = working_directory_error(&cwd) {
+        return Err(ScriptResponse::rejected(&reason));
+    }
+    Ok((cwd, resolved_cwd))
 }
 
 /// Does the calling user hold search permission on `path`? Answers for the real
