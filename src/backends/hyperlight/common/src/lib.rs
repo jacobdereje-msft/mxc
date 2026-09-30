@@ -99,7 +99,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wxc_common::logger::Logger;
-use wxc_common::models::{ExecutionRequest, HyperlightRuntime, NetworkPolicy, ScriptResponse};
+use wxc_common::models::{
+    ExecutionRequest, FailurePhase, HyperlightRuntime, NetworkPolicy, ScriptResponse,
+};
 use wxc_common::script_runner::ScriptRunner;
 use wxc_common::validator::{validate_network_policy_support, NetworkPolicySupport};
 
@@ -139,6 +141,8 @@ pub fn is_whp_available() -> bool {
 enum RunnerError {
     /// Pre-spawn validation failures (missing image, unsupported policy).
     Preflight(String),
+    /// The guest call exceeded `scriptTimeout`.
+    Timeout(Duration),
     /// Runtime construction, install, or execution failure.
     Runtime(String),
 }
@@ -147,6 +151,11 @@ impl std::fmt::Display for RunnerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RunnerError::Preflight(msg) => write!(f, "hyperlight preflight error: {msg}"),
+            RunnerError::Timeout(elapsed) => write!(
+                f,
+                "hyperlight runtime error: execution timed out after {:.1}s",
+                elapsed.as_secs_f64()
+            ),
             RunnerError::Runtime(msg) => write!(f, "hyperlight runtime error: {msg}"),
         }
     }
@@ -157,7 +166,21 @@ impl RunnerError {
         ScriptResponse {
             exit_code: ERROR_EXIT_CODE,
             error_message: self.to_string(),
+            failure_phase: self.failure_phase(),
             ..Default::default()
+        }
+    }
+
+    /// Every variant reports [`ERROR_EXIT_CODE`], so the phase is what lets a
+    /// caller tell a timeout from an execution failure without inferring it
+    /// from `exit_code == -1`.
+    fn failure_phase(&self) -> FailurePhase {
+        match self {
+            // Preflight mixes a missing guest image with refused policy, so it
+            // stays unclassified rather than claiming to be either one.
+            RunnerError::Preflight(_) => FailurePhase::None,
+            RunnerError::Timeout(_) => FailurePhase::Timeout,
+            RunnerError::Runtime(_) => FailurePhase::PostLaunchFailed,
         }
     }
 }
@@ -804,10 +827,7 @@ impl ScriptRunner for HyperlightScriptRunner {
                 // next call boots another from the rewind point.
                 self.guest = None;
                 let err = match failure {
-                    RunError::TimedOut(timeout) => RunnerError::Runtime(format!(
-                        "execution timed out after {:.1}s",
-                        timeout.as_secs_f64()
-                    )),
+                    RunError::TimedOut(timeout) => RunnerError::Timeout(timeout),
                     RunError::Failed(msg) => RunnerError::Runtime(format!("run: {msg}")),
                 };
                 logger.log_line(&err.to_string());

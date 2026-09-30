@@ -57,7 +57,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use wxc_common::logger::Logger;
-use wxc_common::models::{ExecutionRequest, NetworkAction, NetworkPolicy, ScriptResponse};
+use wxc_common::models::{
+    ExecutionRequest, FailurePhase, NetworkAction, NetworkPolicy, ScriptResponse,
+};
 use wxc_common::script_runner::ScriptRunner;
 use wxc_common::validator::{validate_network_policy_support, NetworkPolicySupport};
 
@@ -200,7 +202,22 @@ impl NanVixError {
         ScriptResponse {
             exit_code: ERROR_EXIT_CODE,
             error_message: self.to_string(),
+            failure_phase: self.failure_phase(),
             ..Default::default()
+        }
+    }
+
+    /// Every variant reports [`ERROR_EXIT_CODE`], so the phase is what lets a
+    /// caller tell a watchdog kill from a spawn failure without inferring it
+    /// from `exit_code == -1`.
+    fn failure_phase(&self) -> FailurePhase {
+        match self {
+            // Preflight mixes missing host artifacts with refused policy, so it
+            // stays unclassified rather than claiming to be either one.
+            NanVixError::Preflight(_) => FailurePhase::None,
+            NanVixError::Platform(_) => FailurePhase::LaunchFailed,
+            NanVixError::Runtime(_) => FailurePhase::PostLaunchFailed,
+            NanVixError::Timeout { .. } => FailurePhase::Timeout,
         }
     }
 }
@@ -1684,6 +1701,42 @@ mod tests {
         // Should fail on missing binaries (not on snapshot specifically,
         // since nanvixd.exe is checked first).
         assert!(err.to_string().contains("not found"), "got: {}", err);
+    }
+
+    // -- Failure classification tests -------------------------------------------
+
+    #[test]
+    fn error_variants_carry_their_own_failure_phase() {
+        // Every variant reports ERROR_EXIT_CODE, so the phase is the only thing
+        // that distinguishes a watchdog kill from a spawn failure.
+        let timeout = NanVixError::Timeout {
+            script_timeout_ms: 1_000,
+            total_ms: 1_500,
+        }
+        .to_response();
+        assert_eq!(timeout.exit_code, ERROR_EXIT_CODE);
+        assert_eq!(timeout.failure_phase, FailurePhase::Timeout);
+
+        assert_eq!(
+            NanVixError::Platform("spawn".into())
+                .to_response()
+                .failure_phase,
+            FailurePhase::LaunchFailed
+        );
+        assert_eq!(
+            NanVixError::Runtime("broken pipe".into())
+                .to_response()
+                .failure_phase,
+            FailurePhase::PostLaunchFailed
+        );
+        // Preflight mixes host artifacts with refused policy, so it stays
+        // unclassified rather than claiming to be either one.
+        assert_eq!(
+            NanVixError::Preflight("missing snapshot".into())
+                .to_response()
+                .failure_phase,
+            FailurePhase::None
+        );
     }
 
     // -- Copyback decision tests ------------------------------------------------
