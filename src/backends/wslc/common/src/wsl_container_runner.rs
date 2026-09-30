@@ -2321,8 +2321,12 @@ mod tests {
         let response = runner.execute(&request, &mut logger);
 
         assert_eq!(
-            response.exit_code, -1,
-            "junction-aliased deny must fail the run"
+            response.exit_code, 1,
+            "junction-aliased deny must be refused"
+        );
+        assert_eq!(
+            response.failure_phase,
+            wxc_common::models::FailurePhase::Rejected
         );
         assert!(
             response.error_message.contains("cannot be enforced"),
@@ -2371,8 +2375,12 @@ mod tests {
         let response = runner.execute(&request, &mut logger);
 
         assert_eq!(
-            response.exit_code, -1,
-            "absent junction-aliased deny must fail the run"
+            response.exit_code, 1,
+            "absent junction-aliased deny must be refused"
+        );
+        assert_eq!(
+            response.failure_phase,
+            wxc_common::models::FailurePhase::Rejected
         );
         assert!(
             response.error_message.contains("cannot be enforced"),

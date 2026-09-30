@@ -1106,7 +1106,7 @@ impl LxcScriptRunner {
         stdio: StdioMode,
     ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
         if stdio == StdioMode::Inherit {
-            return Err(ScriptResponse::error(LXC_INHERIT_STDIO_UNSUPPORTED));
+            return Err(ScriptResponse::rejected(LXC_INHERIT_STDIO_UNSUPPORTED));
         }
         validate_common(request)?;
         SandboxBackend::validate(self, request)?;
@@ -1198,7 +1198,7 @@ impl LxcScriptRunner {
         _request: &ExecutionRequest,
         _logger: &mut Logger,
     ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
-        Err(ScriptResponse::error(LXC_STREAMING_LINUX_ONLY))
+        Err(ScriptResponse::unavailable(LXC_STREAMING_LINUX_ONLY))
     }
 }
 
@@ -2910,6 +2910,11 @@ mod tests {
             .expect("the library path has no pty to hand a workload");
 
         assert_eq!(refusal.error_message, LXC_INHERIT_STDIO_UNSUPPORTED);
+        assert_eq!(
+            refusal.failure_phase,
+            FailurePhase::Rejected,
+            "only a changed call can succeed, so this is a refusal rather than a fault"
+        );
         assert!(
             !logger.get_buffer().contains("Container name:"),
             "the refusal must land before a container is named"
