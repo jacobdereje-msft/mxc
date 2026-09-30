@@ -58,6 +58,11 @@ pub fn get_timeout_milliseconds(timeout: u32) -> u32 {
 }
 
 /// Print a dry-run result message to the logger, flush, and exit the process.
+///
+/// A dry run ends here, before the caller's normal relay path, so the
+/// rejection reason and its envelope are emitted here too — validation itself
+/// writes neither to the logger. Both helpers are no-ops for a dry run that
+/// passed.
 pub fn handle_dry_run_exit(response: &ScriptResponse, logger: &mut Logger) -> ! {
     use std::fmt::Write;
     if response.exit_code == 0 {
@@ -66,6 +71,8 @@ pub fn handle_dry_run_exit(response: &ScriptResponse, logger: &mut Logger) -> ! 
         let _ = writeln!(logger, "Dry run completed. Result: validation failed");
     }
     print!("{}", logger.get_buffer());
+    emit_captured_stderr(response);
+    emit_backend_error_envelope(response);
     std::process::exit(process_exit_code(response));
 }
 
@@ -94,25 +101,29 @@ fn workload_ran(phase: FailurePhase) -> bool {
 }
 
 /// The captured stderr to relay for a completed run, paired with whether a
-/// terminating newline still has to be written so that a diagnostic printed
-/// afterwards starts on its own line. `None` when there is nothing to relay.
+/// terminating newline still has to be written so that the diagnostic
+/// [`emit_backend_error_envelope`] prints next starts on its own line. `None`
+/// when there is nothing to relay.
 ///
 /// Borrows `standard_err` rather than copying it: captured workload output is
-/// unbounded and every executor binary relays it through here.
+/// unbounded and every executor binary relays it through here. When no
+/// diagnostic follows, the workload's bytes are relayed exactly as captured —
+/// partial progress output must not gain a newline it never wrote.
 ///
 /// A response for a workload that never ran copies `error_message` into
-/// `standard_err`; [`emit_backend_error_envelope`] already carries that text,
-/// so it is not printed a second time. A workload that did run keeps its stderr
-/// even when a backend mirrors it into `error_message`.
+/// `standard_err`; the envelope already carries that text, so it is not
+/// printed a second time. A workload that did run keeps its stderr even when a
+/// backend mirrors it into `error_message`.
 fn captured_stderr_to_emit(response: &ScriptResponse) -> Option<(&str, bool)> {
+    let envelope_follows = envelope_applies(response);
     let duplicates_envelope = !workload_ran(response.failure_phase)
-        && envelope_applies(response)
+        && envelope_follows
         && response.standard_err == response.error_message;
     if response.standard_err.is_empty() || duplicates_envelope {
         return None;
     }
     let text = response.standard_err.as_str();
-    Some((text, !text.ends_with('\n')))
+    Some((text, envelope_follows && !text.ends_with('\n')))
 }
 
 /// Relay a completed run's captured stderr.
@@ -304,21 +315,36 @@ mod tests {
     }
 
     #[test]
-    fn captured_stderr_is_terminated_exactly_once() {
+    fn a_terminating_newline_is_added_only_when_a_diagnostic_follows() {
         use crate::models::{FailurePhase, ScriptResponse};
 
-        let relayed = |stderr: &str| {
+        let relayed = |stderr: &str, error_message: &str| {
             super::captured_stderr_to_emit(&ScriptResponse {
                 exit_code: 1,
                 standard_err: stderr.to_string(),
+                error_message: error_message.to_string(),
                 failure_phase: FailurePhase::ProcessExited,
                 ..Default::default()
             })
             .map(|(text, newline)| (text.to_string(), newline))
         };
+        // No envelope follows, so the workload's bytes are relayed exactly as
+        // captured — unterminated progress output must not gain a newline.
+        assert_eq!(
+            relayed("progress", ""),
+            Some(("progress".to_string(), false))
+        );
+        assert_eq!(relayed("line\n", ""), Some(("line\n".to_string(), false)));
+        // An envelope follows, so it must start on its own line.
+        assert_eq!(
+            relayed("progress", "boom"),
+            Some(("progress".to_string(), true))
+        );
         // Already terminated, so no second newline is added.
-        assert_eq!(relayed("line\n"), Some(("line\n".to_string(), false)));
-        assert_eq!(relayed("line"), Some(("line".to_string(), true)));
-        assert_eq!(relayed(""), None);
+        assert_eq!(
+            relayed("line\n", "boom"),
+            Some(("line\n".to_string(), false))
+        );
+        assert_eq!(relayed("", "boom"), None);
     }
 }

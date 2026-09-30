@@ -643,8 +643,11 @@ fn build_sandbox_command(
     new_group: bool,
     logger: &mut Logger,
 ) -> Result<Command, ScriptResponse> {
+    // The profile is built from the request (verbatim for
+    // `seatbelt.profileOverride`), so an interior NUL is caller-supplied and
+    // only a changed request can succeed.
     let profile_cstr = CString::new(profile).map_err(|e| {
-        ScriptResponse::error(&format!("seatbelt profile contains embedded NUL byte: {e}"))
+        ScriptResponse::rejected(&format!("seatbelt profile contains embedded NUL byte: {e}"))
     })?;
 
     let _ = writeln!(logger, "Seatbelt: applying sandbox via sandbox_init");
