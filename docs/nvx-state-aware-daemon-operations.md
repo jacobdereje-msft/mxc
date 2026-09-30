@@ -34,20 +34,67 @@ also supplied in the CLI JSON body.
 
 ### Provision
 
-The future NVX exact provision root must define which filesystem, network,
-image, resource, and backend-specific fields NVX can enforce. Until that policy
-honor matrix and exact root are registered, a concrete NVX provision policy
-must not be presented as valid schema JSON.
+The following example records the intended complete provision shape: host
+filesystem mappings, an isolated network posture, and the guest image layers
+needed to create the VM. It is a proposed future exact-contract request, not
+JSON accepted by the currently published state-aware registry. The final NVX
+contract must register the version, `microvm` state-aware containment, ID
+prefix, permanent `microvm.provision` section, and policy honor matrix together.
 
-Example request shape:
+Example proposed request:
 
 ```json
 {
+  "$schema": "<nvx-schema-url>",
   "version": "<nvx-contract-version>",
   "phase": "provision",
-  "containment": "<nvx-containment>"
+  "containment": "microvm",
+  "filesystem": {
+    "readonlyPaths": [
+      "C:\\workspace\\source"
+    ],
+    "readwritePaths": [
+      "C:\\workspace\\output"
+    ],
+    "deniedPaths": [
+      "C:\\workspace\\source\\secrets"
+    ]
+  },
+  "network": {
+    "egress": {
+      "default": "deny"
+    },
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "deny"
+    }
+  },
+  "microvm": {
+    "provision": {
+      "layers": [
+        {
+          "role": "distro",
+          "path": "C:\\nvx\\images\\distro.erofs",
+          "uuid": "11111111-1111-1111-1111-111111111111"
+        },
+        {
+          "role": "runtime",
+          "path": "C:\\nvx\\images\\runtime.erofs",
+          "uuid": "22222222-2222-2222-2222-222222222222"
+        }
+      ],
+      "scratchPath": "C:\\nvx\\images\\scratch.ext4"
+    }
+  }
 }
 ```
+
+The `distro` layer contains the read-only operating system and userspace. The
+optional `runtime` layer contains workload runtime files. `scratchPath` names
+the writable ext4 image that preserves changes for the lifetime of the
+provisioned sandbox. All host paths and network policy must be validated before
+VM resources are created; unsupported rules must be rejected rather than
+ignored.
 
 Example successful response:
 
