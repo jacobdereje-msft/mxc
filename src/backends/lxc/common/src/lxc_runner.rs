@@ -40,7 +40,7 @@ const DEFAULT_TERM: &str = "xterm-256color";
 ///
 /// [`LxcContainer::attach_run`] wraps the command in a `cd` for exactly this
 /// value and [`default_env`] points `HOME` at it, so the two cannot name
-/// different directories — `lxc-attach` starts at the container root, so a
+/// different directories  `lxc-attach` starts at the container root, so a
 /// relative `process.cwd` would otherwise leave `HOME` naming a different
 /// directory than the one the child landed in. Normalizing against the
 /// container root is what makes them agree, so it is gated on the schema that
@@ -762,7 +762,7 @@ struct PreparedSandbox {
 }
 
 impl PreparedSandbox {
-    /// Run the completion-path release — pin, then rules, then container —
+    /// Run the completion-path release  pin, then rules, then container 
     /// repeating only the steps an earlier call failed to complete.
     fn tear_down(&mut self, cleanup_policy: bool, destroy_on_exit: bool, logger: &mut Logger) {
         if self.pinned && cleanup_policy {
@@ -1067,7 +1067,7 @@ mod tests {
     }
 
     /// A step that succeeded must not run twice, and one that failed must be
-    /// retried — that retry is what lets a later teardown finish a release this
+    /// retried  that retry is what lets a later teardown finish a release this
     /// one could not.
     #[test]
     fn tear_down_repeats_only_the_steps_that_failed() {

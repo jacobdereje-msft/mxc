@@ -438,6 +438,9 @@ container's network, so it accepts only an explicit acknowledgment of that and
 refuses an absent policy, whose default is a deny it could not enforce. It also
 refuses filesystem paths and any `Ui`: supplying either is an error rather than
 a no-op, so the policy shown under Usage does not carry over to this backend.
+It also refuses an `Environment` unless `InheritDefaultEnvironment` is set:
+every process starts from the agent user's default environment, which cannot be
+replaced or emptied.
 
 The native unit must be built with isolation-session support or execution returns
 `UnsupportedContainment`.
@@ -766,7 +769,9 @@ A build of this project puts the freshly built native unit next to the managed
 assembly. `dotnet pack` includes that exact unit under
 `runtimes/<rid>/native/`. Local `build.bat` packages contain only their selected
 Windows RID. The official package includes `mxc_ffi` for `win-x64`,
-`win-arm64`, `linux-x64`, `linux-arm64`, and `osx-arm64`.
+`win-arm64`, `linux-x64`, `linux-arm64`, and `osx-arm64`. The managed
+`Microsoft.Mxc.Sdk.dll` is AnyCPU so the same assembly loads with each
+RID-specific native asset.
 
 ## Supported surface
 
@@ -877,7 +882,7 @@ var wslc = new WslcProvisionOptions
 
 IsolationSession and WSLC state-aware calls use published schema
 `0.9.0-alpha`. Windows Sandbox state-aware calls use development schema
-`0.10.0-alpha`.
+`1.1.0-alpha`.
 `Version` may be omitted or explicitly set to that registered value; the SDK
 rejects other values rather than emitting an envelope for an unregistered
 state-aware contract. State-aware exec options expose working directory,
