@@ -92,7 +92,7 @@ function Invoke-CargoBuild {
         [switch]$DebugProfile
     )
 
-    $profileArgs = if ($DebugProfile) { @() } else { @('--release') }
+    [string[]]$profileArgs = if ($DebugProfile) { @() } else { @('--release') }
     Push-Location $srcRoot
     try {
         $messages = Invoke-Checked "cargo $($Arguments -join ' ')" {
