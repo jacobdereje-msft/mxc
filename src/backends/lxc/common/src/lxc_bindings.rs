@@ -9,6 +9,15 @@ const DHCPCD_CONF_NOARP: &str =
      # probes each address before it offers it.\n\
      noarp\n";
 
+/// The bridge whose DHCP server probes an address before it offers it.
+const PROBING_DHCP_BRIDGE: &str = "lxcbr0";
+
+/// The most of a container's `dhcpcd.conf` the host will read.
+///
+/// The workload owns this file, and a container kept for reuse carries what
+/// the workload left behind into the next run.
+const DHCPCD_CONF_MAX_LEN: u64 = 64 * 1024;
+
 /// The filesystem type and options of one kind of `lxc.mount.entry`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MountShape {
@@ -659,23 +668,78 @@ impl LxcContainer {
     /// subnet and probes each candidate itself before offering it, so the
     /// container's own probe repeats a check that has already been made.
     ///
+    /// Only a container attached solely to [`PROBING_DHCP_BRIDGE`] is
+    /// configured, because only there has the first check certainly been made.
     /// Images that ship a different DHCP client have no `dhcpcd.conf` and are
     /// left alone. The container must not be running: its root filesystem is
     /// read and written from the host, and a container that is executing can
     /// replace the paths involved.
     pub fn skip_dhcp_duplicate_address_detection(&self) -> Result<(), String> {
-        let Some(rootfs) = self.rootfs_path() else {
+        let Ok(config) = std::fs::read_to_string(self.config_file_path()) else {
+            return Ok(());
+        };
+        if !Self::attaches_only_to_probing_bridge(&config) {
+            return Ok(());
+        }
+        let Some(rootfs) = Self::configured_rootfs_path(&config) else {
             return Ok(());
         };
         let Some(directory) = Self::resolve_inside_rootfs(&rootfs, "etc")? else {
             return Ok(());
         };
         let conf_path = directory.join("dhcpcd.conf");
+
+        let Some((metadata, existing)) = Self::read_guest_conf(&conf_path)? else {
+            return Ok(());
+        };
+        let Some(updated) = Self::dhcpcd_conf_skipping_detection(&existing) else {
+            return Ok(());
+        };
+
+        Self::install_replacement(&directory, &conf_path, &updated, &metadata).map_err(|e| {
+            format!(
+                "Failed to configure the container's DHCP client: {} (file: {})",
+                e,
+                conf_path.display()
+            )
+        })
+    }
+
+    /// Whether every interface the container declares attaches to the bridge
+    /// whose DHCP server probes an address before it offers it.
+    ///
+    /// A container created against a host default that names another bridge,
+    /// or one kept from an earlier run, can sit on a network whose DHCP server
+    /// makes no such check. There the guest's own probe is the only one, and
+    /// the container is left to make it.
+    fn attaches_only_to_probing_bridge(config: &str) -> bool {
+        let mut declares_an_interface = false;
+        for line in config.lines() {
+            let Some((key, link)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            if !key.starts_with("lxc.net.") || !key.ends_with(".link") {
+                continue;
+            }
+            declares_an_interface = true;
+            if link.trim() != PROBING_DHCP_BRIDGE {
+                return false;
+            }
+        }
+        declares_an_interface
+    }
+
+    /// The container's `dhcpcd.conf` and the metadata of the file it was read
+    /// from, or `None` for an image that ships no `dhcpcd`.
+    fn read_guest_conf(
+        conf_path: &std::path::Path,
+    ) -> Result<Option<(std::fs::Metadata, String)>, String> {
         let displayed = conf_path.display().to_string();
 
-        let mut file = match Self::open_guest_file(&conf_path) {
+        let mut file = match Self::open_guest_file(conf_path) {
             Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             // `O_NOFOLLOW` reports a symbolic link in the final position as a
             // loop rather than opening what it points at.
             Err(e) if Self::is_symlink_refusal(&e) => {
@@ -693,7 +757,7 @@ impl LxcContainer {
         };
 
         // Everything below works through this one descriptor, so the file that
-        // was inspected is the file that is read and rewritten.
+        // was inspected is the file that is read.
         let metadata = file.metadata().map_err(|e| {
             format!(
                 "Failed to inspect the container's DHCP client configuration: {} (file: {})",
@@ -706,35 +770,100 @@ impl LxcContainer {
                 displayed
             ));
         }
+        if metadata.len() > DHCPCD_CONF_MAX_LEN {
+            return Err(format!(
+                "Refusing to configure the container's DHCP client: {} holds {} bytes, more than a \
+                 DHCP client configuration is expected to",
+                displayed,
+                metadata.len()
+            ));
+        }
 
-        let mut existing = String::new();
-        std::io::Read::read_to_string(&mut file, &mut existing).map_err(|e| {
+        let existing = Self::read_bounded(&mut file).map_err(|e| {
             format!(
                 "Failed to read the container's DHCP client configuration: {} (file: {})",
                 e, displayed
             )
         })?;
-        let Some(updated) = Self::dhcpcd_conf_skipping_detection(&existing) else {
-            return Ok(());
-        };
-
-        // Rewriting through the open descriptor keeps the file's ownership and
-        // mode, which replacing it through a temporary file would reset to the
-        // host's root.
-        Self::rewrite(&mut file, &updated).map_err(|e| {
-            format!(
-                "Failed to configure the container's DHCP client: {} (file: {})",
-                e, displayed
-            )
-        })
+        Ok(Some((metadata, existing)))
     }
 
-    fn rewrite(file: &mut std::fs::File, contents: &str) -> std::io::Result<()> {
-        use std::io::{Seek, Write};
+    /// Reads the configuration under a bound, so a file that grows between the
+    /// size check and the read still cannot exhaust the host's memory.
+    fn read_bounded(file: &mut std::fs::File) -> std::io::Result<String> {
+        use std::io::Read;
 
-        file.seek(std::io::SeekFrom::Start(0))?;
+        let mut contents = String::new();
+        let read = file
+            .by_ref()
+            .take(DHCPCD_CONF_MAX_LEN + 1)
+            .read_to_string(&mut contents)?;
+        if read as u64 > DHCPCD_CONF_MAX_LEN {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "it grew past the size a DHCP client configuration is expected to be",
+            ));
+        }
+        Ok(contents)
+    }
+
+    /// Puts `contents` at `target` by renaming a finished file over it.
+    ///
+    /// The replacement is staged beside the original, inside the container's
+    /// own `etc`, and takes the original's mode and ownership so the guest
+    /// still reads a file of its own. Renaming publishes it in one step, so a
+    /// write that fails part way leaves the original untouched rather than
+    /// handing the guest a half-written configuration to boot from.
+    fn install_replacement(
+        directory: &std::path::Path,
+        target: &std::path::Path,
+        contents: &str,
+        original: &std::fs::Metadata,
+    ) -> std::io::Result<()> {
+        let staged = directory.join("dhcpcd.conf.mxc-tmp");
+        // A run killed between the write and the rename would otherwise leave
+        // a file that the exclusive create below refuses to replace.
+        let _ = std::fs::remove_file(&staged);
+
+        let result = Self::write_staged(&staged, contents, original)
+            .and_then(|()| std::fs::rename(&staged, target));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&staged);
+        }
+        result
+    }
+
+    fn write_staged(
+        path: &std::path::Path,
+        contents: &str,
+        original: &std::fs::Metadata,
+    ) -> std::io::Result<()> {
+        use std::io::Write;
+
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+
+        let mut file = options.open(path)?;
+        file.set_permissions(original.permissions())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            // Staging as the user who owns the original is the ordinary case,
+            // and asking to become its owner needs a privilege this may lack.
+            let staged = file.metadata()?;
+            if staged.uid() != original.uid() || staged.gid() != original.gid() {
+                std::os::unix::fs::fchown(&file, Some(original.uid()), Some(original.gid()))?;
+            }
+        }
         file.write_all(contents.as_bytes())?;
-        file.set_len(contents.len() as u64)
+        // The rename may only publish bytes that have reached the disk.
+        file.sync_all()
     }
 
     fn open_guest_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -801,13 +930,17 @@ impl LxcContainer {
     }
 
     /// The `dhcpcd.conf` rewritten so its global section skips duplicate
-    /// address detection, or `None` when that section already skips it.
+    /// address detection, or `None` when the file must be left as it is.
     ///
     /// An option only applies to the `interface`, `profile` or `ssid` section
     /// it follows, so the option is placed ahead of the first section rather
     /// than at the end of the file, where it would bind to whichever section
     /// happens to be last.
     fn dhcpcd_conf_skipping_detection(existing: &str) -> Option<String> {
+        if Self::configures_a_static_address(existing) {
+            return None;
+        }
+
         let boundary = Self::first_section_offset(existing);
         let global = &existing[..boundary];
         if global.lines().any(|line| line.trim() == "noarp") {
@@ -822,6 +955,22 @@ impl LxcContainer {
         out.push_str(DHCPCD_CONF_NOARP);
         out.push_str(&existing[boundary..]);
         Some(out)
+    }
+
+    /// Whether the configuration assigns an address itself instead of taking
+    /// one from the DHCP server.
+    ///
+    /// The bridge's DHCP server never offered, and so never probed, an address
+    /// the image sets by hand. Skipping detection is only safe where that
+    /// first check was made, so such an image keeps its own.
+    fn configures_a_static_address(config: &str) -> bool {
+        config.lines().any(|line| {
+            let mut words = line.split_whitespace();
+            words.next() == Some("static")
+                && words
+                    .next()
+                    .is_some_and(|option| option.starts_with("ip_address"))
+        })
     }
 
     /// Where the first `interface`, `profile` or `ssid` section begins, or the
@@ -840,11 +989,6 @@ impl LxcContainer {
 
     /// The container's root directory on the host, for the backing stores that
     /// expose one.
-    fn rootfs_path(&self) -> Option<String> {
-        let config = std::fs::read_to_string(self.config_file_path()).ok()?;
-        Self::configured_rootfs_path(&config)
-    }
-
     fn configured_rootfs_path(config: &str) -> Option<String> {
         // LXC lets a later assignment replace an earlier one.
         let value = config
@@ -1612,7 +1756,7 @@ mod tests {
     #[test]
     fn the_option_is_placed_ahead_of_the_first_section() {
         for header in ["interface wlan0", "profile static_eth0", "ssid home"] {
-            let existing = format!("hostname\n{}\nstatic ip_address=10.0.0.5/24\n", header);
+            let existing = format!("hostname\n{}\nmetric 200\n", header);
 
             let updated = LxcContainer::dhcpcd_conf_skipping_detection(&existing)
                 .expect("the global section does not set the option");
@@ -1626,7 +1770,7 @@ mod tests {
                 updated
             );
             assert!(
-                updated.contains("static ip_address=10.0.0.5/24"),
+                updated.contains("metric 200"),
                 "the section's own options must survive, got {:?}",
                 updated
             );
@@ -1700,8 +1844,9 @@ mod tests {
         std::fs::write(
             base.path().join("box").join("config"),
             format!(
-                "lxc.rootfs.path = dir:{}\n",
-                rootfs.to_str().expect("temp path must be UTF-8")
+                "lxc.rootfs.path = dir:{}\nlxc.net.0.type = veth\nlxc.net.0.link = {}\n",
+                rootfs.to_str().expect("temp path must be UTF-8"),
+                PROBING_DHCP_BRIDGE
             ),
         )
         .expect("seed config");
@@ -1753,10 +1898,169 @@ mod tests {
     }
 
     #[test]
-    fn rewriting_a_longer_configuration_leaves_nothing_of_the_shorter_one() {
-        let (_base, container, conf) = container_with_rootfs(Some(
+    fn a_configuration_that_sets_its_own_address_is_left_alone() {
+        for existing in [
+            "static ip_address=10.0.0.5/24\n",
             "hostname\ninterface eth0\nstatic ip_address=10.0.0.5/24\n",
-        ));
+        ] {
+            assert_eq!(
+                LxcContainer::dhcpcd_conf_skipping_detection(existing),
+                None,
+                "{:?} takes no address from the DHCP server, so none was probed for it",
+                existing
+            );
+        }
+    }
+
+    #[test]
+    fn a_static_option_that_is_not_an_address_still_lets_the_option_be_written() {
+        for existing in [
+            "static routers=10.0.0.1\n",
+            "static domain_name_servers=10.0.0.1\n",
+        ] {
+            assert!(
+                LxcContainer::dhcpcd_conf_skipping_detection(existing).is_some(),
+                "{:?} still takes its address from the DHCP server",
+                existing
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_container_wholly_on_the_probing_bridge_is_configured() {
+        for (config, expected) in [
+            ("lxc.net.0.link = lxcbr0\n", true),
+            ("lxc.net.0.link=lxcbr0\n", true),
+            ("  lxc.net.1.link = lxcbr0  \n", true),
+            ("lxc.net.0.link = lxcbr0\nlxc.net.1.link = lxcbr0\n", true),
+            (
+                "lxc.net.0.link = lxcbr0\nlxc.net.1.link = br-custom\n",
+                false,
+            ),
+            ("lxc.net.0.link = br-custom\n", false),
+            ("lxc.net.0.type = veth\n", false),
+            ("", false),
+        ] {
+            assert_eq!(
+                LxcContainer::attaches_only_to_probing_bridge(config),
+                expected,
+                "{:?}",
+                config
+            );
+        }
+    }
+
+    /// Rewrites the container's config, so a test can attach it elsewhere.
+    fn container_attached_to(base: &tempfile::TempDir, interfaces: &str) -> LxcContainer {
+        let rootfs = base.path().join("box").join("rootfs");
+        std::fs::write(
+            base.path().join("box").join("config"),
+            format!(
+                "lxc.rootfs.path = dir:{}\n{}",
+                rootfs.to_str().expect("temp path must be UTF-8"),
+                interfaces
+            ),
+        )
+        .expect("rewrite config");
+        LxcContainer::new(
+            "box",
+            Some(base.path().to_str().expect("temp path must be UTF-8")),
+        )
+    }
+
+    #[test]
+    fn a_container_on_another_bridge_keeps_its_own_detection() {
+        for interfaces in [
+            "lxc.net.0.type = veth\nlxc.net.0.link = br-custom\n",
+            "lxc.net.0.link = lxcbr0\nlxc.net.1.link = br-custom\n",
+            "",
+        ] {
+            let (base, _container, conf) = container_with_rootfs(Some("hostname\n"));
+            let container = container_attached_to(&base, interfaces);
+
+            container
+                .skip_dhcp_duplicate_address_detection()
+                .expect("a network that was not measured is not an error");
+
+            assert_eq!(
+                std::fs::read_to_string(&conf).expect("read dhcpcd.conf"),
+                "hostname\n",
+                "a DHCP server that may not probe leaves the guest its own check, got {:?}",
+                interfaces
+            );
+        }
+    }
+
+    #[test]
+    fn a_configuration_too_large_to_be_one_is_refused() {
+        let oversized = "#".repeat(DHCPCD_CONF_MAX_LEN as usize + 1);
+        let (_base, container, conf) = container_with_rootfs(Some(&oversized));
+
+        let error = container
+            .skip_dhcp_duplicate_address_detection()
+            .expect_err("a file this large is not a DHCP client configuration");
+
+        assert!(
+            error.contains("more than a DHCP client configuration is expected to"),
+            "the refusal must say why, got {:?}",
+            error
+        );
+        assert_eq!(
+            std::fs::metadata(&conf).expect("stat dhcpcd.conf").len(),
+            DHCPCD_CONF_MAX_LEN + 1,
+            "the workload's own file must be left as it is"
+        );
+    }
+
+    #[test]
+    fn a_finished_edit_leaves_no_staged_file_behind() {
+        let (_base, container, conf) = container_with_rootfs(Some("hostname\n"));
+
+        container
+            .skip_dhcp_duplicate_address_detection()
+            .expect("the option is written");
+
+        let stray: Vec<_> = std::fs::read_dir(conf.parent().expect("dhcpcd.conf sits in etc"))
+            .expect("read etc")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .filter(|name| name != "dhcpcd.conf")
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "the staged replacement must not outlive the rename, found {:?}",
+            stray
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_replacement_keeps_the_mode_the_image_gave_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_base, container, conf) = container_with_rootfs(Some("hostname\n"));
+        std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o640))
+            .expect("set the image's mode");
+
+        container
+            .skip_dhcp_duplicate_address_detection()
+            .expect("the option is written");
+
+        assert_eq!(
+            std::fs::metadata(&conf)
+                .expect("stat dhcpcd.conf")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640,
+            "the guest must still read a file with the mode its image gave it"
+        );
+    }
+
+    #[test]
+    fn rewriting_a_longer_configuration_leaves_nothing_of_the_shorter_one() {
+        let (_base, container, conf) =
+            container_with_rootfs(Some("hostname\ninterface eth0\nmetric 200\n"));
 
         container
             .skip_dhcp_duplicate_address_detection()
@@ -1767,7 +2071,7 @@ mod tests {
             body,
             "hostname\n# MXC: the bridge's DHCP server is authoritative for this subnet and\n\
              # probes each address before it offers it.\nnoarp\n\
-             interface eth0\nstatic ip_address=10.0.0.5/24\n",
+             interface eth0\nmetric 200\n",
             "the rewrite must leave the file exactly as intended"
         );
     }

@@ -312,6 +312,13 @@ The zone query should answer the zone you assigned.
   the bridge NATs IPv4 only, so an IPv6 address alone does not mean the container
   can reach the destinations its policy names. A bridge that never provides an
   IPv4 address fails the run rather than starting a workload that reaches nothing.
+- **A container on `lxcbr0` has its DHCP client reconfigured.** Before a
+  networked start, `noarp` is added to the guest's `/etc/dhcpcd.conf`, because
+  that bridge's DHCP server probes an address before offering it and the guest's
+  own RFC 5227 probe repeats the check, costing several seconds. The edit
+  persists in a container kept with `destroyOnExit: false`. A container attached
+  to any other bridge, an image shipping a different DHCP client, and a
+  configuration that sets a static address keep their own check.
 - **IPv6 egress is not supported.** An `egress` rule naming an IPv6 destination
   installs and reports success, but no IPv6 traffic reaches that destination.
   Stock `lxcbr0` gives the container no IPv6 address, so this surfaces only on a
