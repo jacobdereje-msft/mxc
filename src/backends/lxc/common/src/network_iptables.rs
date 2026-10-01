@@ -989,7 +989,7 @@ impl NetworkIptablesManager {
 
     // One entry per address family per carried protocol.
     fn lower_carried_protocols(entries: &mut Vec<EgressEntry>) -> Result<(), String> {
-        for destination in Self::floor_destinations()? {
+        for destination in Self::peer_list_destinations(&Self::every_destination_peers())? {
             for matching in carried_protocol_matches() {
                 entries.push(EgressEntry {
                     destination: destination.clone(),
@@ -1019,8 +1019,6 @@ impl NetworkIptablesManager {
         Ok(())
     }
 
-    // Counting and building both read the destinations from here, so the number
-    // the cap is checked against is the number that gets pushed.
     fn rule_destinations(rule: &NetworkRule) -> Result<Vec<String>, String> {
         let wildcard_peers;
         let peers = if rule.to.is_empty() {
@@ -1030,10 +1028,6 @@ impl NetworkIptablesManager {
             &rule.to[..]
         };
         Self::peer_list_destinations(peers)
-    }
-
-    fn floor_destinations() -> Result<Vec<String>, String> {
-        Self::peer_list_destinations(&Self::every_destination_peers())
     }
 
     fn peer_list_destinations(peers: &[NetworkPeer]) -> Result<Vec<String>, String> {
