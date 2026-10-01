@@ -181,6 +181,44 @@ fn carried_protocol_matches() -> Vec<RuleMatch> {
     matches
 }
 
+// A run of rules the egress chain is built from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EgressSection {
+    // Everything the operator wrote under `deny`.
+    OperatorDenies,
+    // Everything the operator wrote under `allow`.
+    OperatorAllows,
+    // One accept per protocol this backend can name, to every address.
+    CarriedProtocolFloor,
+}
+
+// The shape of a directional egress chain, for each stated default.  This list
+// is the whole statement of what a packet meets and in what order; the lowering
+// walks it, so nothing is implied by where a loop sits in the source below.
+//
+// Denies lead in both postures because iptables takes the first rule that
+// matches, and an operator's deny has to beat an allow that overlaps it.
+//
+// Whatever the list, the chain ends with a drop that `closing_policy` writes.
+// That is what makes the two postures differ by a floor rather than by a
+// verdict: nothing a chain lists can be reached once it closes on a drop unless
+// some rule accepts it first.
+fn directional_egress_chain(default: NetworkAction) -> &'static [EgressSection] {
+    match default {
+        // Everything may leave unless a deny names it.  The floor is what says
+        // so, and it goes last because it accepts every address: ahead of the
+        // operator's rules it would match first and they would never be read.
+        NetworkAction::Allow => &[
+            EgressSection::OperatorDenies,
+            EgressSection::OperatorAllows,
+            EgressSection::CarriedProtocolFloor,
+        ],
+        // Only what the allow list names may leave, so there is no floor to
+        // add.  One here would accept every address and erase the list above.
+        NetworkAction::Deny => &[EgressSection::OperatorDenies, EgressSection::OperatorAllows],
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PortRange {
     start: u16,
@@ -915,6 +953,9 @@ impl NetworkIptablesManager {
 
     // Block entries come first.  Under iptables first-match-wins, exchanging
     // the two halves reverses overlapping allow and block lists.
+    //
+    // Unlike a directional chain, the stated default adds no rules of its own
+    // here.  `closing_policy` carries it alone.
     fn lower_legacy_hosts(policy: &ContainerPolicy) -> Vec<EgressEntry> {
         policy
             .blocked_hosts
@@ -935,31 +976,41 @@ impl NetworkIptablesManager {
             .collect()
     }
 
-    // Deny rules precede allow rules for the same first-match-wins reason
-    // as the legacy lowering.
     fn lower_directional_egress(egress: &NetworkEgressPolicy) -> Result<Vec<EgressEntry>, String> {
         let mut entries = Vec::new();
         let mut remaining = MAX_EGRESS_ENTRIES;
-        for rule in &egress.deny {
-            Self::lower_rule(rule, RuleAction::Deny, &mut entries, &mut remaining)?;
-        }
-        for rule in &egress.allow {
-            Self::lower_rule(rule, RuleAction::Allow, &mut entries, &mut remaining)?;
-        }
-        match egress.default {
-            // An accepting default states only what may not leave.  The chain
-            // closes on a drop whichever default is stated, which leaves this
-            // posture with nothing saying that the carried protocols still go
-            // out.  These entries say it.
-            NetworkAction::Allow => Self::lower_carried_protocols(&mut entries, &mut remaining)?,
-            // A denying default states what may leave, in the allow list above.
-            NetworkAction::Deny => {}
+        for section in directional_egress_chain(egress.default) {
+            Self::lower_section(*section, egress, &mut entries, &mut remaining)?;
         }
         Ok(entries)
     }
 
-    // One entry per address family per carried protocol, after the operator's
-    // rules and ahead of the closing drop.
+    fn lower_section(
+        section: EgressSection,
+        egress: &NetworkEgressPolicy,
+        entries: &mut Vec<EgressEntry>,
+        remaining: &mut usize,
+    ) -> Result<(), String> {
+        match section {
+            EgressSection::OperatorDenies => {
+                for rule in &egress.deny {
+                    Self::lower_rule(rule, RuleAction::Deny, entries, remaining)?;
+                }
+                Ok(())
+            }
+            EgressSection::OperatorAllows => {
+                for rule in &egress.allow {
+                    Self::lower_rule(rule, RuleAction::Allow, entries, remaining)?;
+                }
+                Ok(())
+            }
+            EgressSection::CarriedProtocolFloor => {
+                Self::lower_carried_protocols(entries, remaining)
+            }
+        }
+    }
+
+    // One entry per address family per carried protocol.
     fn lower_carried_protocols(
         entries: &mut Vec<EgressEntry>,
         remaining: &mut usize,
@@ -2156,6 +2207,24 @@ mod tests {
         for protocol in ["tcp", "udp", "sctp", "dccp", "udplite", "icmpv6"] {
             carried_assert_blanket_accept_exists(&rules.ipv6, "::/0", protocol, input);
         }
+    }
+
+    #[test]
+    fn the_stated_default_changes_the_chain_only_by_adding_a_floor_after_the_operator_rules() {
+        assert_eq!(
+            directional_egress_chain(NetworkAction::Deny),
+            [EgressSection::OperatorDenies, EgressSection::OperatorAllows],
+            "a denying default must add no section of its own"
+        );
+        assert_eq!(
+            directional_egress_chain(NetworkAction::Allow),
+            [
+                EgressSection::OperatorDenies,
+                EgressSection::OperatorAllows,
+                EgressSection::CarriedProtocolFloor
+            ],
+            "an accepting default must add the floor, and only after the operator's rules"
+        );
     }
 
     #[test]
