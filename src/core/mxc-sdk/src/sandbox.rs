@@ -472,6 +472,7 @@ mod tests {
                     total_denials: 2,
                     denied_resources_truncated: false,
                     etl_path: None,
+                    trace_path: None,
                 }),
                 capture_denials_error: None,
             }),

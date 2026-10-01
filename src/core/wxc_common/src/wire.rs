@@ -163,16 +163,12 @@ pub struct ProcessContainerNetwork {
     pub allowed_proxy_peer: Option<String>,
 }
 
-/// Windows denial-capture settings. The presence of the `captureDenials`
-/// object enables capture; all fields are optional. Native capture requires
-/// the complete compatible PSEC plus V2 Learning Mode API set. Requests that
-/// native capture cannot represent use guarded WPR with a compatible
-/// AppContainer containment tier.
+/// Denial-capture settings normalized across supported process backends.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureDenials {
     /// How each ungranted access check is handled while it is recorded. Both
-    /// modes log every access the policy does not grant to the ETL trace; the
+    /// modes log every access the policy does not grant to a native trace; the
     /// mode only decides whether that access is blocked or allowed. Defaults to
     /// `block` when omitted.
     pub mode: Option<CaptureDenialsMode>,
@@ -184,20 +180,10 @@ pub struct CaptureDenials {
     /// `denials.<run-id>.json`) so concurrent and sequential captures do not
     /// collide; the actual path is reported on stderr. When omitted, MXC
     /// writes it to a managed per-run temporary file and prints its path on
-    /// stderr. The parent directory must already exist. (The intermediate ETL
-    /// trace is an internal, runner-managed file in a protected per-run
-    /// directory. Retained traces use
-    /// `%LOCALAPPDATA%\Microsoft\MXC\capture-denials\retained`; non-retained
-    /// traces use the system temporary directory.)
+    /// stderr. The parent directory must already exist.
     pub output_path: Option<String>,
-    /// Keep the sealed ETL trace after analysis and report its path in output
-    /// metadata. Defaults to `false`, which deletes the trace after analysis.
-    /// Retention requires a terminal wait; abandoning the process handle
-    /// deletes the internal trace. If post-seal analysis fails, the failure and
-    /// retained path are exposed through `captureDenialsError` output metadata.
-    /// Retained traces can contain sensitive resource paths and identifiers;
-    /// callers are responsible for deleting them.
-    pub retain_etl: Option<bool>,
+    /// Keep the provider-native raw trace after analysis. Defaults to `false`.
+    pub retain_trace: Option<bool>,
 }
 
 /// How `captureDenials` handles each ungranted access check while recording it.
@@ -451,6 +437,8 @@ pub struct Seatbelt {
     pub keychain_access: Option<bool>,
     /// Additional Mach service global-names the inner process may resolve.
     pub extra_mach_lookups: Option<Vec<String>>,
+    /// Capture accesses not granted by the generated profile.
+    pub capture_denials: Option<CaptureDenials>,
 }
 
 /// Seatbelt inner-process launch method.

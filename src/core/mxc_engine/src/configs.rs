@@ -16,4 +16,4 @@ pub use process_container::{
     ProcessContainerUiIsolation,
 };
 #[doc(inline)]
-pub use seatbelt::Seatbelt;
+pub use seatbelt::{Seatbelt, SeatbeltCaptureDenials};

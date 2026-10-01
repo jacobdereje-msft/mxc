@@ -1224,7 +1224,7 @@ impl AppContainerScriptRunner {
             request.policy.capture_denials.as_ref(),
         ) {
             (Some(factory), Some(capture_config)) => {
-                let retain_etl = capture_config.retain_etl && factory.allows_trace_transfer();
+                let retain_etl = capture_config.retain_trace && factory.allows_trace_transfer();
                 let output_paths = match capture_output::unique_denials_output_paths(
                     capture_config.output_path.as_deref(),
                     retain_etl,
@@ -1770,7 +1770,7 @@ impl SandboxBackend for AppContainerScriptRunner {
                 .policy
                 .capture_denials
                 .as_ref()
-                .is_some_and(|config| config.retain_etl),
+                .is_some_and(|config| config.retain_trace),
             self.guarded_capture_factory
                 .as_ref()
                 .is_some_and(|factory| factory.allows_trace_transfer()),
@@ -3058,7 +3058,7 @@ mod tests {
             .with_guarded_capture_factory(Arc::new(FakeGuardedCaptureFactory));
         let mut request = ExecutionRequest::default();
         request.policy.capture_denials = Some(wxc_common::models::CaptureDenialsConfig {
-            retain_etl: true,
+            retain_trace: true,
             ..Default::default()
         });
 
@@ -3090,7 +3090,7 @@ mod tests {
             .with_guarded_capture_factory(Arc::new(RetainingGuardedCaptureFactory));
         let mut request = ExecutionRequest::default();
         request.policy.capture_denials = Some(wxc_common::models::CaptureDenialsConfig {
-            retain_etl: true,
+            retain_trace: true,
             ..Default::default()
         });
 

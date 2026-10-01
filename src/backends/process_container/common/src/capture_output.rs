@@ -18,11 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use learning_mode_core::{
-    verbose_logging_sibling_path, write_document, write_paired_output_files,
-    write_verbose_logging_document, AnalysisResult, DenialSummary, DenialsDocument,
-    DenialsOutputPointer, ExistingOutputPolicy, VerboseLoggingDocument,
-};
+use learning_mode_core::{verbose_logging_sibling_path, AnalysisResult};
 use wxc_common::models::CaptureDenialsOutput;
 
 /// Directory name of the protected retained-ETL store. Sealed ETLs are promoted
@@ -61,25 +57,7 @@ pub fn write_denials_document(
     exit_code: i32,
     output_path: &Path,
 ) -> std::io::Result<CaptureDenialsOutput> {
-    let verbose_logging_path = verbose_logging_output_path(output_path)?;
-    let summary = DenialSummary::new(
-        exit_code,
-        analysis.denials.len(),
-        analysis.denied_resources_truncated,
-    );
-    let document = DenialsDocument::new(analysis.denials, summary);
-    let verbose_logging_document = VerboseLoggingDocument::new(&analysis.verbose_logging);
-
-    write_paired_output_files(
-        "captureDenials",
-        output_path,
-        &verbose_logging_path,
-        ExistingOutputPolicy::CreateNew,
-        |writer| write_document(writer, &document),
-        |writer| write_verbose_logging_document(writer, &verbose_logging_document),
-    )?;
-
-    let pointer = DenialsOutputPointer::new(output_path.to_string_lossy(), &document.summary);
+    let pointer = learning_mode_core::write_denials_output(analysis, exit_code, output_path)?;
     Ok(CaptureDenialsOutput {
         kind: pointer.kind,
         output_path: pointer.output_path,
@@ -87,6 +65,7 @@ pub fn write_denials_document(
         total_denials: pointer.total_denials,
         denied_resources_truncated: pointer.denied_resources_truncated,
         etl_path: None,
+        trace_path: None,
     })
 }
 
@@ -104,23 +83,7 @@ pub fn verbose_logging_output_path(output_path: &Path) -> std::io::Result<PathBu
 /// extension gets `<name>.<run_id>`; a bare filename (no parent) keeps its
 /// directory-less form.
 pub fn insert_run_id_into_stem(path: &Path, run_id: &str) -> PathBuf {
-    let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
-        return path.to_path_buf();
-    };
-    let new_name = match path.extension().and_then(|s| s.to_str()) {
-        Some(ext) => {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(file_name);
-            format!("{stem}.{run_id}.{ext}")
-        }
-        None => format!("{file_name}.{run_id}"),
-    };
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.join(new_name),
-        _ => PathBuf::from(new_name),
-    }
+    learning_mode_core::insert_run_id_into_stem(path, run_id)
 }
 
 /// Resolves the paired denials and optional retained-ETL paths for one run.
@@ -183,27 +146,13 @@ fn retained_etl_path(configured_path: &Path, run_id: &str) -> PathBuf {
 /// A short random hex suffix used to keep per-run temp/output paths from
 /// colliding across concurrent or sequential runs sharing the same PID.
 pub fn random_capture_suffix() -> Result<String, String> {
-    let mut nonce = [0u8; 16];
-    getrandom::getrandom(&mut nonce).map_err(|error| {
-        format!("captureDenials could not generate a unique output path: {error}")
-    })?;
-    Ok(nonce
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>())
+    learning_mode_core::random_capture_suffix()
 }
 
 /// Removes an internal (runner-managed) capture temp file. Treats "already
 /// gone" as success so a redundant cleanup call is harmless.
 pub fn remove_internal_capture_file(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(std::io::Error::other(format!(
-            "captureDenials failed to remove internal capture file {}: {error}",
-            path.display()
-        ))),
-    }
+    learning_mode_core::remove_internal_capture_file(path)
 }
 
 /// Combines a primary result with a best-effort secondary `()` result, keeping
@@ -257,16 +206,7 @@ pub fn combine_process_and_teardown_results(
     process_result: std::io::Result<i32>,
     teardown_result: std::io::Result<()>,
 ) -> std::io::Result<i32> {
-    combine_results(
-        process_result,
-        teardown_result,
-        |wait_error, teardown_error| {
-            std::io::Error::new(
-                wait_error.kind(),
-                format!("{wait_error}; captureDenials teardown also failed: {teardown_error}"),
-            )
-        },
-    )
+    learning_mode_core::combine_process_and_teardown_results(process_result, teardown_result)
 }
 
 /// Best-effort write of a single diagnostic line to stderr, used for failures

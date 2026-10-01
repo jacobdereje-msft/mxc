@@ -13,7 +13,7 @@
  *   cargo run --manifest-path src/Cargo.toml -p mxc_schema_gen -- types --version 1.1.0-alpha --out sdk/node/src/generated/v1_1_0_alpha/wire.ts
  */
 /**
- * Windows denial-capture settings.
+ * Denial-capture settings shared by supported process sandbox backends.
  */
 export interface CaptureDenials {
   /**
@@ -25,9 +25,9 @@ export interface CaptureDenials {
    */
   outputPath?: string;
   /**
-   * Whether to retain the sealed ETL trace after analysis. Retained traces can contain sensitive resource paths and identifiers; callers are responsible for deleting them.
+   * Whether to retain the provider-native raw trace after analysis. Retained traces can contain sensitive resource paths and identifiers; callers are responsible for deleting them.
    */
-  retainEtl?: boolean;
+  retainTrace?: boolean;
 }
 
 export type CaptureDenialsMode = "block" | "allow";
@@ -652,6 +652,10 @@ export interface RuntimeConfig {
  * macOS Seatbelt backend settings.
  */
 export interface Seatbelt {
+  /**
+   * Optional denial-capture settings.
+   */
+  captureDenials?: CaptureDenials;
   /**
    * Additional Mach service global names the process may resolve.
    */

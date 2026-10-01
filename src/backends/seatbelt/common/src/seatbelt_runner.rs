@@ -31,7 +31,10 @@ use std::time::Duration;
 
 use wxc_common::interruptible_reader::{wrap_pipe, InterruptibleReader, ReadCanceller};
 use wxc_common::logger::Logger;
-use wxc_common::models::{ExecutionRequest, LaunchMethod, ProxyAddress, ScriptResponse};
+use wxc_common::models::{
+    CaptureDenialsErrorOutput, CaptureDenialsMode, ExecutionRequest, LaunchMethod, ProxyAddress,
+    SandboxOutputMetadata, ScriptResponse,
+};
 use wxc_common::sandbox_process::{
     boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, group_kill,
     spawn_discard, take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio,
@@ -42,8 +45,9 @@ use wxc_common::validator::{
     validate_common, validate_network_policy_support, NetworkPolicySupport,
 };
 
+use crate::capture::SeatbeltCapture;
 use crate::default_env::{env_pairs, resolved_env, DEFAULT_SANDBOX_PATH};
-use crate::profile_builder::build_profile_with_proxy;
+use crate::profile_builder::build_profile_with_proxy_and_capture;
 
 /// Env var keys the cooperative proxy manages. When a proxy is active these
 /// are stripped from the caller-supplied environment so sandboxed code cannot
@@ -135,6 +139,22 @@ impl SandboxBackend for SeatbeltScriptRunner {
         crate::seatbelt_policy::validate_seatbelt_network_policy(&request.policy)
             .map_err(error_response)?;
         crate::seatbelt_policy::validate_seatbelt_ui_policy(request).map_err(error_response)?;
+        if let Some(seatbelt) = request.seatbelt.as_ref() {
+            if seatbelt.capture_denials.is_some() && seatbelt.profile_override.is_some() {
+                return Err(error_response(
+                    "Seatbelt captureDenials cannot be combined with profileOverride because \
+                     MXC cannot verify or inject the required reporting rules"
+                        .to_string(),
+                ));
+            }
+            if seatbelt.capture_denials.is_some() && seatbelt.launch_method == LaunchMethod::Open {
+                return Err(error_response(
+                    "Seatbelt captureDenials requires launchMethod='exec'; LaunchServices does \
+                     not provide an exact capture lifecycle"
+                        .to_string(),
+                ));
+            }
+        }
 
         Ok(())
     }
@@ -147,6 +167,26 @@ impl SandboxBackend for SeatbeltScriptRunner {
     ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
         validate_common(request)?;
         self.validate(request)?;
+
+        let mut capture = request
+            .seatbelt
+            .as_ref()
+            .and_then(|seatbelt| seatbelt.capture_denials.as_ref())
+            .map(SeatbeltCapture::start)
+            .transpose()
+            .map_err(error_response)?;
+        if request
+            .seatbelt
+            .as_ref()
+            .and_then(|seatbelt| seatbelt.capture_denials.as_ref())
+            .is_some_and(|capture| capture.mode == CaptureDenialsMode::Allow)
+        {
+            let _ = writeln!(
+                logger,
+                "SECURITY WARNING: Seatbelt captureDenials mode 'allow' permits and records \
+                 accesses that the generated policy would otherwise deny"
+            );
+        }
 
         // Start the cooperative network proxy (if configured) before building
         // the profile and launching the child: the profile's proxy-reachability
@@ -173,7 +213,12 @@ impl SandboxBackend for SeatbeltScriptRunner {
         }
         // Build the Seatbelt profile now that the proxy address is resolved, so
         // the reachability rule can be scoped to the proxy's exact host + port.
-        let profile = build_profile_with_proxy(request, proxy.address()).map_err(error_response)?;
+        let profile = build_profile_with_proxy_and_capture(
+            request,
+            proxy.address(),
+            capture.as_ref().map(SeatbeltCapture::marker),
+        )
+        .map_err(error_response)?;
         log_generated_profile(&profile, logger);
 
         // Determine launch method + GUI access from the seatbelt config.
@@ -188,7 +233,15 @@ impl SandboxBackend for SeatbeltScriptRunner {
         let gui_access = crate::seatbelt_policy::gui_access_effective(request);
 
         match launch_method {
-            LaunchMethod::Exec => spawn_exec(&profile, request, gui_access, stdio, logger, proxy),
+            LaunchMethod::Exec => spawn_exec(
+                &profile,
+                request,
+                gui_access,
+                stdio,
+                logger,
+                proxy,
+                capture.take(),
+            ),
             LaunchMethod::Open => spawn_open(&profile, request, stdio, logger, proxy),
         }
     }
@@ -207,6 +260,7 @@ fn spawn_exec(
     stdio: StdioMode,
     logger: &mut Logger,
     proxy: UnixProxyCoordinator,
+    capture: Option<SeatbeltCapture>,
 ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
     if gui_access && stdio == StdioMode::Pipes {
         return Err(error_response(
@@ -319,6 +373,8 @@ fn spawn_exec(
         group: new_session || new_group,
         cleanup: Vec::new(),
         proxy,
+        capture,
+        output_metadata: None,
     }))
 }
 
@@ -467,6 +523,8 @@ fn spawn_open(
         group: false,
         cleanup: vec![profile_path, helper_path, command_path],
         proxy,
+        capture: None,
+        output_metadata: None,
     }))
 }
 
@@ -496,6 +554,8 @@ struct SeatbeltSandboxProcess {
     /// The per-run cooperative network proxy. Inactive (a no-op on teardown)
     /// unless `network.proxy` was configured; stopped once the child exits.
     proxy: UnixProxyCoordinator,
+    capture: Option<SeatbeltCapture>,
+    output_metadata: Option<SandboxOutputMetadata>,
 }
 
 impl SeatbeltSandboxProcess {
@@ -620,8 +680,38 @@ impl SandboxProcess for SeatbeltSandboxProcess {
 
         cancel_and_join_discard(stdout_thread, &self.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.stderr_canceller);
+        let capture_result = match self.capture.as_mut() {
+            Some(capture) => match capture.finish(result.as_ref().copied().unwrap_or(-1)) {
+                Ok(output) => {
+                    self.output_metadata = Some(SandboxOutputMetadata {
+                        capture_denials: Some(output),
+                        capture_denials_error: None,
+                    });
+                    Ok(())
+                }
+                Err(error) => {
+                    self.output_metadata = Some(SandboxOutputMetadata {
+                        capture_denials: None,
+                        capture_denials_error: Some(CaptureDenialsErrorOutput {
+                            message: error.to_string(),
+                            etl_path: String::new(),
+                            trace_path: capture
+                                .trace_path()
+                                .map(|path| path.to_string_lossy().into_owned()),
+                        }),
+                    });
+                    Err(error)
+                }
+            },
+            None => Ok(()),
+        };
+        self.capture.take();
         self.run_cleanup();
-        result
+        learning_mode_core::combine_process_and_teardown_results(result, capture_result)
+    }
+
+    fn output_metadata(&self) -> Option<&SandboxOutputMetadata> {
+        self.output_metadata.as_ref()
     }
 }
 
@@ -984,8 +1074,8 @@ fn cleanup_files(paths: &[&str]) {
 mod tests {
     use super::*;
     use wxc_common::models::{
-        DefaultEnvCompatibility, ExecutionRequest, NetworkAction, NetworkEgressPolicy,
-        NetworkPolicy, ProxyAddress, SeatbeltConfig,
+        CaptureDenialsConfig, DefaultEnvCompatibility, ExecutionRequest, LaunchMethod,
+        NetworkAction, NetworkEgressPolicy, NetworkPolicy, ProxyAddress, SeatbeltConfig,
     };
 
     #[allow(clippy::field_reassign_with_default)]
@@ -997,6 +1087,30 @@ mod tests {
         request.experimental_enabled = true;
         request.seatbelt = Some(SeatbeltConfig::default());
         request
+    }
+
+    #[test]
+    fn capture_rejects_profile_override_before_spawn() {
+        let mut request = base_request();
+        let seatbelt = request.seatbelt.as_mut().unwrap();
+        seatbelt.capture_denials = Some(CaptureDenialsConfig::default());
+        seatbelt.profile_override = Some("(version 1)(allow default)".to_string());
+
+        let error = SeatbeltScriptRunner::new().validate(&request).unwrap_err();
+
+        assert!(error.error_message.contains("profileOverride"));
+    }
+
+    #[test]
+    fn capture_rejects_launch_services_before_spawn() {
+        let mut request = base_request();
+        let seatbelt = request.seatbelt.as_mut().unwrap();
+        seatbelt.capture_denials = Some(CaptureDenialsConfig::default());
+        seatbelt.launch_method = LaunchMethod::Open;
+
+        let error = SeatbeltScriptRunner::new().validate(&request).unwrap_err();
+
+        assert!(error.error_message.contains("launchMethod='exec'"));
     }
 
     #[test]
@@ -1086,7 +1200,8 @@ mod tests {
         // Guards the seam: a re-derived or stale profile must not be logged.
         let mut request = base_request();
         request.policy.readonly_paths = vec!["/tmp/mxc-profile-log-probe".into()];
-        let profile = build_profile_with_proxy(&request, None).expect("profile builds");
+        let profile =
+            build_profile_with_proxy_and_capture(&request, None, None).expect("profile builds");
 
         assert_eq!(
             extract_profile(&logged_profile(&profile)),

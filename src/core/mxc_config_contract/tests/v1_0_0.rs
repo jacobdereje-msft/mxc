@@ -3,6 +3,7 @@
 
 pub(crate) const CONTRACT_VERSION: &str = "1.0.0";
 pub(crate) const COMPATIBILITY_ALIASES: bool = false;
+pub(crate) const CAPTURE_TRACE_FIELD: &str = "retainEtl";
 pub(crate) use mxc_config_contract::published::v1_0_0::{
     DeprovisionRequest, ExecRequest, IsolationSessionProvisionRequest, OneShotRequest,
     StartRequest, StopRequest,

@@ -154,7 +154,7 @@ string_enum! {
     }
 }
 
-/// Windows denial-capture settings.
+/// Denial-capture settings shared by supported process sandbox backends.
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -165,11 +165,11 @@ pub struct CaptureDenials {
     /// Optional destination for the generated denial report.
     #[serde(default)]
     pub output_path: OptionalField<String>,
-    /// Whether to retain the sealed ETL trace after analysis. Retained traces
-    /// can contain sensitive resource paths and identifiers; callers are
-    /// responsible for deleting them.
+    /// Whether to retain the provider-native raw trace after analysis.
+    /// Retained traces can contain sensitive resource paths and identifiers;
+    /// callers are responsible for deleting them.
     #[serde(default)]
-    pub retain_etl: OptionalField<bool>,
+    pub retain_trace: OptionalField<bool>,
 }
 
 /// An AppContainer capability name supplied by the caller.
@@ -368,4 +368,7 @@ pub struct Seatbelt {
     /// Additional Mach service global names the process may resolve.
     #[serde(default)]
     pub extra_mach_lookups: OptionalField<Vec<String>>,
+    /// Optional denial-capture settings.
+    #[serde(default)]
+    pub capture_denials: OptionalField<CaptureDenials>,
 }

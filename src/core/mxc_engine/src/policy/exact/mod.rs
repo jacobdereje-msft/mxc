@@ -5,6 +5,10 @@ use std::num::NonZeroU16;
 
 use wxc_common::config_parser::{load_one_shot_request_from_contract, ExactOneShotContract};
 use wxc_common::logger::{Logger, Mode};
+use wxc_common::models::{
+    CaptureDenialsConfig as RuntimeCaptureDenialsConfig,
+    CaptureDenialsMode as RuntimeCaptureDenialsMode,
+};
 use wxc_common::mxc_error::MxcError;
 
 use crate::configs::{Lxc, ProcessContainer, Seatbelt};
@@ -136,6 +140,32 @@ pub(super) fn build_request(
         load_one_shot_request_from_contract(contract, &mut logger).map_err(|error| {
             MxcError::malformed_request(format!("failed to build request: {error}"))
         })?;
+    if let Some(capture) =
+        selected_seatbelt(containment).and_then(|seatbelt| seatbelt.capture_denials)
+    {
+        if let Some(path) = capture.output_path.as_deref() {
+            let candidate = std::path::Path::new(path);
+            if !candidate.is_absolute()
+                || candidate.parent().is_none_or(|parent| !parent.is_dir())
+                || candidate.is_dir()
+            {
+                return Err(error(format!(
+                    "seatbelt.captureDenials.outputPath must be an absolute file path \
+                     whose parent directory exists: '{path}'"
+                ))
+                .into());
+            }
+        }
+        inner.seatbelt.get_or_insert_default().capture_denials =
+            Some(RuntimeCaptureDenialsConfig {
+                mode: match capture.mode {
+                    crate::configs::CaptureDenialsMode::Block => RuntimeCaptureDenialsMode::Block,
+                    crate::configs::CaptureDenialsMode::Allow => RuntimeCaptureDenialsMode::Allow,
+                },
+                output_path: capture.output_path,
+                retain_trace: capture.retain_trace,
+            });
+    }
     inner.source_contract = None;
     Ok(SandboxRequest {
         inner,

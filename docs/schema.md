@@ -223,7 +223,7 @@ that can be executed independently.
         "filesystem": {
             "enumeratePaths": ["C:\\tools"] // Query/list entries without reading file contents
         },
-        "captureDenials": {                // Windows-only: record the process's access
+        "captureDenials": {                // Windows: record the process's access
             "mode": "block",               // "block" (default): access stays denied and
                                            // is logged (deny-by-default preserved). "allow":
                                            // access is allowed and logged (audit; relaxes
@@ -231,7 +231,8 @@ that can be executed independently.
             "outputPath": "C:\\logs\\denials.json", // JSON denials file the app reads. Parent dir
                                            // must exist; a unique per-run id is stamped into the
                                            // stem and the actual path is printed on stderr.
-            "retainEtl": false             // Keep the sealed ETL after analysis and report its
+            "retainEtl": false             // Released 1.0 name; development 1.1 uses retainTrace.
+                                           // Keep the sealed ETL after analysis and report its
                                            // path in output metadata. Defaults to false.
                                            // Retention requires a terminal wait; abandoning the
                                            // process handle deletes the internal trace.
@@ -256,7 +257,12 @@ that can be executed independently.
         "guiAccess": false,                // Allow GUI Mach services / IOKit / pty for window-drawing apps
         "nestedPty": true,                 // Allow inner process to allocate its own pty (posix_openpt)
         "keychainAccess": false,           // Allow Keychain via securityd / trustd / cfprefsd / lsd.*
-        "extraMachLookups": []             // Additional Mach service global-names the inner process may resolve
+        "extraMachLookups": [],            // Additional Mach service global-names the inner process may resolve
+        "captureDenials": {                // Development schema 1.1: record ungranted accesses
+            "mode": "block",               // "block" preserves enforcement; "allow" weakens it
+            "outputPath": "/tmp/denials.json", // Optional absolute output path; run id is stamped in stem
+            "retainTrace": false           // Preserve marker-filtered .seatbelt.log and return tracePath
+        }                                  // Incompatible with profileOverride
     },
 
     "telemetry": {                         // Telemetry (Windows only)

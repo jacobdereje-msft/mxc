@@ -17,7 +17,7 @@ pub const MAX_VERBOSE_LOGGING_GROUPS: usize = 4_096;
 /// 64 MiB frame limit for actionable denials and envelope overhead.
 pub const MAX_VERBOSE_LOGGING_SIGNATURE_BYTES: usize = 16 * 1024 * 1024;
 
-/// Stable category for a known Learning Mode ETW provider.
+/// Stable category for a known native denial-capture provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VerboseLoggingProvider {
@@ -25,6 +25,8 @@ pub enum VerboseLoggingProvider {
     KernelGeneral,
     /// Microsoft-Windows-Privacy-Auditing-PermissiveLearningMode.
     PrivacyAuditingPermissiveLearningMode,
+    /// macOS Seatbelt reports from the unified log.
+    Seatbelt,
 }
 
 /// Closed reason describing how a decoder outcome was handled.
@@ -128,6 +130,7 @@ impl VerboseLoggingSummary {
             Ok(index) => {
                 self.signatures[index].count = self.signatures[index].count.saturating_add(1);
             }
+
             Err(index) if self.signatures.len() < MAX_VERBOSE_LOGGING_GROUPS => {
                 self.signatures.insert(
                     index,
@@ -154,6 +157,33 @@ impl VerboseLoggingSummary {
                     self.record_overflow(signature.reason.is_actionable());
                     self.total_occurrences = self.total_occurrences.saturating_sub(1);
                 }
+            }
+        }
+    }
+
+    /// Records repeated occurrences of one signature without looping once per
+    /// occurrence.
+    pub fn record_occurrences(&mut self, signature: VerboseLoggingSignature, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.record(signature.clone());
+        let remaining = count - 1;
+        if remaining == 0 {
+            return;
+        }
+        self.total_occurrences = self.total_occurrences.saturating_add(remaining);
+        if let Ok(index) = self
+            .signatures
+            .binary_search_by(|group| group.signature.cmp(&signature))
+        {
+            self.signatures[index].count = self.signatures[index].count.saturating_add(remaining);
+        } else {
+            self.overflow_occurrences = self.overflow_occurrences.saturating_add(remaining);
+            if signature.reason.is_actionable() {
+                self.actionable_overflow_occurrences = self
+                    .actionable_overflow_occurrences
+                    .saturating_add(remaining);
             }
         }
     }

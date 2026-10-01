@@ -182,6 +182,27 @@ fn run_seatbelt(request: &ExecutionRequest, logger: &mut Logger) -> ! {
 
     print!("{}", response.standard_out);
     eprint!("{}", response.standard_err);
+    if let Some(pointer) = response
+        .output_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.capture_denials.as_ref())
+    {
+        match serde_json::to_string(pointer) {
+            Ok(line) => eprintln!("{line}"),
+            Err(error) => eprintln!("failed to serialize captureDenials output pointer: {error}"),
+        }
+    } else if let Some(error_output) = response
+        .output_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.capture_denials_error.as_ref())
+    {
+        match serde_json::to_string(error_output) {
+            Ok(line) => eprintln!("{line}"),
+            Err(error) => {
+                eprintln!("failed to serialize captureDenials error output: {error}");
+            }
+        }
+    }
 
     // Never exit non-zero on an infrastructure failure without a diagnostic:
     // `display_script_results` only writes the error into the (buffered,

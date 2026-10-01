@@ -11,12 +11,57 @@ fn accepts_complete_seatbelt_object() {
             "guiAccess": false,
             "nestedPty": false,
             "keychainAccess": false,
-            "extraMachLookups": ["com.apple.securityd", "com.apple.coreservices.launchservicesd"]
+            "extraMachLookups": ["com.apple.securityd", "com.apple.coreservices.launchservicesd"],
+            "captureDenials": {
+                "mode": "allow",
+                "outputPath": "/tmp/denials.json",
+                "retainTrace": true
+            }
         },
         "process": {"commandLine": "echo"}
     }"#;
 
     assert_valid(json);
+}
+
+#[test]
+fn accepts_seatbelt_capture_denials_modes() {
+    for mode in ["block", "allow"] {
+        let json = format!(
+            r#"{{
+                "version": "1.1.0-alpha",
+                "seatbelt": {{
+                    "captureDenials": {{"mode": "{mode}"}}
+                }},
+                "process": {{"commandLine": "echo"}}
+            }}"#
+        );
+
+        assert_valid(&json);
+    }
+}
+
+#[test]
+fn rejects_invalid_seatbelt_capture_denials() {
+    for capture_denials in [
+        r#"{"mode": "audit"}"#,
+        r#"{"outputPath": 1}"#,
+        r#"{"retainTrace": "true"}"#,
+        r#"{"retainEtl": true}"#,
+        r#"{"unknownField": true}"#,
+    ] {
+        let json = format!(
+            r#"{{
+                "version": "1.1.0-alpha",
+                "seatbelt": {{
+                    "captureDenials": {capture_denials}
+                }},
+                "process": {{"commandLine": "echo"}}
+            }}"#
+        );
+
+        assert_invalid(&json);
+    }
 }
 
 #[test]

@@ -207,7 +207,7 @@
   "definitions": {
     "CaptureDenials": {
       "additionalProperties": false,
-      "description": "Windows denial-capture settings.",
+      "description": "Denial-capture settings shared by supported process sandbox backends.",
       "properties": {
         "mode": {
           "$ref": "#/definitions/CaptureDenialsMode",
@@ -217,8 +217,8 @@
           "description": "Optional destination for the generated denial report.",
           "type": "string"
         },
-        "retainEtl": {
-          "description": "Whether to retain the sealed ETL trace after analysis. Retained traces can contain sensitive resource paths and identifiers; callers are responsible for deleting them.",
+        "retainTrace": {
+          "description": "Whether to retain the provider-native raw trace after analysis. Retained traces can contain sensitive resource paths and identifiers; callers are responsible for deleting them.",
           "type": "boolean"
         }
       },
@@ -1207,6 +1207,10 @@
       "additionalProperties": false,
       "description": "macOS Seatbelt backend settings.",
       "properties": {
+        "captureDenials": {
+          "$ref": "#/definitions/CaptureDenials",
+          "description": "Optional denial-capture settings."
+        },
         "extraMachLookups": {
           "description": "Additional Mach service global names the process may resolve.",
           "items": {

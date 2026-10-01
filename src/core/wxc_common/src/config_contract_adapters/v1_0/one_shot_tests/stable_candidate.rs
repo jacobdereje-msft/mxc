@@ -886,7 +886,7 @@ fn process_container_additions_map_expected_wire_fields() {
         Some(super::wire::CaptureDenialsMode::Block)
     ));
     assert_eq!(capture.output_path.as_deref(), Some(r"C:\denials.json"));
-    assert_eq!(capture.retain_etl, Some(true));
+    assert_eq!(capture.retain_trace, Some(true));
 }
 const DIRECTIONAL_NETWORK_REQUEST_JSON: &str = r#"{
     "version": "1.0.0",

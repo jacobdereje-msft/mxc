@@ -32,7 +32,9 @@ use std::path::{Path, PathBuf};
 use crate::seatbelt_policy;
 use wxc_common::filesystem_resolve::{resolve_path_plan, FsIntent};
 use wxc_common::host_is_canonical_loopback;
-use wxc_common::models::{ClipboardPolicy, ContainerPolicy, ExecutionRequest, ProxyAddress};
+use wxc_common::models::{
+    CaptureDenialsMode, ClipboardPolicy, ContainerPolicy, ExecutionRequest, ProxyAddress,
+};
 
 /// Build a complete Seatbelt sandbox profile, scoping cooperative proxy
 /// reachability to the resolved address supplied by the runner.
@@ -45,6 +47,15 @@ pub fn build_profile_with_proxy(
     request: &ExecutionRequest,
     proxy_address: Option<&ProxyAddress>,
 ) -> Result<String, String> {
+    build_profile_with_proxy_and_capture(request, proxy_address, None)
+}
+
+/// Builds a profile with a unique capture marker on every deny fallback.
+pub fn build_profile_with_proxy_and_capture(
+    request: &ExecutionRequest,
+    proxy_address: Option<&ProxyAddress>,
+    capture_marker: Option<&str>,
+) -> Result<String, String> {
     if let Some(override_profile) = request
         .seatbelt
         .as_ref()
@@ -55,9 +66,33 @@ pub fn build_profile_with_proxy(
 
     let mut out = String::with_capacity(2048);
 
-    // Header — Apple's Seatbelt requires `(version 1)` and we baseline with deny-default.
     out.push_str("(version 1)\n");
-    out.push_str("(deny default)\n");
+    let capture_mode = request
+        .seatbelt
+        .as_ref()
+        .and_then(|config| config.capture_denials.as_ref())
+        .map(|capture| capture.mode);
+    let enforce_denies = capture_mode != Some(CaptureDenialsMode::Allow);
+    match (capture_mode, capture_marker) {
+        (Some(CaptureDenialsMode::Allow), Some(marker)) => {
+            let _ = writeln!(
+                out,
+                "(allow (with report) default (with message {}))",
+                quote_scheme(marker)
+            );
+        }
+        (Some(CaptureDenialsMode::Allow), None) => {
+            return Err("Seatbelt allow-mode capture requires a report marker".to_string());
+        }
+        (_, Some(marker)) => {
+            let _ = writeln!(
+                out,
+                "(deny default (with message {}))",
+                quote_scheme(marker)
+            );
+        }
+        (_, None) => out.push_str("(deny default)\n"),
+    }
 
     // Minimum allow rules so a child process can actually run. These are
     // the same things Apple's own built-in profiles (e.g. no-internet)
@@ -78,15 +113,23 @@ pub fn build_profile_with_proxy(
 
     // Policy-derived allow rules.
     let resolved = ResolvedPaths::from_policy(&request.policy)?;
-    write_filesystem_allow(&mut out, &resolved);
-    write_network_rules(&mut out, request, proxy_address);
+    write_filesystem_allow(&mut out, &resolved, capture_marker, enforce_denies);
+    write_network_rules(
+        &mut out,
+        request,
+        proxy_address,
+        capture_marker,
+        enforce_denies,
+    );
     write_nested_pty_rules(&mut out, request);
     write_keychain_rules(&mut out, request)?;
     write_extra_seatbelt_rules(&mut out, request);
-    write_ui_rules(&mut out, request);
+    write_ui_rules(&mut out, request, capture_marker, enforce_denies);
 
     // Policy-derived deny rules go LAST so they win on conflict.
-    write_filesystem_deny(&mut out, &resolved);
+    if enforce_denies {
+        write_filesystem_deny(&mut out, &resolved, capture_marker);
+    }
 
     Ok(out)
 }
@@ -303,7 +346,12 @@ fn resolve_all(paths: &[String]) -> Result<Vec<String>, String> {
     paths.iter().map(|p| resolve_policy_path(p)).collect()
 }
 
-fn write_filesystem_allow(out: &mut String, paths: &ResolvedPaths) {
+fn write_filesystem_allow(
+    out: &mut String,
+    paths: &ResolvedPaths,
+    capture_marker: Option<&str>,
+    enforce_denies: bool,
+) {
     if paths.readonly.is_empty() && paths.readwrite.is_empty() {
         return;
     }
@@ -330,10 +378,11 @@ fn write_filesystem_allow(out: &mut String, paths: &ResolvedPaths) {
                     out,
                     "allow file-read* file-write* network-bind network-outbound",
                     &subpath,
+                    None,
                 );
             }
             FsIntent::ReadOnly => {
-                write_path_rule(out, "allow file-read*", &subpath);
+                write_path_rule(out, "allow file-read*", &subpath, None);
                 // The read allow names only `file-read*`, so it says nothing
                 // about write or socket ops and cannot displace a shallower
                 // read-write grant — the removal has to be explicit.
@@ -344,18 +393,21 @@ fn write_filesystem_allow(out: &mut String, paths: &ResolvedPaths) {
                 // rules that carry a filter, and an unfiltered rule does not
                 // override a path-filtered one. Pinned by
                 // `readonly_socket_strip_survives_a_default_allow_outbound`.
-                write_path_rule(
-                    out,
-                    "deny file-write* network-bind network-outbound",
-                    &subpath,
-                );
+                if enforce_denies {
+                    write_path_rule(
+                        out,
+                        "deny file-write* network-bind network-outbound",
+                        &subpath,
+                        capture_marker,
+                    );
+                }
             }
             FsIntent::Denied => unreachable!("denied paths are not part of this plan"),
         }
     }
 }
 
-fn write_filesystem_deny(out: &mut String, paths: &ResolvedPaths) {
+fn write_filesystem_deny(out: &mut String, paths: &ResolvedPaths, capture_marker: Option<&str>) {
     if !paths.denied.is_empty() {
         // `network-outbound` is denied here for two reasons. A denied path can
         // sit inside a broader `readwritePaths` subtree, whose allow covers it;
@@ -370,13 +422,15 @@ fn write_filesystem_deny(out: &mut String, paths: &ResolvedPaths) {
             out,
             "deny file-read* file-write* network-bind network-outbound",
             &paths.denied,
+            capture_marker,
         );
     }
 }
 
 /// Emit a single `(<ops> (subpath …)…)` rule over already-resolved paths.
-fn write_path_rule(out: &mut String, ops: &str, paths: &[String]) {
+fn write_path_rule(out: &mut String, ops: &str, paths: &[String], capture_marker: Option<&str>) {
     let _ = writeln!(out, "({ops}");
+    write_capture_message(out, capture_marker);
     for p in paths {
         let _ = writeln!(out, "    (subpath {})", quote_scheme(p));
     }
@@ -387,6 +441,8 @@ fn write_network_rules(
     out: &mut String,
     request: &ExecutionRequest,
     proxy_address: Option<&ProxyAddress>,
+    capture_marker: Option<&str>,
+    enforce_denies: bool,
 ) {
     let policy = &request.policy;
     let allow_outbound = seatbelt_policy::egress_allowed(policy);
@@ -425,7 +481,7 @@ fn write_network_rules(
         }
     }
 
-    write_host_loopback_rules(out, policy, allow_outbound);
+    write_host_loopback_rules(out, policy, allow_outbound, capture_marker, enforce_denies);
 
     // Emitted last on purpose: among rules whose filters both match, Seatbelt
     // takes the *last* one. Nothing here denies `localhost` today — the deny
@@ -454,19 +510,31 @@ fn write_network_rules(
 /// Only the two combinations that actually change the profile emit anything;
 /// deny-under-deny is already covered by `(deny default)`, and allow-under-allow
 /// is already covered by the blanket outbound allow.
-fn write_host_loopback_rules(out: &mut String, policy: &ContainerPolicy, allow_outbound: bool) {
+fn write_host_loopback_rules(
+    out: &mut String,
+    policy: &ContainerPolicy,
+    allow_outbound: bool,
+    capture_marker: Option<&str>,
+    enforce_denies: bool,
+) {
     // The legacy shape has no hostLoopback concept — leave 0.6/0.7 untouched.
     let Some(loopback_allowed) = seatbelt_policy::host_loopback_allowed(policy) else {
         return;
     };
 
     match (loopback_allowed, allow_outbound) {
-        (false, true) => {
+        (false, true) if enforce_denies => {
             // `localhost` matches this machine on any of its addresses, so this
             // also closes the "reach the host via its LAN IP" path.
             out.push_str(";; --- network: ingress.hostLoopback=deny — close host loopback,\n");
             out.push_str(";;     including this host's own non-loopback addresses ---\n");
-            out.push_str("(deny network-outbound (remote ip \"localhost:*\"))\n");
+            if capture_marker.is_some() {
+                out.push_str("(deny network-outbound\n");
+                write_capture_message(out, capture_marker);
+                out.push_str("    (remote ip \"localhost:*\"))\n");
+            } else {
+                out.push_str("(deny network-outbound (remote ip \"localhost:*\"))\n");
+            }
         }
         (true, false) => {
             // Same breadth in reverse: this opens every address bound to this
@@ -535,7 +603,12 @@ fn write_local_network_rules(out: &mut String, allow_local_network: bool) {
     out.push_str("(allow network-inbound (local ip))\n");
 }
 
-fn write_ui_rules(out: &mut String, request: &ExecutionRequest) {
+fn write_ui_rules(
+    out: &mut String,
+    request: &ExecutionRequest,
+    capture_marker: Option<&str>,
+    enforce_denies: bool,
+) {
     let ui = &request.policy.ui;
     let gui_access = seatbelt_policy::gui_access_effective(request);
 
@@ -586,9 +659,10 @@ fn write_ui_rules(out: &mut String, request: &ExecutionRequest) {
             out.push_str(";; --- guiAccess: allow POSIX IPC for GUI apps ---\n");
             out.push_str("(allow ipc-posix-shm-read-data ipc-posix-shm-write-data ipc-posix-shm-write-create)\n");
         }
-    } else {
+    } else if enforce_denies {
         out.push_str(";; --- ui.disable: deny WindowServer + related ---\n");
         out.push_str("(deny mach-lookup\n");
+        write_capture_message(out, capture_marker);
         out.push_str("    (global-name \"com.apple.windowserver.active\")\n");
         out.push_str("    (global-name \"com.apple.windowserver.session\")\n");
         out.push_str("    (global-name \"com.apple.coreservices.launchservicesd\"))\n");
@@ -601,14 +675,24 @@ fn write_ui_rules(out: &mut String, request: &ExecutionRequest) {
     if clipboard_allowed {
         out.push_str(";; --- clipboard enabled: allow pasteboard ---\n");
         out.push_str("(allow mach-lookup (global-name \"com.apple.pasteboard.1\"))\n");
-    } else {
+    } else if enforce_denies {
         out.push_str(";; --- ui.clipboard=none: deny pasteboard ---\n");
-        out.push_str("(deny mach-lookup (global-name \"com.apple.pasteboard.1\"))\n");
+        out.push_str("(deny mach-lookup\n");
+        write_capture_message(out, capture_marker);
+        out.push_str("    (global-name \"com.apple.pasteboard.1\"))\n");
     }
 
-    if !ui.injection {
+    if !ui.injection && enforce_denies {
         out.push_str(";; --- ui.injection=false: deny HID iokit access ---\n");
-        out.push_str("(deny iokit-open (iokit-user-client-class \"IOHIDLibUserClient\"))\n");
+        out.push_str("(deny iokit-open\n");
+        write_capture_message(out, capture_marker);
+        out.push_str("    (iokit-user-client-class \"IOHIDLibUserClient\"))\n");
+    }
+}
+
+fn write_capture_message(out: &mut String, capture_marker: Option<&str>) {
+    if let Some(marker) = capture_marker {
+        let _ = writeln!(out, "    (with message {})", quote_scheme(marker));
     }
 }
 
@@ -846,7 +930,10 @@ fn escape_for_quotes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wxc_common::models::{NetworkAction, NetworkPolicy, SeatbeltConfig, UiPolicy};
+    use wxc_common::models::{
+        CaptureDenialsConfig, CaptureDenialsMode, NetworkAction, NetworkPolicy, SeatbeltConfig,
+        UiPolicy,
+    };
 
     fn build_profile(request: &ExecutionRequest) -> Result<String, String> {
         build_profile_with_proxy(request, request.policy.network_proxy.address.as_ref())
@@ -872,6 +959,43 @@ mod tests {
         assert!(p.contains("(subpath \"/bin\")"));
         assert!(p.contains("(subpath \"/usr/bin\")"));
         assert!(p.contains("(allow file-read-data (literal \"/\"))"));
+    }
+
+    #[test]
+    fn block_capture_marks_enforced_denials() {
+        let mut request = req();
+        request.seatbelt = Some(SeatbeltConfig {
+            capture_denials: Some(CaptureDenialsConfig {
+                mode: CaptureDenialsMode::Block,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let profile =
+            build_profile_with_proxy_and_capture(&request, None, Some("MXC-MARK")).unwrap();
+
+        assert!(profile.contains("(deny default (with message \"MXC-MARK\"))"));
+        assert!(!profile.contains("(allow (with report) default"));
+    }
+
+    #[test]
+    fn allow_capture_reports_without_enforcing_generated_denials() {
+        let mut request = req();
+        request.seatbelt = Some(SeatbeltConfig {
+            capture_denials: Some(CaptureDenialsConfig {
+                mode: CaptureDenialsMode::Allow,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let profile =
+            build_profile_with_proxy_and_capture(&request, None, Some("MXC-MARK")).unwrap();
+
+        assert!(profile.contains("(allow (with report) default (with message \"MXC-MARK\"))"));
+        assert!(!profile.contains("(deny default"));
+        assert!(!profile.contains("(deny file-"));
     }
 
     #[test]

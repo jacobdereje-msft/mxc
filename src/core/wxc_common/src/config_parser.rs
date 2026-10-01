@@ -1192,7 +1192,10 @@ fn validate_single_backend_section(
 }
 
 /// Convert a typed `wire::Seatbelt` block into the validated domain struct.
-fn make_seatbelt_config(sb: wire::Seatbelt) -> SeatbeltConfig {
+fn make_seatbelt_config(
+    sb: wire::Seatbelt,
+    logger: &mut Logger,
+) -> Result<SeatbeltConfig, WxcError> {
     // Destructure (no `..`) so adding a wire field without mapping it is a
     // compile error rather than a silent runtime drop.
     let wire::Seatbelt {
@@ -1202,15 +1205,36 @@ fn make_seatbelt_config(sb: wire::Seatbelt) -> SeatbeltConfig {
         nested_pty,
         keychain_access,
         extra_mach_lookups,
+        capture_denials,
     } = sb;
-    SeatbeltConfig {
+    let capture_denials = capture_denials
+        .map(|capture| -> Result<CaptureDenialsConfig, WxcError> {
+            if let Some(path) = capture.output_path.as_deref() {
+                validate_capture_denials_output_path(
+                    "seatbelt.captureDenials.outputPath",
+                    path,
+                    logger,
+                )?;
+            }
+            Ok(CaptureDenialsConfig {
+                mode: match capture.mode {
+                    Some(wire::CaptureDenialsMode::Allow) => CaptureDenialsMode::Allow,
+                    Some(wire::CaptureDenialsMode::Block) | None => CaptureDenialsMode::Block,
+                },
+                output_path: capture.output_path,
+                retain_trace: capture.retain_trace.unwrap_or(false),
+            })
+        })
+        .transpose()?;
+    Ok(SeatbeltConfig {
         profile_override,
         gui_access: gui_access.unwrap_or(false),
         launch_method: launch_method.map(Into::into).unwrap_or_default(),
         nested_pty: nested_pty.unwrap_or(true),
         keychain_access: keychain_access.unwrap_or(false),
         extra_mach_lookups: extra_mach_lookups.unwrap_or_default(),
-    }
+        capture_denials,
+    })
 }
 
 /// Resolve the optional `containment` wire enum to a concrete domain backend.
@@ -1250,17 +1274,19 @@ fn requested_sandbox_kind(c: Option<&wire::Containment>) -> &'static str {
     }
 }
 
-/// Validates a caller-specified `processContainer.captureDenials.outputPath`: it
+/// Validates a caller-specified `captureDenials.outputPath`: it
 /// must be an absolute path whose parent directory already exists (the runner
 /// writes the JSON denials output file there after the workload exits). The
 /// path itself must not be an existing directory. A relative path, directory
 /// path, or missing parent yields an actionable error.
-fn validate_capture_denials_output_path(path: &str, logger: &mut Logger) -> Result<(), WxcError> {
+fn validate_capture_denials_output_path(
+    field_path: &str,
+    path: &str,
+    logger: &mut Logger,
+) -> Result<(), WxcError> {
     let candidate = std::path::Path::new(path);
     if !candidate.is_absolute() {
-        let msg = format!(
-            "processContainer.captureDenials.outputPath must be an absolute path: '{path}'"
-        );
+        let msg = format!("{field_path} must be an absolute path: '{path}'");
         logger.log_line(&msg);
         return Err(WxcError::ConfigParse(msg));
     }
@@ -1268,35 +1294,25 @@ fn validate_capture_denials_output_path(path: &str, logger: &mut Logger) -> Resu
         // A filesystem root ("/", "C:\\") has either no parent (`None`) or an
         // empty parent, and cannot name a trace file.
         None => {
-            let msg = format!(
-                "processContainer.captureDenials.outputPath must name a file, not a \
-                 directory root: '{path}'"
-            );
+            let msg = format!("{field_path} must name a file, not a directory root: '{path}'");
             logger.log_line(&msg);
             Err(WxcError::ConfigParse(msg))
         }
         Some(parent) if parent.as_os_str().is_empty() => {
-            let msg = format!(
-                "processContainer.captureDenials.outputPath must name a file, not a \
-                 directory root: '{path}'"
-            );
+            let msg = format!("{field_path} must name a file, not a directory root: '{path}'");
             logger.log_line(&msg);
             Err(WxcError::ConfigParse(msg))
         }
         Some(parent) if !parent.is_dir() => {
             let msg = format!(
-                "processContainer.captureDenials.outputPath parent directory does not \
-                 exist: '{}'",
+                "{field_path} parent directory does not exist: '{}'",
                 parent.display()
             );
             logger.log_line(&msg);
             Err(WxcError::ConfigParse(msg))
         }
         Some(_) if candidate.is_dir() => {
-            let msg = format!(
-                "processContainer.captureDenials.outputPath must name a file, not an \
-                 existing directory: '{path}'"
-            );
+            let msg = format!("{field_path} must name a file, not an existing directory: '{path}'");
             logger.log_line(&msg);
             Err(WxcError::ConfigParse(msg))
         }
@@ -1454,7 +1470,11 @@ fn normalize_common_request_ir(
         // eagerly so a bad path fails at parse time rather than deep in the runner.
         if let Some(cd) = ac.capture_denials {
             if let Some(path) = cd.output_path.as_deref() {
-                validate_capture_denials_output_path(path, logger)?;
+                validate_capture_denials_output_path(
+                    "processContainer.captureDenials.outputPath",
+                    path,
+                    logger,
+                )?;
             }
             let mode = match cd.mode {
                 Some(wire::CaptureDenialsMode::Allow) => CaptureDenialsMode::Allow,
@@ -1496,7 +1516,7 @@ fn normalize_common_request_ir(
             policy.capture_denials = Some(CaptureDenialsConfig {
                 mode,
                 output_path: cd.output_path,
-                retain_etl: cd.retain_etl.unwrap_or(false),
+                retain_trace: cd.retain_trace.unwrap_or(false),
             });
         }
 
@@ -1905,7 +1925,10 @@ fn normalize_common_request_ir(
         runtime: h.runtime.unwrap_or_default(),
     });
 
-    let seatbelt = cfg.seatbelt.map(make_seatbelt_config);
+    let seatbelt = cfg
+        .seatbelt
+        .map(|seatbelt| make_seatbelt_config(seatbelt, logger))
+        .transpose()?;
     let telemetry = cfg.telemetry.map(|raw| TelemetryConfig {
         enabled: raw.enabled,
         requested_sandbox_kind: Some(requested_sandbox_kind(cfg.containment.as_ref())),

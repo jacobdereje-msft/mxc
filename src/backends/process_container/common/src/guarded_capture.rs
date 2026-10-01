@@ -302,6 +302,7 @@ fn finalize_analysis(
                         capture_denials_error: Some(CaptureDenialsErrorOutput {
                             message: message.clone(),
                             etl_path: String::new(),
+                            trace_path: None,
                         }),
                     }),
                     result: Err(message),
@@ -321,6 +322,7 @@ fn finalize_analysis(
                 capture_denials_error: Some(CaptureDenialsErrorOutput {
                     message: message.clone(),
                     etl_path,
+                    trace_path: None,
                 }),
             });
             GuardedCaptureFinalization {

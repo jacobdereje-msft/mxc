@@ -11,4 +11,6 @@ license.workspace = true
 wxc_common = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+chrono = { workspace = true }
 libc = { workspace = true }
+learning_mode_core = { workspace = true }

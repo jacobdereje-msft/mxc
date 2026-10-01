@@ -463,18 +463,19 @@ fn rejects_non_string_capture_denials_output_path() {
 }
 
 #[test]
-fn accepts_capture_denials_retain_etl_values() {
-    for capture_denials_retain_etl in ["true", "false"] {
+fn accepts_capture_denials_trace_retention_values() {
+    for retain_trace in ["true", "false"] {
         let json = format!(
             r#"{{
                 "version": "0.9.0-alpha",
                 "processContainer": {{
                     "captureDenials": {{
-                        "retainEtl": {capture_denials_retain_etl}
+                        "{field}": {retain_trace}
                     }}
                 }},
                 "process": {{"commandLine": "echo"}}
-            }}"#
+            }}"#,
+            field = crate::CAPTURE_TRACE_FIELD,
         );
 
         assert_valid(&json);
@@ -482,18 +483,19 @@ fn accepts_capture_denials_retain_etl_values() {
 }
 
 #[test]
-fn rejects_non_boolean_capture_denials_retain_etl_values() {
-    for capture_denials_retain_etl in ["\"string\"", "123", "[]", "{}"] {
+fn rejects_non_boolean_capture_denials_trace_retention_values() {
+    for retain_trace in ["\"string\"", "123", "[]", "{}"] {
         let json = format!(
             r#"{{
                 "version": "0.9.0-alpha",
                 "processContainer": {{
                     "captureDenials": {{
-                        "retainEtl": {capture_denials_retain_etl}
+                        "{field}": {retain_trace}
                     }}
                 }},
                 "process": {{"commandLine": "echo"}}
-            }}"#
+            }}"#,
+            field = crate::CAPTURE_TRACE_FIELD,
         );
 
         assert_invalid(&json);

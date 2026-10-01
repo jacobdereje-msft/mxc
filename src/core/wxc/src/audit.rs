@@ -32,7 +32,7 @@ fn prepare_request_in(
     request.policy.capture_denials = Some(CaptureDenialsConfig {
         mode: CaptureDenialsMode::Allow,
         output_path: Some(log_dir.join("denials.json").to_string_lossy().into_owned()),
-        retain_etl: true,
+        retain_trace: true,
     });
     Ok(AuditContext {
         log_dir,
@@ -309,7 +309,7 @@ mod tests {
         let capture = request.policy.capture_denials.as_ref().unwrap();
 
         assert_eq!(capture.mode, CaptureDenialsMode::Allow);
-        assert!(capture.retain_etl);
+        assert!(capture.retain_trace);
         assert_eq!(
             capture.output_path.as_deref(),
             Some(log_dir.join("denials.json").to_string_lossy().as_ref())
@@ -422,6 +422,7 @@ mod tests {
                 capture_denials_error: Some(CaptureDenialsErrorOutput {
                     message: "decode failed".to_string(),
                     etl_path: r"C:\retained\capture.etl".to_string(),
+                    trace_path: None,
                 }),
             })),
             ..Default::default()
@@ -582,6 +583,7 @@ mod tests {
             total_denials: 0,
             denied_resources_truncated: false,
             etl_path: Some(source_etl.to_string_lossy().into_owned()),
+            trace_path: None,
         };
 
         let mut calls = 0;
@@ -643,6 +645,7 @@ mod tests {
             total_denials: 0,
             denied_resources_truncated: false,
             etl_path: Some(source_etl.to_string_lossy().into_owned()),
+            trace_path: None,
         };
 
         let error = relocate_artifacts(
@@ -692,6 +695,7 @@ mod tests {
                     total_denials: 0,
                     denied_resources_truncated: false,
                     etl_path: Some(etl_path.to_string_lossy().into_owned()),
+                    trace_path: None,
                 }),
                 capture_denials_error: None,
             })),

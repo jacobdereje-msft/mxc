@@ -14,6 +14,8 @@
 //! - [`seatbelt_runner`] is gated to `target_os = "macos"` since it spawns
 //!   `/usr/bin/sandbox-exec`.
 
+#[cfg(target_os = "macos")]
+pub mod capture;
 pub mod default_env;
 pub mod profile_builder;
 pub mod seatbelt_policy;

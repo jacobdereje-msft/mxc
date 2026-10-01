@@ -98,6 +98,10 @@ public sealed class AvailableBackend
     public IReadOnlyList<BackendCapability> Capabilities { get; init; } =
         Array.Empty<BackendCapability>();
 
+    /// <summary>Supported denial-capture modes for this backend and host.</summary>
+    public IReadOnlyList<CaptureDenialsMode> CaptureDenialsModes { get; init; } =
+        Array.Empty<CaptureDenialsMode>();
+
     /// <summary>
     /// Diagnostics for a capability this host cannot offer.
     /// </summary>
@@ -176,6 +180,9 @@ internal sealed class NativeAvailableBackend
 
     [JsonPropertyName("capabilities")]
     public string[] Capabilities { get; init; } = [];
+
+    [JsonPropertyName("captureDenialsModes")]
+    public string[] CaptureDenialsModes { get; init; } = [];
 
     [JsonPropertyName("warnings")]
     public string[] Warnings { get; init; } = [];

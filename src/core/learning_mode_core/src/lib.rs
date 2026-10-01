@@ -33,6 +33,7 @@
 #![deny(missing_docs)]
 
 pub mod analyze;
+pub mod capture_output;
 pub mod emit;
 pub mod model;
 pub mod paired_output;
@@ -40,6 +41,11 @@ pub mod summary;
 pub mod verbose_logging;
 
 pub use analyze::{AnalysisResult, AnalyzeError, DenialAnalyzer, ProcessLifetime};
+pub use capture_output::{
+    combine_process_and_teardown_results, insert_run_id_into_stem, random_capture_suffix,
+    remove_internal_capture_file, unique_capture_output_paths, write_denials_output,
+    CaptureOutputPaths,
+};
 pub use emit::{write_document, DenialsDocument, DenialsOutputPointer};
 pub use model::{AccessType, DedupKey, DeniedResource, ResourceType};
 pub use paired_output::{

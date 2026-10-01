@@ -1359,6 +1359,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 name = "learning_mode_core"
 version = "0.9.0"
 dependencies = [
+ "getrandom 0.2.17",
  "same-file",
  "serde",
  "serde_json",
@@ -1608,6 +1609,7 @@ dependencies = [
  "clap",
  "mxc_build_common",
  "mxc_engine",
+ "serde_json",
  "wxc_common",
 ]
 
@@ -2253,6 +2255,8 @@ dependencies = [
 name = "seatbelt_common"
 version = "0.9.0"
 dependencies = [
+ "chrono",
+ "learning_mode_core",
  "libc",
  "wxc_common",
 ]

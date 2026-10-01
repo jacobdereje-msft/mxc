@@ -332,6 +332,27 @@ describe('native binding request', () => {
       extraMachLookups: ['com.example.service'],
     });
 
+    const seatbeltCapture = prepareRequestSpec({
+      version: '1.0.0',
+      containment: 'seatbelt',
+      process: { commandLine: 'echo hello' },
+      seatbelt: {
+        captureDenials: {
+          mode: 'allow',
+          outputPath: '/tmp/denials.json',
+          retainTrace: true,
+        },
+      },
+    });
+    assert.deepStrictEqual(seatbeltCapture.containment, {
+      type: 'seatbelt',
+      captureDenials: {
+        mode: 'allow',
+        outputPath: '/tmp/denials.json',
+        retainTrace: true,
+      },
+    });
+
     const lxc = prepareRequestSpec({
       version: '1.0.0',
       containment: 'lxc',

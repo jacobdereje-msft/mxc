@@ -20,7 +20,7 @@ use crate::guarded_capture;
 #[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub enum BackendCapability {
-    /// Windows ProcessContainer denial capture.
+    /// Backend denial capture.
     CaptureDenials,
     /// Native `filesystem.deniedPaths` enforcement at the reported tier.
     FilesystemDeniedPaths,
@@ -30,6 +30,17 @@ pub enum BackendCapability {
     IngressHostLoopbackAllow,
     /// Bubblewrap proxy-only egress in a private network namespace.
     ProxyEnforcement,
+}
+
+/// Denial-capture behavior supported by a backend on the current host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureDenialsModeCapability {
+    /// Ungranted accesses remain denied while they are recorded.
+    Block,
+    /// Ungranted accesses are allowed while they are recorded.
+    Allow,
 }
 
 /// One host-available backend, plus its effective isolation tier (if any).
@@ -50,6 +61,9 @@ pub struct AvailableBackend {
     /// Optional features supported by the reported tier.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<BackendCapability>,
+    /// Supported `captureDenials.mode` values when capture is available.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capture_denials_modes: Vec<CaptureDenialsModeCapability>,
     /// Diagnostics for a capability this host cannot offer.
     ///
     /// Not a guarantee for every absent capability: only checks that produce a
@@ -66,6 +80,7 @@ impl AvailableBackend {
             backend: backend.to_string(),
             tier: None,
             capabilities: Vec::new(),
+            capture_denials_modes: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -127,9 +142,21 @@ pub fn to_json_pretty(backends: &[AvailableBackend]) -> Result<String, serde_jso
 fn macos_backends() -> Vec<AvailableBackend> {
     let mut backends = Vec::new();
     if std::path::Path::new("/usr/bin/sandbox-exec").exists() {
-        backends.push(AvailableBackend::tierless(
-            ContainmentBackend::Seatbelt.wire_name(),
-        ));
+        let mut seatbelt = AvailableBackend::tierless(ContainmentBackend::Seatbelt.wire_name());
+        if std::path::Path::new("/usr/bin/log").exists() {
+            seatbelt
+                .capabilities
+                .push(BackendCapability::CaptureDenials);
+            seatbelt.capture_denials_modes = vec![
+                CaptureDenialsModeCapability::Block,
+                CaptureDenialsModeCapability::Allow,
+            ];
+        } else {
+            seatbelt
+                .warnings
+                .push("captureDenials requires /usr/bin/log".to_string());
+        }
+        backends.push(seatbelt);
     }
     backends
 }
@@ -204,6 +231,14 @@ fn windows_backends(
         backend: ContainmentBackend::ProcessContainer.wire_name().to_string(),
         tier: Some(tier.as_str().to_string()),
         capabilities,
+        capture_denials_modes: if support.capture_denials {
+            vec![
+                CaptureDenialsModeCapability::Block,
+                CaptureDenialsModeCapability::Allow,
+            ]
+        } else {
+            Vec::new()
+        },
         warnings: Vec::new(),
     };
     let mut backends = vec![process_container];
@@ -316,6 +351,7 @@ mod tests {
             backend: "processcontainer".to_string(),
             tier: Some("appcontainer-dacl".to_string()),
             capabilities: Vec::new(),
+            capture_denials_modes: Vec::new(),
             warnings: Vec::new(),
         };
         let json = serde_json::to_string(&backend).expect("serializes");
@@ -331,12 +367,16 @@ mod tests {
             backend: "processcontainer".to_string(),
             tier: Some("base-container".to_string()),
             capabilities: vec![BackendCapability::CaptureDenials],
+            capture_denials_modes: vec![
+                CaptureDenialsModeCapability::Block,
+                CaptureDenialsModeCapability::Allow,
+            ],
             warnings: Vec::new(),
         };
         let json = serde_json::to_string(&backend).expect("serializes");
         assert_eq!(
             json,
-            r#"{"backend":"processcontainer","tier":"base-container","capabilities":["captureDenials"]}"#
+            r#"{"backend":"processcontainer","tier":"base-container","capabilities":["captureDenials"],"captureDenialsModes":["block","allow"]}"#
         );
     }
 

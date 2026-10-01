@@ -276,6 +276,7 @@ pub(crate) fn verbose_logging_provider_guid(provider: VerboseLoggingProvider) ->
         VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode => {
             format_guid_braced_uppercase(PRIVACY_LEARNING_MODE_PROVIDER)
         }
+        _ => unreachable!("non-Windows verbose provider has no ETW GUID"),
     }
 }
 

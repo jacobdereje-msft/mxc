@@ -558,11 +558,25 @@ export interface LxcConfig {
  * macOS Seatbelt sandbox configuration. Used under the top-level
  * `seatbelt` key when `containment == "seatbelt"`.
  */
+export interface SeatbeltCaptureDenialsConfig {
+  /** Whether ungranted accesses remain blocked or are temporarily allowed. */
+  mode?: 'block' | 'allow';
+  /** Optional absolute destination for the generated denial report. */
+  outputPath?: string;
+  /** Preserve the raw Seatbelt unified-log trace after analysis. */
+  retainTrace?: boolean;
+}
+
 export interface SeatbeltConfig {
   /**
    * Optional override of the generated TinyScheme sandbox profile.
    */
   profileOverride?: string;
+  /**
+   * Capture accesses that are not granted by the generated profile.
+   * Cannot be combined with `profileOverride`.
+   */
+  captureDenials?: SeatbeltCaptureDenialsConfig;
   /** Allow GUI applications to access the macOS WindowServer and related services. */
   guiAccess?: boolean;
   /**

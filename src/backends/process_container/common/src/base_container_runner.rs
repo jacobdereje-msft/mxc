@@ -492,7 +492,7 @@ impl BaseContainerRunner {
         //     provided, else a managed per-run temp `.json` file.
         let mut managed_capture = capture_denials
             .as_ref()
-            .map(|config| managed_capture_output_path(config.retain_etl))
+            .map(|config| managed_capture_output_path(config.retain_trace))
             .transpose()?;
         let capture_output_paths = capture_denials
             .as_ref()
@@ -1098,7 +1098,7 @@ impl BaseContainerRunner {
             capture_output_path,
             retain_capture_etl: capture_denials
                 .as_ref()
-                .is_some_and(|config| config.retain_etl),
+                .is_some_and(|config| config.retain_trace),
         })
     }
 }
@@ -1409,6 +1409,7 @@ impl BaseContainerSandboxProcess {
                                     .as_deref()
                                     .map(|path| path.to_string_lossy().into_owned())
                                     .unwrap_or_default(),
+                                trace_path: None,
                             }),
                         });
                         Err(error)
@@ -1423,6 +1424,7 @@ impl BaseContainerSandboxProcess {
                                 capture_denials_error: Some(CaptureDenialsErrorOutput {
                                     message: error.to_string(),
                                     etl_path: etl_path.to_string_lossy().into_owned(),
+                                    trace_path: None,
                                 }),
                             });
                         }
@@ -1448,6 +1450,7 @@ impl BaseContainerSandboxProcess {
                                     capture_denials_error: Some(CaptureDenialsErrorOutput {
                                         message: error.to_string(),
                                         etl_path: etl_path.to_string_lossy().into_owned(),
+                                        trace_path: None,
                                     }),
                                 });
                             }
@@ -2196,6 +2199,7 @@ mod tests {
             total_denials: 1,
             denied_resources_truncated: false,
             etl_path: None,
+            trace_path: None,
         };
 
         let error = combine_capture_output_and_cleanup_results(

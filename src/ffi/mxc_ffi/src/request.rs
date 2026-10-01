@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use mxc_sdk::configs::{
     CaptureDenials, Lxc, ProcessContainer, ProcessContainerFilesystem, ProcessContainerNetwork,
     ProcessContainerSystemSettings, ProcessContainerUi, ProcessContainerUiIsolation, Seatbelt,
+    SeatbeltCaptureDenials,
 };
 use mxc_sdk::policy::{FilesystemSection, NetworkSection, UiSection};
 use mxc_sdk::{
@@ -138,6 +139,8 @@ enum RequestContainment {
         keychain_access: bool,
         #[serde(default, rename = "extraMachLookups")]
         extra_mach_lookups: Vec<String>,
+        #[serde(default, rename = "captureDenials")]
+        capture_denials: Option<SeatbeltCaptureDenials>,
     },
     Lxc {
         #[serde(default = "default_lxc_distribution")]
@@ -284,6 +287,7 @@ impl RequestContainment {
                 nested_pty,
                 keychain_access,
                 extra_mach_lookups,
+                capture_denials,
             } => {
                 let mut seatbelt = Seatbelt::default();
                 seatbelt.profile_override = profile_override;
@@ -291,6 +295,7 @@ impl RequestContainment {
                 seatbelt.nested_pty = nested_pty;
                 seatbelt.keychain_access = keychain_access;
                 seatbelt.extra_mach_lookups = extra_mach_lookups;
+                seatbelt.capture_denials = capture_denials;
                 Containment::Seatbelt(seatbelt)
             }
             Self::Lxc {
@@ -967,6 +972,29 @@ mod tests {
             }}"#
         ))
         .expect("Seatbelt binding request builds through the public Rust SDK");
+    }
+
+    #[test]
+    fn seatbelt_capture_denials_maps_to_the_sdk_type() {
+        let containment: RequestContainment = serde_json::from_str(
+            r#"{
+                "type": "seatbelt",
+                "captureDenials": {
+                    "mode": "allow",
+                    "outputPath": "/tmp/denials.json",
+                    "retainTrace": true
+                }
+            }"#,
+        )
+        .expect("request containment parses");
+
+        let Containment::Seatbelt(config) = containment.into_sdk() else {
+            panic!("expected Seatbelt");
+        };
+        let capture = config.capture_denials.expect("captureDenials");
+        assert_eq!(capture.mode, mxc_sdk::configs::CaptureDenialsMode::Allow);
+        assert_eq!(capture.output_path.as_deref(), Some("/tmp/denials.json"));
+        assert!(capture.retain_trace);
     }
 
     #[test]

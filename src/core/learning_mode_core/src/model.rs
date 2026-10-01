@@ -50,8 +50,9 @@ pub enum ResourceType {
     File,
     /// User-interface resource (clipboard, window handle, input, etc.).
     Ui,
-    /// Network endpoint. Reserved for future network/WFP capture; the
-    /// current Windows backend does not yet produce this variant.
+    /// Network endpoint. Seatbelt reports the direction and port but masks the
+    /// host as `*`; the current Windows backend does not yet produce this
+    /// variant.
     Network,
     /// A named OS capability (AppContainer / brokered capability) the
     /// workload was denied. Capability records may be produced under either
@@ -110,7 +111,10 @@ pub struct DeniedResource {
     ///   capability name (e.g. `internetClient`), resolved from the
     ///   capability SID; unresolved custom capabilities fall back to the
     ///   `S-1-15-3-…` SID string.
-    /// - [`Network`](ResourceType::Network) (when implemented): `host:port`.
+    /// - [`Network`](ResourceType::Network): `host:port`; Seatbelt prefixes
+    ///   values with `remote:` or `local:` and masks the host as `*`, yielding
+    ///   values such as `remote:*:443` and `local:*:8080`. Remote values do not
+    ///   distinguish loopback from external egress.
     /// - [`Ui`](ResourceType::Ui) / [`Other`](ResourceType::Other): the raw
     ///   resource identifier the source event carried (may be empty).
     pub resource: String,

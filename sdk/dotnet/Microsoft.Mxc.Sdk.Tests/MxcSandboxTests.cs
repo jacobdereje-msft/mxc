@@ -670,6 +670,43 @@ public class MxcSandboxTests
     }
 
     [Fact]
+    public void Discovery_CarriesCaptureDenialsModes()
+    {
+        const string json =
+            """
+            [{
+              "backend": "seatbelt",
+              "capabilities": ["captureDenials"],
+              "captureDenialsModes": ["block", "allow"]
+            }]
+            """;
+
+        var seatbelt = Assert.Single(MxcSandbox.ParseAvailableBackends(json));
+
+        Assert.Equal(
+            [CaptureDenialsMode.Block, CaptureDenialsMode.Allow],
+            seatbelt.CaptureDenialsModes);
+    }
+
+    [Fact]
+    public void Discovery_IgnoresUnknownCaptureDenialsModes()
+    {
+        const string json =
+            """
+            [{
+              "backend": "seatbelt",
+              "captureDenialsModes": ["block", "future-mode", "allow"]
+            }]
+            """;
+
+        var seatbelt = Assert.Single(MxcSandbox.ParseAvailableBackends(json));
+
+        Assert.Equal(
+            [CaptureDenialsMode.Block, CaptureDenialsMode.Allow],
+            seatbelt.CaptureDenialsModes);
+    }
+
+    [Fact]
     public void Run_NullPolicy_Throws()
     {
         Assert.Throws<ArgumentNullException>(() => MxcSandbox.Run(null!, "echo hi"));
@@ -996,6 +1033,34 @@ public class MxcSandboxTests
         Assert.Equal(
             "com.example.service",
             containment.GetProperty("extraMachLookups")[0].GetString());
+    }
+
+    [Fact]
+    public void SandboxRequest_SerializesSeatbeltCaptureDenials()
+    {
+        var request = new SandboxRequest(
+            new SandboxPolicy { Version = "1.1.0-alpha" },
+            "echo hi")
+        {
+            Containment = new SeatbeltContainment
+            {
+                CaptureDenials = new SeatbeltCaptureDenialsPolicy
+                {
+                    Mode = CaptureDenialsMode.Allow,
+                    OutputPath = "/tmp/denials.json",
+                    RetainTrace = true,
+                },
+            },
+        };
+
+        using var doc = JsonDocument.Parse(MxcSandbox.SerializeRequest(request));
+        var capture = doc.RootElement
+            .GetProperty("containment")
+            .GetProperty("captureDenials");
+
+        Assert.Equal("allow", capture.GetProperty("mode").GetString());
+        Assert.Equal("/tmp/denials.json", capture.GetProperty("outputPath").GetString());
+        Assert.True(capture.GetProperty("retainTrace").GetBoolean());
     }
 
     [Fact]

@@ -107,6 +107,10 @@ public sealed class SeatbeltContainment : SandboxContainment
     [JsonPropertyName("profileOverride")]
     public string? ProfileOverride { get; set; }
 
+    /// <summary>Capture accesses not granted by the generated Seatbelt profile.</summary>
+    [JsonPropertyName("captureDenials")]
+    public SeatbeltCaptureDenialsPolicy? CaptureDenials { get; set; }
+
     /// <summary>Allow GUI applications to reach WindowServer and related services.</summary>
     [JsonPropertyName("guiAccess")]
     public bool GuiAccess { get; set; }
@@ -122,6 +126,22 @@ public sealed class SeatbeltContainment : SandboxContainment
     /// <summary>Additional Mach service global names the process may resolve.</summary>
     [JsonPropertyName("extraMachLookups")]
     public List<string> ExtraMachLookups { get; set; } = new();
+}
+
+/// <summary>macOS Seatbelt denial-capture settings.</summary>
+public sealed class SeatbeltCaptureDenialsPolicy
+{
+    /// <summary>Whether ungranted accesses remain blocked or are temporarily allowed.</summary>
+    [JsonPropertyName("mode")]
+    public CaptureDenialsMode Mode { get; set; } = CaptureDenialsMode.Block;
+
+    /// <summary>Optional absolute destination for the generated denial report.</summary>
+    [JsonPropertyName("outputPath")]
+    public string? OutputPath { get; set; }
+
+    /// <summary>Preserve the raw Seatbelt unified-log trace after analysis.</summary>
+    [JsonPropertyName("retainTrace")]
+    public bool RetainTrace { get; set; }
 }
 
 /// <summary>Explicit Linux LXC configuration.</summary>

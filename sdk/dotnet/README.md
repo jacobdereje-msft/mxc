@@ -76,11 +76,12 @@ Setting their C# properties to `null` still omits them from SDK requests.
 thread pool. `MxcSandbox.NativeVersion` returns the loaded `mxc_ffi` version.
 Optional feature outputs are returned through `RunResult.OutputMetadata`; for
 `captureDenials`, `OutputMetadata.CaptureDenials.OutputPath` identifies the
-generated JSON document and carries its summary. When ETL retention is enabled,
-`OutputMetadata.CaptureDenials.EtlPath` identifies the retained trace. If
-capture finalization fails after retaining the trace,
-`OutputMetadata.CaptureDenialsError` carries both the failure and its path.
-Delete every reported ETL file after use. Do not delete its parent directory
+generated JSON document and carries its summary. Windows ETL retention is
+reported through `OutputMetadata.CaptureDenials.EtlPath`; provider-neutral raw
+trace retention, including Seatbelt's `.seatbelt.log`, is reported through
+`OutputMetadata.CaptureDenials.TracePath`. If capture finalization fails after
+retaining a trace, `OutputMetadata.CaptureDenialsError` carries the failure and
+available trace path. Delete every reported trace file after use. Do not delete its parent directory
 unless your application independently owns or positively recognizes that
 directory; it may be a shared location such as the system temporary directory
 or the configured output directory.
@@ -359,7 +360,25 @@ request.Containment = new SeatbeltContainment
 ```
 
 `ProfileOverride` replaces the generated profile entirely, so use it only as
-an advanced escape hatch.
+an advanced escape hatch. Seatbelt denial capture cannot be combined with a
+profile override:
+
+```csharp
+request.Containment = new SeatbeltContainment
+{
+    CaptureDenials = new SeatbeltCaptureDenialsPolicy
+    {
+        Mode = CaptureDenialsMode.Block,
+        OutputPath = "/tmp/denials.json",
+        RetainTrace = true,
+    },
+};
+```
+
+`Allow` mode permits and records accesses that would otherwise be denied, so
+inspect `RunResult.Warnings`. Use `GetAvailableBackends()` and check both
+`BackendCapability.CaptureDenials` and `CaptureDenialsModes` before enabling a
+mode.
 
 #### Linux containment options
 

@@ -1277,6 +1277,7 @@ mod tests {
             nested_pty: false,
             keychain_access: true,
             extra_mach_lookups: vec!["com.example.service".to_string()],
+            capture_denials: None,
         };
 
         let request = build_request_with_containment(
@@ -1296,6 +1297,38 @@ mod tests {
         assert!(!config.nested_pty);
         assert!(config.keychain_access);
         assert_eq!(config.extra_mach_lookups, ["com.example.service"]);
+    }
+
+    #[test]
+    fn seatbelt_capture_denials_reaches_the_request() {
+        use crate::configs::{Seatbelt, SeatbeltCaptureDenials};
+
+        let output_path = std::env::temp_dir().join("seatbelt-denials.json");
+        let containment = Containment::Seatbelt(Seatbelt {
+            capture_denials: Some(SeatbeltCaptureDenials {
+                mode: CaptureDenialsMode::Allow,
+                output_path: Some(output_path.to_string_lossy().into_owned()),
+                retain_trace: true,
+            }),
+            ..Default::default()
+        });
+
+        let request =
+            build_request_with_containment(&minimal_policy(), &containment, TEST_COMMAND, None)
+                .expect("Seatbelt capture request builds");
+        let capture = request
+            .inner
+            .seatbelt
+            .as_ref()
+            .and_then(|seatbelt| seatbelt.capture_denials.as_ref())
+            .expect("captureDenials reaches the runtime request");
+
+        assert_eq!(capture.mode, wxc_common::models::CaptureDenialsMode::Allow);
+        assert_eq!(
+            capture.output_path.as_deref(),
+            Some(output_path.to_string_lossy().as_ref())
+        );
+        assert!(capture.retain_trace);
     }
 
     #[test]
@@ -1436,7 +1469,7 @@ mod tests {
             let emitted = serde_json::json!({
                 "mode": wire_mode(mode),
                 "outputPath": Some("/tmp/denials.json"),
-                "retainEtl": true,
+                "retainTrace": true,
             });
             let parsed: ContractCaptureDenials = serde_json::from_value(emitted)
                 .expect("emitted object satisfies the exact contract");
@@ -1455,17 +1488,17 @@ mod tests {
                 parsed.output_path.into_option().as_deref(),
                 Some("/tmp/denials.json")
             );
-            assert_eq!(parsed.retain_etl.into_option(), Some(true));
+            assert_eq!(parsed.retain_trace.into_option(), Some(true));
         }
 
         let omitted = serde_json::json!({
             "mode": wire_mode(CaptureDenialsMode::Block),
-            "retainEtl": false,
+            "retainTrace": false,
         });
         let parsed: ContractCaptureDenials = serde_json::from_value(omitted)
             .expect("omitted outputPath satisfies the exact contract");
         assert!(parsed.output_path.into_option().is_none());
-        assert_eq!(parsed.retain_etl.into_option(), Some(false));
+        assert_eq!(parsed.retain_trace.into_option(), Some(false));
     }
 
     // `captureDenials` and `network.proxy` are independent: capture records

@@ -523,6 +523,11 @@ public static class MxcSandbox
             Backend = ParseBackend(backend.Backend),
             Tier = backend.Tier is null ? null : ParseIsolationTier(backend.Tier),
             Capabilities = backend.Capabilities.Select(ParseBackendCapability).ToArray(),
+            CaptureDenialsModes = backend.CaptureDenialsModes
+                .Select(ParseCaptureDenialsMode)
+                .Where(mode => mode.HasValue)
+                .Select(mode => mode.GetValueOrDefault())
+                .ToArray(),
             Warnings = backend.Warnings.ToArray(),
         };
 
@@ -568,6 +573,14 @@ public static class MxcSandbox
             "ingressHostLoopbackAllow" => BackendCapability.IngressHostLoopbackAllow,
             "proxyEnforcement" => BackendCapability.ProxyEnforcement,
             _ => BackendCapability.Unknown,
+        };
+
+    private static CaptureDenialsMode? ParseCaptureDenialsMode(string value) =>
+        value switch
+        {
+            "block" => CaptureDenialsMode.Block,
+            "allow" => CaptureDenialsMode.Allow,
+            _ => null,
         };
 
     private static unsafe string ReadOwnedJson(byte* value, string operation)

@@ -159,6 +159,7 @@ fn canonical_provider_guid(provider: VerboseLoggingProvider) -> &'static str {
         VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode => {
             "{811A1DDB-2E69-5F25-ADC0-4B186170E760}"
         }
+        VerboseLoggingProvider::Seatbelt => "com.apple.sandbox",
     }
 }
 
@@ -308,6 +309,7 @@ mod tests {
                     total_denials: 0,
                     denied_resources_truncated: false,
                     etl_path: None,
+                    trace_path: None,
                 }),
                 capture_denials_error: None,
             })),

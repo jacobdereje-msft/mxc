@@ -9,7 +9,7 @@ framework behind the App Sandbox that every Mac App Store app uses.
 |---|---|
 | **Binary** | `mxc-exec-mac` |
 | **Config value** | `"containment": "seatbelt"` |
-| **Schema** | `0.9.0-alpha` recommended. `0.7.0-alpha` and `0.8.0-alpha` are legacy but still supported. |
+| **Schema** | `0.9.0-alpha` for stable policy; `1.1.0-alpha` for `captureDenials`. |
 | **Requires** | macOS 15 (Sequoia) or later. No root, no daemon, no install. |
 | **Isolation** | Process tree (no named container, no lifecycle, nothing to clean up) |
 | **Enforced by** | The macOS kernel, via a generated profile |
@@ -74,6 +74,7 @@ inheriting ingress allow.
 | Reach a **loopback** address / port | ✅ | Kernel-enforced, port-scoped |
 | Accept inbound connections | ✅ | All-or-nothing — cannot be scoped |
 | UI / clipboard / input-injection lockdown | ✅ | Kernel-enforced |
+| Capture ungranted accesses while blocking or allowing | ✅ | Development schema; marker-scoped unified-log reports |
 | Route traffic through an HTTP proxy | ⚠️ | Egress confinement is enforced; *using* the proxy is cooperative — see [below](#proxy-support-what-is-and-isnt-enforced) |
 | Allow/deny by **hostname** | ❌ | Rejected — no such primitive in Seatbelt |
 | Allow/deny by **IP, CIDR, port, or protocol** | ❌ | Rejected — no such primitive |
@@ -86,6 +87,104 @@ The short version: **Seatbelt gives you an on/off switch for outbound network
 plus a loopback exception. It has no concept of "this host but not that one."**
 Its `(remote ...)` filter accepts only `*` and `localhost` — nothing else is
 even syntactically valid.
+
+## Denial capture
+
+Development-schema requests can record accesses that are not granted by the
+generated profile:
+
+```json
+{
+    "version": "1.1.0-alpha",
+    "containment": "seatbelt",
+    "process": { "commandLine": "cat /Users/me/project/private.txt" },
+    "seatbelt": {
+        "captureDenials": {
+            "mode": "block",
+            "outputPath": "/tmp/denials.json",
+            "retainTrace": false
+        }
+    }
+}
+```
+
+`mode: "block"` keeps deny-by-default enforcement. `mode: "allow"` suppresses
+the generated deny rules, including explicit denied paths and UI/loopback
+denials, and permits and records those accesses; it intentionally weakens
+containment and produces a security warning. The configured output
+stem receives a unique run identifier, and the actual path is returned in
+`outputMetadata.captureDenials` and printed as a JSON pointer on
+`mxc-exec-mac`'s stderr. Omitting `outputPath` uses a managed temporary path.
+
+The collector starts `/usr/bin/log stream` before the workload and requires a
+successful, uniquely marked startup probe. A second cryptographically random
+marker is embedded in every workload report and in the log predicate, so
+descendants are included without admitting unrelated host sandbox events.
+Failure to start or drain the stream is an error; MXC never returns a
+success-shaped empty capture after collection fails.
+
+Set `retainTrace: true` to preserve the marker-filtered raw report stream in a
+`.seatbelt.log` file. Its path is returned as `tracePath`. Treat the trace as
+sensitive and delete the reported file after use; never delete its parent
+directory unless the caller independently owns it.
+
+The actionable output maps absolute file reads, writes, and executable
+mappings, network endpoints, known UI resources, and other Mach service names.
+Network, UI, and other Mach entries use `accessType: "unknown"` because
+Seatbelt does not expose a reliable read/write semantic. Network entries are
+reported as `remote:*:port` or `local:*:port`: the prefix distinguishes an
+outbound connection from a local bind, but the masked remote host does not
+distinguish loopback from external egress. Remediation of remote entries
+therefore still requires workload context. All other non-authorable report
+types are represented only by redacted aggregate
+signatures in the `.verbose.json` sibling. Collection is bounded to 16 MiB of
+raw reports and 10,000 unique actionable resources.
+
+Capture cannot be combined with `profileOverride`: MXC cannot verify that a raw
+profile preserves the required reporting and marker semantics. LaunchServices
+`open` launches are also unsupported because MXC cannot own their process-tree
+lifetime precisely. Probe `captureDenials` and `captureDenialsModes` through
+`available_backends()` before enabling the feature.
+
+### Capture coverage by configuration
+
+The following matrix records native characterization on macOS 26.7.1
+(25G241). A ✅ means the blocked operation appeared in the actionable JSON;
+“context required” means the report is real but does not identify one unique
+configuration change.
+
+| Configuration | Blocked operation observed | Actionable JSON | Remediation detail |
+|---|---|:---:|---|
+| `filesystem.readonlyPaths` | Write/create below a read-only path | ✅ `file` / `write` | Add the path to `readwritePaths` if the write is intended. |
+| Missing `filesystem.readonlyPaths` or `readwritePaths` | File read | ✅ `file` / `read` | Add the narrowest required path to `readonlyPaths` or `readwritePaths`. |
+| `filesystem.deniedPaths` | File read or write | ✅ `file` / `read` or `write` | Remove or narrow the explicit deny only if the access is intended. |
+| Executing an ungranted script | Interpreter read of the script | ✅ `file` / `read` | Seatbelt's baseline allows `process-exec`; the observed block was the script read. No distinct execute denial was emitted in this scenario. |
+| `network.egress.default: "deny"` | Outbound connect | ✅ `network` / `unknown`, `remote:*:port` | Set egress to allow when appropriate. |
+| `network.ingress.default: "deny"` | Local bind/listen setup | ✅ `network` / `unknown`, `local:*:port` | Set ingress to allow when appropriate. The observed operation was `network-bind`. |
+| `network.ingress.hostLoopback: "deny"` | Connect to a host-loopback listener | ✅ `network` / `unknown`, `remote:*:port` | Context required: the masked host cannot distinguish loopback from external egress. |
+| `runtimeConfig.networkProxy` confinement | Connect outside the proxy allowance | ✅ `network` / `unknown`, `remote:*:port` | Context required: the report identifies only the masked port, not the intended host or whether the client ignored proxy settings. |
+| `ui.disable: true` / `seatbelt.guiAccess: false` | LaunchServices or WindowServer lookup | ✅ `ui` / `unknown` | Enable UI and `guiAccess` when the workload is intentionally graphical. |
+| `ui.clipboard: "none"` | Pasteboard lookup | ✅ `ui` / `unknown` | Set the required clipboard policy. |
+| `ui.injection: false` | `CGEventPost` plus `IOHIDManagerOpen` probe | ❌ not observed | No `iokit-open` report was emitted on this host, and the probe returned successfully. Capture cannot currently diagnose this setting. |
+| `seatbelt.nestedPty: false` | `posix_openpt()` | ✅ `file` / `read` for `/dev/ptmx` and legacy `/dev/pty*` probes | Context required: no distinct `pseudo-tty` denial was emitted, so the paths may also be remediated through filesystem grants. |
+| `seatbelt.keychainAccess: false` | Security.framework lookup | ✅ `other` / `unknown` for `com.apple.SecurityServer`, plus prerequisite file denials | `keychainAccess` is the complete remediation; individual services can also be granted through `extraMachLookups`, but that may remain insufficient for Keychain access. |
+| Missing `seatbelt.extraMachLookups` entry | Arbitrary `mach-lookup` | ✅ `other` / `unknown` | Add the exact reported service only when the workload is trusted to use it. Known GUI services remain classified as `ui`. |
+| `seatbelt.profileOverride` | Any operation | N/A | Capture is rejected before launch because MXC cannot inject or verify markers in an override profile. |
+| Legacy `seatbelt.launchMethod: "open"` | Any operation | N/A | Capture is rejected before launch because LaunchServices breaks exact process-tree ownership. |
+
+Raw reports for `ipc-posix-shm-*`, `user-preference-*`, `sysctl-*`,
+`process-info-*`, `system-fsctl`, and similar operations currently remain
+verbose-only because MXC has no corresponding authorable resource type.
+Ordinary macOS processes can attempt many Mach lookups, so `other` entries may
+be noisy and can consume the actionable-resource bound. Do not grant every
+reported service mechanically; add only services the workload is expected to
+use.
+
+`ui.injection` is different: the characterized calls produced no matching
+native Seatbelt report at all, so neither actionable nor verbose output can
+surface that attempted operation. These limitations are why actionable output
+must be treated as remediation evidence, not a complete translation back into
+MXC policy.
 
 ## Filesystem policy
 

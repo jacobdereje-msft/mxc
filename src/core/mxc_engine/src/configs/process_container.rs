@@ -244,7 +244,7 @@ mod tests {
             .policy
             .capture_denials
             .as_ref()
-            .is_some_and(|capture| capture.retain_etl));
+            .is_some_and(|capture| capture.retain_trace));
     }
 
     #[test]
@@ -369,7 +369,7 @@ mod tests {
         let capture = request.inner.policy.capture_denials.as_ref().unwrap();
         assert_eq!(capture.mode, RuntimeCaptureDenialsMode::Block);
         assert_eq!(capture.output_path, None);
-        assert!(!capture.retain_etl);
+        assert!(!capture.retain_trace);
     }
 
     #[test]

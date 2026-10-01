@@ -196,6 +196,10 @@ pub struct SeatbeltConfig {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub extra_mach_lookups: Vec<String>,
+
+    /// Optional denial-capture settings.
+    #[serde(rename = "captureDenials", skip_serializing_if = "Option::is_none")]
+    pub capture_denials: Option<CaptureDenialsConfig>,
 }
 
 fn default_nested_pty() -> bool {
@@ -211,6 +215,7 @@ impl Default for SeatbeltConfig {
             nested_pty: true,
             keychain_access: false,
             extra_mach_lookups: Vec::new(),
+            capture_denials: None,
         }
     }
 }
@@ -794,9 +799,8 @@ pub struct ContainerPolicy {
     pub ui_specified: bool,
     /// BaseProcessContainer-specific UI config (Windows only, from processContainer.ui).
     pub base_process_ui: BaseProcessUiConfig,
-    /// Windows denial capture (from `processContainer.captureDenials`). When
-    /// `Some`, the runner records the sandboxed process's ungranted access
-    /// attempts to a learning-mode ETL trace. `None` disables capture.
+    /// Denial capture normalized from the selected backend's
+    /// `captureDenials` section. `None` disables capture.
     pub capture_denials: Option<CaptureDenialsConfig>,
 }
 
@@ -827,10 +831,10 @@ impl ContainerPolicy {
     }
 }
 
-/// Windows denial-capture settings (from `processContainer.captureDenials`).
+/// Denial-capture settings normalized across supported process backends.
 /// The presence of this struct on [`ContainerPolicy::capture_denials`] enables
 /// capture; the runner records the sandboxed process's ungranted access
-/// attempts to a learning-mode ETL trace. [`CaptureDenialsConfig::mode`]
+/// attempts to a provider-native trace. [`CaptureDenialsConfig::mode`]
 /// decides whether each recorded access is blocked (default) or allowed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -839,18 +843,17 @@ pub struct CaptureDenialsConfig {
     /// Defaults to [`CaptureDenialsMode::Block`].
     pub mode: CaptureDenialsMode,
     /// Absolute path where the JSON denials output file is written. This is the
-    /// application-facing deliverable, not the runner-managed intermediate ETL.
+    /// application-facing deliverable, not the runner-managed native trace.
     /// The runner inserts a per-run identifier into the file stem (`denials.json` ->
     /// `denials.<run-id>.json`) so concurrent and sequential captures don't
     /// collide, and reports the actual path on stderr. When `None`, the runner
     /// falls back to a managed per-run temporary file and prints its path on
     /// stderr.
     pub output_path: Option<String>,
-    /// Whether to preserve the sealed ETL trace after analysis. Defaults to
-    /// `false`, which deletes the internal trace. Retention is honored only by
-    /// a terminal wait that leaves structured output observable; abandoning the
-    /// process handle deletes the trace.
-    pub retain_etl: bool,
+    /// Whether to preserve the provider-native raw trace after analysis.
+    /// Retention is honored only by a terminal wait that leaves structured
+    /// output observable; abandoning the process handle deletes the trace.
+    pub retain_trace: bool,
 }
 
 /// How `captureDenials` handles each ungranted access check while recording it.
@@ -1399,6 +1402,9 @@ pub struct CaptureDenialsErrorOutput {
     pub message: String,
     /// Absolute path to the retained ETL trace.
     pub etl_path: String,
+    /// Absolute path to the retained provider-native trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_path: Option<String>,
 }
 
 /// Location and summary of a captureDenials output document.
@@ -1419,6 +1425,9 @@ pub struct CaptureDenialsOutput {
     /// Absolute path to the retained ETL trace, when retention was requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etl_path: Option<String>,
+    /// Absolute path to the retained provider-native trace, when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_path: Option<String>,
 }
 
 impl CaptureDenialsOutput {
@@ -1684,6 +1693,7 @@ mod tests {
             total_denials: 1,
             denied_resources_truncated: false,
             etl_path: None,
+            trace_path: None,
         };
 
         let value = serde_json::to_value(output).unwrap();
@@ -1699,6 +1709,7 @@ mod tests {
             total_denials: 1,
             denied_resources_truncated: false,
             etl_path: Some("capture.etl".to_string()),
+            trace_path: None,
         };
 
         let value = serde_json::to_value(output).unwrap();
@@ -1712,6 +1723,7 @@ mod tests {
             capture_denials_error: Some(CaptureDenialsErrorOutput {
                 message: "decode failed".to_string(),
                 etl_path: "capture.etl".to_string(),
+                trace_path: None,
             }),
         };
 

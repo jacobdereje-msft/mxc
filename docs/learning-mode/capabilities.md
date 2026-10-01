@@ -6,15 +6,24 @@ OS returns the usual "Access is denied" error. For non-trivial workloads this is
 operationally fragile — the author must enumerate every path the workload will
 ever touch up front, or hand the operator a stack trace and ask them to guess.
 
-**Learning mode** turns those denied accesses into observable events. It is
-enabled per-run through two Windows-specific policy capabilities. These
-capabilities are the *inputs* to learning mode; the machinery that collects and
-surfaces the resulting denial events is layered on top in later work.
+**Learning mode** turns those ungranted accesses into observable events.
+Applications enable the cross-platform flow through `captureDenials`; each
+backend maps its `block` and `allow` modes onto the host's native reporting
+mechanism.
 
-> **Platform support.** Learning-mode capabilities are **Windows-only** and
-> apply to the AppContainer-based backends (classic AppContainer and
-> BaseContainer, which share `backends/process_container/common`). On other platforms
-> the capability strings are ignored.
+The two reserved capability names described below remain **Windows-specific**
+implementation inputs for AppContainer-based backends. They are not portable
+policy and are rejected when supplied directly. Seatbelt instead uses marked
+kernel sandbox reports from the macOS unified log.
+
+| Backend | `block` | `allow` | Native source |
+|---|:---:|:---:|---|
+| Windows ProcessContainer | ✅ | ✅ | PSEC/V2 or guarded WPR |
+| macOS Seatbelt | ✅ | ✅ | Marker-scoped `sender == "Sandbox"` unified-log reports |
+
+Callers should inspect `available_backends()`: `captureDenials` appears in
+`capabilities` only when the provider is available, and
+`captureDenialsModes` lists the modes that the current host supports.
 
 ## The two capabilities
 
@@ -130,9 +139,11 @@ stays enforced:
 ## Relationship to denial capture
 
 Injecting these capabilities makes the OS *emit* learning-mode events. The
-Windows-only `captureDenials` config switch drives collecting those events and
-surfacing the resulting denials to the caller. Its `mode` selects how each
-ungranted access is handled while it is recorded:
+cross-platform `captureDenials` switch drives collecting those events and
+surfacing the resulting denials to the caller. Windows configures it under
+`processContainer.captureDenials`; development-schema Seatbelt config uses
+`seatbelt.captureDenials`. Its `mode` selects how each ungranted access is
+handled while it is recorded:
 
 > **Host selection.** MXC prefers native capture on a feature-enabled Windows
 > build exposing the complete official V2 API set:
@@ -170,6 +181,23 @@ ungranted access is handled while it is recorded:
 - `mode: "allow"` maps onto `permissiveLearningMode` (allow-and-record)
   — the fleet-auditing flow.
 
+On Seatbelt, `block` keeps the generated deny-by-default profile and marks every
+generated denial. `allow` replaces the denying fallback with
+`(allow (with report) default)` and suppresses generated deny rules, including
+explicit denied paths and UI/loopback denials, so those accesses are permitted
+and reported. Explicit baseline and policy grants remain to prevent already
+granted accesses from becoming report noise. Both modes use a cryptographically
+random per-run profile marker; the collector predicate admits only reports
+carrying that marker, including reports from descendants.
+
+Seatbelt capture requires `/usr/bin/sandbox-exec` and `/usr/bin/log`. MXC runs a
+separate marked startup probe and fails before launching the workload unless
+the log stream observes it. Capture is rejected with `profileOverride`, because
+MXC cannot inject or verify the required report marker, and with LaunchServices
+`open` launches, where the process-tree lifetime cannot be owned precisely.
+Allow mode intentionally weakens deny-by-default and emits the same security
+warning as the Windows permissive flow.
+
 ### Output file the caller consumes
 
 After the sandboxed workload exits, MXC decodes the captured denials and writes
@@ -204,8 +232,10 @@ sandbox policy:
 
 - `denials` is already de-duplicated per `(resource, accessType)`, so
   `summary.totalDenials` equals `denials.length`.
-- Analysis retains at most 10,000 unique denials and processes at most
-  1,000,000 ETW events. Reaching the unique-denial bound stops adding policy
+- Analysis retains at most 10,000 unique denials. Windows processes at most
+  1,000,000 ETW events; Seatbelt retains at most 16 MiB of raw marked reports
+  and fails finalization rather than returning partial success if that bound is
+  exceeded. Reaching the unique-denial bound stops adding policy
   entries but continues bounded diagnostic accounting; reaching either bound
   sets `summary.deniedResourcesTruncated` to `true`.
 - `resource` is the user-visible identifier for the denied resource,
@@ -225,6 +255,24 @@ sandbox policy:
   not carry a stable capability identifier.
 - `filetime` is a decimal string containing the Windows `FILETIME` value, so
   JavaScript consumers retain all 64 bits without numeric precision loss.
+  Seatbelt converts unified-log timestamps to the same 100 ns, 1601-based
+  representation.
+
+Seatbelt's actionable document contains absolute filesystem reads, writes, and
+executable mappings; network operations with their reported endpoint; known UI
+resources; and other Mach service names. Network, UI, and other Mach accesses
+use `accessType: "unknown"` because Seatbelt does not expose a reliable
+read/write semantic for those operations. Seatbelt masks the network host, so
+network resources appear as `remote:*:port` or `local:*:port`. The prefix
+distinguishes outbound connections from local binds, but remote values do not
+distinguish loopback from external egress; callers must use workload context to
+choose between the broad egress and host-loopback policy controls. Other IOKit,
+sysctl, preference, IPC, and non-authorable events remain in the bounded verbose artifact as
+`unsupportedObjectType`; their sensitive resource values are not serialized.
+See the
+[Seatbelt capture coverage matrix](../seatbelt/seatbelt-backend.md#capture-coverage-by-configuration)
+for configuration-specific remediation and operations that emitted no native
+report during characterization.
 
 ### Verbose logging event signatures
 

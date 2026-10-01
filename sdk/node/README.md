@@ -353,6 +353,14 @@ For historical raw configs, the abstract `process` intent requires
 `0.6.0-alpha` floor on Windows and Linux. The high-level v1 API always emits
 `1.0.0` on every platform.
 
+Seatbelt denial capture is a `1.1.0-alpha` development-contract feature. Set
+`seatbelt.captureDenials` with `mode: 'block' | 'allow'`, an optional absolute
+`outputPath`, and `retainTrace` when the marker-filtered `.seatbelt.log` should
+be preserved. It cannot be combined with `profileOverride`; `allow` mode
+intentionally weakens deny-by-default containment. The high-level in-process
+API projects the same `SeatbeltConfig.captureDenials` settings through its
+SDK-owned request transport.
+
 Experimental backends require `{ experimental: true }` in `SandboxSpawnOptions`:
 
 ```typescript

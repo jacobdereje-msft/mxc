@@ -12,7 +12,7 @@ public sealed class SandboxOutputMetadata
     [JsonPropertyName("captureDenials")]
     public CaptureDenialsOutput? CaptureDenials { get; init; }
 
-    /// <summary>Failure details and the retained ETL path, when finalization fails.</summary>
+    /// <summary>Failure details and retained provider trace, when finalization fails.</summary>
     [JsonPropertyName("captureDenialsError")]
     public CaptureDenialsErrorOutput? CaptureDenialsError { get; init; }
 }
@@ -30,6 +30,10 @@ public sealed class CaptureDenialsErrorOutput
     /// </summary>
     [JsonPropertyName("etlPath")]
     public string EtlPath { get; init; } = string.Empty;
+
+    /// <summary>Absolute path to a retained provider-specific trace, when available.</summary>
+    [JsonPropertyName("tracePath")]
+    public string? TracePath { get; init; }
 }
 
 /// <summary>Location and summary of a captureDenials output document.</summary>
@@ -62,4 +66,8 @@ public sealed class CaptureDenialsOutput
     /// </summary>
     [JsonPropertyName("etlPath")]
     public string? EtlPath { get; init; }
+
+    /// <summary>Absolute path to a retained provider-specific trace, when requested.</summary>
+    [JsonPropertyName("tracePath")]
+    public string? TracePath { get; init; }
 }
