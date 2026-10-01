@@ -922,7 +922,7 @@ impl NetworkIptablesManager {
         }
     }
 
-    fn lower_egress(
+    fn network_egress_to_firewall_rules(
         policy: &ContainerPolicy,
         uses_directional_keys: bool,
     ) -> Result<Vec<EgressEntry>, String> {
@@ -1173,7 +1173,7 @@ impl NetworkIptablesManager {
         let mut args = FirewallRuleArgs::default();
         let mut unresolved_denies: Vec<&str> = Vec::new();
         let mut catch_all_allows: Vec<&str> = Vec::new();
-        let entries = Self::lower_egress(policy, uses_directional_keys)?;
+        let entries = Self::network_egress_to_firewall_rules(policy, uses_directional_keys)?;
         for entry in &entries {
             let host = entry.destination.as_str();
             let action = entry.action;
