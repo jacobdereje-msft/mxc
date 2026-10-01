@@ -15,8 +15,13 @@ default = []
 # WSLC SDK loader; see `mxc_engine`'s `wslc` feature.
 wslc = ["mxc_engine/wslc"]
 # IsolationSession backend (Windows only).
-isolation_session = ["mxc_engine/isolation_session_lifted_msi"]
-isolation_session_inbox = ["mxc_engine/isolation_session"]
+isolation_session = ["mxc_engine/isolation_session"]
+# Lifted SDK + MSI runtime: generated bindings and the staged activation payload.
+isolation_session_lifted = [
+    "isolation_session",
+    "mxc_engine/isolation_session_lifted_msi",
+    "mxc_build_common/isolation_session_sdk",
+]
 # Exposes the debug-only telemetry test seams to downstream binding tests.
 test-support = ["wxc_common/test-support"]
 
