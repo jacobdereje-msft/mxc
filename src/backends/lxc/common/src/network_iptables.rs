@@ -142,14 +142,6 @@ impl TransportProtocol {
             Self::UdpLite => "udplite",
         }
     }
-
-    // iptables ships no port match for UDP-Lite.
-    fn accepts_port_filter(self) -> bool {
-        match self {
-            Self::Tcp | Self::Udp | Self::Sctp | Self::Dccp => true,
-            Self::UdpLite => false,
-        }
-    }
 }
 
 const TRANSPORT_PROTOCOLS: [TransportProtocol; 5] = [
@@ -801,28 +793,30 @@ impl NetworkIptablesManager {
     // iptables expects protocol arguments before port arguments.  ip6tables
     // rejects `-p icmp` rather than treating it as ICMPv6.
     fn build_match_args(matching: RuleMatch, family: IpFamily) -> Vec<String> {
-        let (protocol, ports) = match matching {
-            RuleMatch::AnyTraffic => return Vec::new(),
-            RuleMatch::Icmp => (
-                match family {
+        match matching {
+            RuleMatch::AnyTraffic => Vec::new(),
+            RuleMatch::Icmp => {
+                let protocol = match family {
                     IpFamily::V4 => "icmp",
                     IpFamily::V6 => "icmpv6",
-                },
-                None,
-            ),
-            RuleMatch::Transport { protocol, ports } => (protocol.as_arg(), ports),
-        };
-
-        let mut args = vec!["-p".to_string(), protocol.to_string()];
-        if let Some(range) = ports {
-            args.push("--dport".to_string());
-            args.push(if range.start == range.end {
-                range.start.to_string()
-            } else {
-                format!("{}:{}", range.start, range.end)
-            });
+                };
+                vec!["-p".to_string(), protocol.to_string()]
+            }
+            RuleMatch::Transport { protocol, ports } => {
+                let mut args = vec!["-p".to_string(), protocol.as_arg().to_string()];
+                if let Some(range) = ports {
+                    args.push("-m".to_string());
+                    args.push("multiport".to_string());
+                    args.push("--dports".to_string());
+                    args.push(if range.start == range.end {
+                        range.start.to_string()
+                    } else {
+                        format!("{}:{}", range.start, range.end)
+                    });
+                }
+                args
+            }
         }
-        args
     }
 
     fn build_single_rule_args(
@@ -1080,7 +1074,7 @@ impl NetworkIptablesManager {
 
         protocols
             .into_iter()
-            .filter_map(|matching| Self::narrowed_to_port(matching, ports, action))
+            .map(|matching| Self::narrowed_to_port(matching, ports))
             .collect()
     }
 
@@ -1108,29 +1102,13 @@ impl NetworkIptablesManager {
         }
     }
 
-    // A protocol whose port iptables cannot read keeps its whole width on a
-    // deny, refusing more than the rule names, and drops out of an allow, which
-    // would otherwise permit more.
-    fn narrowed_to_port(
-        matching: RuleMatch,
-        ports: PortRange,
-        action: RuleAction,
-    ) -> Option<RuleMatch> {
-        let RuleMatch::Transport { protocol, .. } = matching else {
-            // ICMP has no ports to narrow.
-            return Some(matching);
-        };
-
-        if protocol.accepts_port_filter() {
-            return Some(RuleMatch::Transport {
+    fn narrowed_to_port(matching: RuleMatch, ports: PortRange) -> RuleMatch {
+        match matching {
+            RuleMatch::Transport { protocol, .. } => RuleMatch::Transport {
                 protocol,
                 ports: Some(ports),
-            });
-        }
-
-        match action {
-            RuleAction::Deny => Some(matching),
-            RuleAction::Allow => None,
+            },
+            RuleMatch::Icmp | RuleMatch::AnyTraffic => matching,
         }
     }
 
