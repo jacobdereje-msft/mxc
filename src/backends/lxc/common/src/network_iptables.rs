@@ -888,6 +888,14 @@ impl NetworkIptablesManager {
         }
     }
 
+    /// Refuse a policy that cannot be programmed, discarding the rules it would build.
+    pub(crate) fn refuse_unprogrammable_egress(
+        policy: &ContainerPolicy,
+        uses_directional_keys: bool,
+    ) -> Result<(), String> {
+        Self::network_egress_to_firewall_rules(policy, uses_directional_keys).map(|_| ())
+    }
+
     fn network_egress_to_firewall_rules(
         policy: &ContainerPolicy,
         uses_directional_keys: bool,
