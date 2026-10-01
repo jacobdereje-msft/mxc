@@ -998,7 +998,14 @@ impl NetworkIptablesManager {
     }
 
     fn lower_rule(rule: &NetworkRule, action: RuleAction) -> Result<Vec<EgressEntry>, String> {
-        let matches = Self::lower_port_selectors(&rule.ports, action);
+        let matches = if rule.ports.is_empty() {
+            Self::every_protocol_matches(action)
+        } else {
+            rule.ports
+                .iter()
+                .flat_map(|selector| Self::lower_port_selector(selector, action))
+                .collect()
+        };
 
         let mut entries = Vec::new();
         for destination in Self::rule_destinations(rule)? {
@@ -1076,17 +1083,6 @@ impl NetworkIptablesManager {
 
     fn cidr_destination(cidr: &NetworkCidr) -> String {
         network_blocks::cidr_text(cidr)
-    }
-
-    fn lower_port_selectors(ports: &[NetworkPort], action: RuleAction) -> Vec<RuleMatch> {
-        if ports.is_empty() {
-            return Self::every_protocol_matches(action);
-        }
-
-        ports
-            .iter()
-            .flat_map(|selector| Self::lower_port_selector(selector, action))
-            .collect()
     }
 
     // Denying every protocol needs no protocol word, and one rule carrying none
