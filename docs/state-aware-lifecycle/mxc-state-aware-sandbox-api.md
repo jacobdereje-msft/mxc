@@ -332,6 +332,11 @@ type ConfigsForBackend<C extends StateAwareContainmentBackend> =
     deprovision: WslcDeprovisionConfig;
   } : never;
 
+// WSLC has no arm here, so `ProvisionConfigFor<'wslc'>` is `never`: the typed
+// Node surface does not model WSLC. `wslc.provision.portMappings` (§7.2) is a
+// raw-JSON and typed-Rust capability only, and that wire field exists
+// independently of this typed Node mapping.
+
 type ProvisionConfigFor<C extends StateAwareContainmentBackend> =
   ConfigsForBackend<C>['provision'];
 type StartConfigFor<C extends StateAwareContainmentBackend> =
@@ -627,7 +632,7 @@ Top-level fields shared by both branches:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `version` | string | Yes | Raw exact callers declare a registered version. High-level Rust, .NET, and Node v1 APIs do not expose this field and emit SDK-owned stable `1.0.0`. Windows Sandbox lifecycle is raw exact `1.1.0-alpha` only. |
+| `version` | string | Yes | Raw exact callers declare a registered version. High-level Rust, .NET, and Node v1 APIs do not expose this field and emit SDK-owned stable `1.0.0`. Windows Sandbox lifecycle, and a WSLC `provision` carrying `wslc.provision.portMappings`, are raw exact `1.1.0-alpha` only. |
 
 Backend-routing fields:
 
