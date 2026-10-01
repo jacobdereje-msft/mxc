@@ -999,6 +999,7 @@ impl NetworkIptablesManager {
 
     fn lower_rule(rule: &NetworkRule, action: RuleAction) -> Result<Vec<EgressEntry>, String> {
         let matches = Self::lower_port_selectors(&rule.ports, action);
+
         let mut entries = Vec::new();
         for destination in Self::rule_destinations(rule)? {
             for matching in &matches {
@@ -1081,31 +1082,10 @@ impl NetworkIptablesManager {
         if ports.is_empty() {
             return Self::every_protocol_matches(action);
         }
-        let mut matches: Vec<RuleMatch> = ports
-            .iter()
-            .flat_map(|port| Self::lower_port_selector(port, action))
-            .collect();
 
-        let names_a_port_without_a_protocol = ports
+        ports
             .iter()
-            .any(|port| matches!(port.protocol, NetworkProtocol::Any) && port.port.is_some());
-        if matches!(action, RuleAction::Deny) && names_a_port_without_a_protocol {
-            matches.extend(Self::unfilterable_protocol_matches());
-        }
-        matches
-    }
-
-    // A protocol whose port iptables cannot read is refused to the destination
-    // on every port, which denies more than the rule names.  One entry covers
-    // the whole rule however many ports it lists, since none of them narrows it.
-    fn unfilterable_protocol_matches() -> Vec<RuleMatch> {
-        TRANSPORT_PROTOCOLS
-            .iter()
-            .filter(|protocol| !protocol.accepts_port_filter())
-            .map(|&protocol| RuleMatch::Transport {
-                protocol,
-                ports: None,
-            })
+            .flat_map(|selector| Self::lower_port_selector(selector, action))
             .collect()
     }
 
@@ -1120,34 +1100,73 @@ impl NetworkIptablesManager {
         }
     }
 
-    // `-p all` accepts no `--dport`, so protocol `any` with a port becomes one
-    // match per protocol whose port iptables can read.  The protocols it cannot
-    // read are handled once for the whole rule, by the caller.
-    fn lower_port_selector(port: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
-        let ports = port.port.map(|start| PortRange {
-            start,
-            end: port.end_port.unwrap_or(start),
-        });
+    // A selector names a protocol and, inside it, a port.  The protocol decides
+    // which traffic the rule covers; the port narrows it.  Taken in that order.
+    fn lower_port_selector(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
+        let protocols = Self::protocols_named(selector, action);
 
-        match port.protocol {
-            // ICMP carries no ports and accepts no `--dport`.
+        let Some(ports) = selector.port.map(|start| PortRange {
+            start,
+            end: selector.end_port.unwrap_or(start),
+        }) else {
+            return protocols;
+        };
+
+        protocols
+            .into_iter()
+            .filter_map(|matching| Self::narrowed_to_port(matching, ports, action))
+            .collect()
+    }
+
+    // The protocols a selector names, each covering its whole width.  `any`
+    // reaches every protocol the backend carries, except that naming a port
+    // leaves out ICMP, which has no ports for that port to select.
+    fn protocols_named(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
+        match selector.protocol {
             NetworkProtocol::Icmp => vec![RuleMatch::Icmp],
             NetworkProtocol::Tcp => vec![RuleMatch::Transport {
                 protocol: TransportProtocol::Tcp,
-                ports,
+                ports: None,
             }],
             NetworkProtocol::Udp => vec![RuleMatch::Transport {
                 protocol: TransportProtocol::Udp,
-                ports,
+                ports: None,
             }],
-            NetworkProtocol::Any => match ports {
-                None => Self::every_protocol_matches(action),
-                Some(_) => TRANSPORT_PROTOCOLS
-                    .iter()
-                    .filter(|protocol| protocol.accepts_port_filter())
-                    .map(|&protocol| RuleMatch::Transport { protocol, ports })
-                    .collect(),
-            },
+            NetworkProtocol::Any if selector.port.is_some() => TRANSPORT_PROTOCOLS
+                .iter()
+                .map(|&protocol| RuleMatch::Transport {
+                    protocol,
+                    ports: None,
+                })
+                .collect(),
+            NetworkProtocol::Any => Self::every_protocol_matches(action),
+        }
+    }
+
+    // Narrow one protocol to the port range the selector names.  A protocol
+    // whose port iptables cannot read keeps its whole width on a deny, refusing
+    // more than the rule names, and drops out of an allow, which would
+    // otherwise permit more.
+    fn narrowed_to_port(
+        matching: RuleMatch,
+        ports: PortRange,
+        action: RuleAction,
+    ) -> Option<RuleMatch> {
+        let RuleMatch::Transport { protocol, .. } = matching else {
+            // ICMP has no ports.  There is nothing here to narrow.
+            return Some(matching);
+        };
+
+        if protocol.accepts_port_filter() {
+            return Some(RuleMatch::Transport {
+                protocol,
+                ports: Some(ports),
+            });
+        }
+
+        match action {
+            RuleAction::Deny => Some(matching),
+            RuleAction::Allow => None,
         }
     }
 
@@ -1183,9 +1202,11 @@ impl NetworkIptablesManager {
                         host
                     ));
                 }
+
                 if matches!(action, RuleAction::Deny) {
                     unresolved_denies.push(host);
                 }
+
                 logger.log_line(&format!("Warning: could not resolve host '{}'", host));
             } else if matches!(action, RuleAction::Allow)
                 && destinations
