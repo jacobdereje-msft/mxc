@@ -41,7 +41,7 @@ use crate::capture_output::{
 use crate::job_object::UiJobObject;
 use crate::launch_diagnostics::{
     diagnose_create_process_failure, diagnose_missing_required_env, diagnose_process_exit,
-    validate_required_child_env,
+    security_environment_failure_message, validate_required_child_env,
 };
 use crate::native_capture::CaptureSession;
 use crate::proxy_coordinator::ProxyCoordinator;
@@ -719,8 +719,7 @@ impl BaseContainerRunner {
                         capture_session = Some(session);
                     }
                     Err(e) => {
-                        let msg =
-                            format!("captureDenials: failed to start learning-mode capture: {e}");
+                        let msg = security_environment_failure_message(&e, true);
                         let _ = writeln!(logger, "Error: {msg}");
                         let failure_phase = if e.is_api_unavailable() {
                             FailurePhase::BackendUnavailable
@@ -748,8 +747,7 @@ impl BaseContainerRunner {
                         security_environment = Some(environment);
                     }
                     Err(error) => {
-                        let msg =
-                            format!("failed to create the process security environment: {error}");
+                        let msg = security_environment_failure_message(&error, false);
                         let _ = writeln!(logger, "Error: {msg}");
                         let failure_phase = if error.is_api_unavailable() {
                             FailurePhase::BackendUnavailable
