@@ -964,7 +964,7 @@ impl NetworkIptablesManager {
         } else {
             rule.ports
                 .iter()
-                .flat_map(|selector| Self::protocols_named(selector, action))
+                .flat_map(|selector| Self::selector_matches(selector, action))
                 .collect()
         };
 
@@ -1055,7 +1055,7 @@ impl NetworkIptablesManager {
         }
     }
 
-    fn protocols_named(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
+    fn selector_matches(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
         let ports = selector.port.map(|start| PortRange {
             start,
             end: selector.end_port.unwrap_or(start),
