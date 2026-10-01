@@ -951,22 +951,17 @@ impl NetworkIptablesManager {
     fn count_directional_egress(egress: &NetworkEgressPolicy) -> Result<usize, String> {
         let mut total = 0usize;
         for section in directional_egress_chain(egress.default) {
-            total += Self::count_section(*section, egress)?;
+            total += match section {
+                EgressSection::OperatorDenies => Self::count_rules(&egress.deny, RuleAction::Deny)?,
+                EgressSection::OperatorAllows => {
+                    Self::count_rules(&egress.allow, RuleAction::Allow)?
+                }
+                EgressSection::CarriedProtocolFloor => {
+                    Self::floor_destinations()?.len() * carried_protocol_matches().len()
+                }
+            };
         }
         Ok(total)
-    }
-
-    fn count_section(
-        section: EgressSection,
-        egress: &NetworkEgressPolicy,
-    ) -> Result<usize, String> {
-        match section {
-            EgressSection::OperatorDenies => Self::count_rules(&egress.deny, RuleAction::Deny),
-            EgressSection::OperatorAllows => Self::count_rules(&egress.allow, RuleAction::Allow),
-            EgressSection::CarriedProtocolFloor => {
-                Ok(Self::floor_destinations()?.len() * carried_protocol_matches().len())
-            }
-        }
     }
 
     fn count_rules(rules: &[NetworkRule], action: RuleAction) -> Result<usize, String> {
