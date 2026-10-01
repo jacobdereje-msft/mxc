@@ -196,8 +196,20 @@ enum EgressSection {
 // is the whole statement of what a packet meets and in what order; the lowering
 // walks it, so nothing is implied by where a loop sits in the source below.
 //
+// The stated default names which of the operator's two lists decides, and only
+// that list appears below.  An accepting default is decided by the deny list:
+// everything else leaves, which is what the floor says.  A refusing default is
+// decided by the allow list: nothing else leaves, which is what the closing
+// drop says.
+//
+// So an allow list under an accepting default is not consulted, and lowering it
+// would add nothing a packet could reach.  It cannot rescue an address a deny
+// names, because the denies are read first, and it cannot widen the floor
+// beneath it, which already accepts every protocol this backend can name at
+// every port to every address.
+//
 // Denies lead in both postures because iptables takes the first rule that
-// matches, and an operator's deny has to beat an allow that overlaps it.
+// matches, and a deny has to beat an allow that overlaps it.
 //
 // Whatever the list, the chain ends with a drop that `closing_policy` writes.
 // That is what makes the two postures differ by a floor rather than by a
@@ -207,10 +219,9 @@ fn directional_egress_chain(default: NetworkAction) -> &'static [EgressSection] 
     match default {
         // Everything may leave unless a deny names it.  The floor is what says
         // so, and it goes last because it accepts every address: ahead of the
-        // operator's rules it would match first and they would never be read.
+        // denies it would match first and they would never be read.
         NetworkAction::Allow => &[
             EgressSection::OperatorDenies,
-            EgressSection::OperatorAllows,
             EgressSection::CarriedProtocolFloor,
         ],
         // Only what the allow list names may leave, so there is no floor to
@@ -2210,20 +2221,19 @@ mod tests {
     }
 
     #[test]
-    fn the_stated_default_changes_the_chain_only_by_adding_a_floor_after_the_operator_rules() {
+    fn the_stated_default_decides_which_operator_list_the_chain_is_built_from() {
         assert_eq!(
             directional_egress_chain(NetworkAction::Deny),
             [EgressSection::OperatorDenies, EgressSection::OperatorAllows],
-            "a denying default must add no section of its own"
+            "a refusing default must be decided by the allow list, with denies ahead of it"
         );
         assert_eq!(
             directional_egress_chain(NetworkAction::Allow),
             [
                 EgressSection::OperatorDenies,
-                EgressSection::OperatorAllows,
                 EgressSection::CarriedProtocolFloor
             ],
-            "an accepting default must add the floor, and only after the operator's rules"
+            "an accepting default must be decided by the deny list, with the floor behind it"
         );
     }
 
