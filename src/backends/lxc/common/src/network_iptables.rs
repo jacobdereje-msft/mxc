@@ -143,10 +143,7 @@ impl TransportProtocol {
         }
     }
 
-    // iptables ships a port match for the first four and none for UDP-Lite, so
-    // `-p udplite --dport 443` is rejected outright rather than ignored.  A
-    // rule that names a port can only be written for a protocol answering true
-    // here.
+    // iptables ships no port match for UDP-Lite.
     fn accepts_port_filter(self) -> bool {
         match self {
             Self::Tcp | Self::Udp | Self::Sctp | Self::Dccp => true,
@@ -155,10 +152,6 @@ impl TransportProtocol {
     }
 }
 
-// Every transport protocol an egress rule can name on this backend.  A workload
-// speaking a protocol absent from this list leaves the container on no rule, and
-// the chain closes on a drop.  Carrying one more is a change to the backend, not
-// to a configuration.
 const TRANSPORT_PROTOCOLS: [TransportProtocol; 5] = [
     TransportProtocol::Tcp,
     TransportProtocol::Udp,
@@ -167,8 +160,6 @@ const TRANSPORT_PROTOCOLS: [TransportProtocol; 5] = [
     TransportProtocol::UdpLite,
 ];
 
-// One match per protocol the backend carries, for a rule that names no port.
-// No port means nothing to read, so every protocol can be stated here.
 fn carried_protocol_matches() -> Vec<RuleMatch> {
     let mut matches: Vec<RuleMatch> = TRANSPORT_PROTOCOLS
         .iter()
@@ -181,29 +172,20 @@ fn carried_protocol_matches() -> Vec<RuleMatch> {
     matches
 }
 
-// A run of rules the egress chain is built from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EgressSection {
-    // Everything the operator wrote under `deny`.
     OperatorDenies,
-    // Everything the operator wrote under `allow`.
     OperatorAllows,
-    // One accept per protocol this backend can name, to every address.
     CarriedProtocolFloor,
 }
 
-// Both postures close on a drop that `closing_policy` writes, whatever the
-// stated default.  That is why an accepting default needs a floor: without one
-// the chain would refuse everything the denies did not already name.
 fn directional_egress_chain(default: NetworkAction) -> &'static [EgressSection] {
     match default {
-        // The floor goes last: it accepts every address, and ahead of the
-        // denies it would match first.
         NetworkAction::Allow => &[
             EgressSection::OperatorDenies,
             EgressSection::CarriedProtocolFloor,
         ],
-        // No floor: it would accept every address and erase the allow list.
+
         NetworkAction::Deny => &[EgressSection::OperatorDenies, EgressSection::OperatorAllows],
     }
 }
@@ -910,11 +892,8 @@ impl NetworkIptablesManager {
         }
     }
 
-    // The verdict a packet gets when no rule above it matched.  A directional
-    // chain closes on a drop in both postures: it names one protocol per rule
-    // and has no word for most of them, and dropping is what stops the ones it
-    // cannot write down.  A legacy chain matches every protocol on a single
-    // rule and keeps the stated default.
+    // The rules above name one protocol each, and most protocols have no name.
+    // An allowing default would let those out unmatched.
     fn closing_policy(policy: &ContainerPolicy, uses_directional_keys: bool) -> NetworkPolicy {
         match Self::stated_egress(policy, uses_directional_keys) {
             Some(_) => NetworkPolicy::Block,
@@ -934,9 +913,6 @@ impl NetworkIptablesManager {
 
     // Block entries come first.  Under iptables first-match-wins, exchanging
     // the two halves reverses overlapping allow and block lists.
-    //
-    // Unlike a directional chain, the stated default adds no rules of its own
-    // here.  `closing_policy` carries it alone.
     fn lower_legacy_hosts(policy: &ContainerPolicy) -> Vec<EgressEntry> {
         policy
             .blocked_hosts
@@ -951,7 +927,6 @@ impl NetworkIptablesManager {
             .map(|(host, action)| EgressEntry {
                 destination: host.clone(),
                 action,
-
                 matching: RuleMatch::AnyTraffic,
             })
             .collect()
@@ -982,7 +957,6 @@ impl NetworkIptablesManager {
         Ok(entries)
     }
 
-    // One entry per address family per carried protocol.
     fn lower_carried_protocols() -> Result<Vec<EgressEntry>, String> {
         let mut entries = Vec::new();
         for destination in Self::peer_list_destinations(&Self::every_destination_peers())? {
@@ -1085,10 +1059,8 @@ impl NetworkIptablesManager {
         network_blocks::cidr_text(cidr)
     }
 
-    // Denying every protocol needs no protocol word, and one rule carrying none
-    // covers them all.  Accepting every protocol needs one rule per protocol the
-    // backend can name: the chain closes on a drop, and a protocol with no
-    // accept of its own does not leave.
+    // A deny needs no protocol word: one rule carrying none covers every
+    // protocol.  An allow needs one rule per protocol.
     fn every_protocol_matches(action: RuleAction) -> Vec<RuleMatch> {
         match action {
             RuleAction::Deny => vec![RuleMatch::AnyTraffic],
@@ -1096,8 +1068,6 @@ impl NetworkIptablesManager {
         }
     }
 
-    // A selector names a protocol and, inside it, a port.  The protocol decides
-    // which traffic the rule covers; the port narrows it.  Taken in that order.
     fn lower_port_selector(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
         let protocols = Self::protocols_named(selector, action);
 
@@ -1114,9 +1084,6 @@ impl NetworkIptablesManager {
             .collect()
     }
 
-    // The protocols a selector names, each covering its whole width.  `any`
-    // reaches every protocol the backend carries, except that naming a port
-    // leaves out ICMP, which has no ports for that port to select.
     fn protocols_named(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
         match selector.protocol {
             NetworkProtocol::Icmp => vec![RuleMatch::Icmp],
@@ -1128,6 +1095,8 @@ impl NetworkIptablesManager {
                 protocol: TransportProtocol::Udp,
                 ports: None,
             }],
+
+            // A named port leaves out ICMP, which has no port for it to select.
             NetworkProtocol::Any if selector.port.is_some() => TRANSPORT_PROTOCOLS
                 .iter()
                 .map(|&protocol| RuleMatch::Transport {
@@ -1139,17 +1108,16 @@ impl NetworkIptablesManager {
         }
     }
 
-    // Narrow one protocol to the port range the selector names.  A protocol
-    // whose port iptables cannot read keeps its whole width on a deny, refusing
-    // more than the rule names, and drops out of an allow, which would
-    // otherwise permit more.
+    // A protocol whose port iptables cannot read keeps its whole width on a
+    // deny, refusing more than the rule names, and drops out of an allow, which
+    // would otherwise permit more.
     fn narrowed_to_port(
         matching: RuleMatch,
         ports: PortRange,
         action: RuleAction,
     ) -> Option<RuleMatch> {
         let RuleMatch::Transport { protocol, .. } = matching else {
-            // ICMP has no ports.  There is nothing here to narrow.
+            // ICMP has no ports to narrow.
             return Some(matching);
         };
 
