@@ -964,7 +964,7 @@ impl NetworkIptablesManager {
         } else {
             rule.ports
                 .iter()
-                .flat_map(|selector| Self::lower_port_selector(selector, action))
+                .flat_map(|selector| Self::protocols_named(selector, action))
                 .collect()
         };
 
@@ -1055,53 +1055,28 @@ impl NetworkIptablesManager {
         }
     }
 
-    fn lower_port_selector(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
-        let protocols = Self::protocols_named(selector, action);
-
-        let Some(ports) = selector.port.map(|start| PortRange {
+    fn protocols_named(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
+        let ports = selector.port.map(|start| PortRange {
             start,
             end: selector.end_port.unwrap_or(start),
-        }) else {
-            return protocols;
-        };
+        });
 
-        protocols
-            .into_iter()
-            .map(|matching| Self::narrowed_to_port(matching, ports))
-            .collect()
-    }
-
-    fn protocols_named(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
         match selector.protocol {
             NetworkProtocol::Icmp => vec![RuleMatch::Icmp],
             NetworkProtocol::Tcp => vec![RuleMatch::Transport {
                 protocol: TransportProtocol::Tcp,
-                ports: None,
+                ports,
             }],
             NetworkProtocol::Udp => vec![RuleMatch::Transport {
                 protocol: TransportProtocol::Udp,
-                ports: None,
+                ports,
             }],
 
-            // A named port leaves out ICMP, which has no port for it to select.
-            NetworkProtocol::Any if selector.port.is_some() => TRANSPORT_PROTOCOLS
+            NetworkProtocol::Any if ports.is_some() => TRANSPORT_PROTOCOLS
                 .iter()
-                .map(|&protocol| RuleMatch::Transport {
-                    protocol,
-                    ports: None,
-                })
+                .map(|&protocol| RuleMatch::Transport { protocol, ports })
                 .collect(),
             NetworkProtocol::Any => Self::every_protocol_matches(action),
-        }
-    }
-
-    fn narrowed_to_port(matching: RuleMatch, ports: PortRange) -> RuleMatch {
-        match matching {
-            RuleMatch::Transport { protocol, .. } => RuleMatch::Transport {
-                protocol,
-                ports: Some(ports),
-            },
-            RuleMatch::Icmp | RuleMatch::AnyTraffic => matching,
         }
     }
 
