@@ -960,7 +960,7 @@ impl NetworkIptablesManager {
     fn lower_directional_egress(egress: &NetworkEgressPolicy) -> Result<Vec<EgressEntry>, String> {
         let mut entries = Vec::new();
         for section in directional_egress_chain(egress.default) {
-            Self::lower_section(*section, egress, &mut entries)?;
+            entries.extend(Self::lower_section(*section, egress)?);
         }
         Ok(entries)
     }
@@ -968,27 +968,23 @@ impl NetworkIptablesManager {
     fn lower_section(
         section: EgressSection,
         egress: &NetworkEgressPolicy,
-        entries: &mut Vec<EgressEntry>,
-    ) -> Result<(), String> {
-        match section {
-            EgressSection::OperatorDenies => {
-                for rule in &egress.deny {
-                    Self::lower_rule(rule, RuleAction::Deny, entries)?;
-                }
-                Ok(())
-            }
-            EgressSection::OperatorAllows => {
-                for rule in &egress.allow {
-                    Self::lower_rule(rule, RuleAction::Allow, entries)?;
-                }
-                Ok(())
-            }
-            EgressSection::CarriedProtocolFloor => Self::lower_carried_protocols(entries),
+    ) -> Result<Vec<EgressEntry>, String> {
+        let (rules, action) = match section {
+            EgressSection::OperatorDenies => (&egress.deny, RuleAction::Deny),
+            EgressSection::OperatorAllows => (&egress.allow, RuleAction::Allow),
+            EgressSection::CarriedProtocolFloor => return Self::lower_carried_protocols(),
+        };
+
+        let mut entries = Vec::new();
+        for rule in rules {
+            entries.extend(Self::lower_rule(rule, action)?);
         }
+        Ok(entries)
     }
 
     // One entry per address family per carried protocol.
-    fn lower_carried_protocols(entries: &mut Vec<EgressEntry>) -> Result<(), String> {
+    fn lower_carried_protocols() -> Result<Vec<EgressEntry>, String> {
+        let mut entries = Vec::new();
         for destination in Self::peer_list_destinations(&Self::every_destination_peers())? {
             for matching in carried_protocol_matches() {
                 entries.push(EgressEntry {
@@ -998,15 +994,12 @@ impl NetworkIptablesManager {
                 });
             }
         }
-        Ok(())
+        Ok(entries)
     }
 
-    fn lower_rule(
-        rule: &NetworkRule,
-        action: RuleAction,
-        entries: &mut Vec<EgressEntry>,
-    ) -> Result<(), String> {
+    fn lower_rule(rule: &NetworkRule, action: RuleAction) -> Result<Vec<EgressEntry>, String> {
         let matches = Self::lower_port_selectors(&rule.ports, action);
+        let mut entries = Vec::new();
         for destination in Self::rule_destinations(rule)? {
             for matching in &matches {
                 entries.push(EgressEntry {
@@ -1016,7 +1009,7 @@ impl NetworkIptablesManager {
                 });
             }
         }
-        Ok(())
+        Ok(entries)
     }
 
     fn rule_destinations(rule: &NetworkRule) -> Result<Vec<String>, String> {
@@ -1173,11 +1166,13 @@ impl NetworkIptablesManager {
         let mut args = FirewallRuleArgs::default();
         let mut unresolved_denies: Vec<&str> = Vec::new();
         let mut catch_all_allows: Vec<&str> = Vec::new();
-        let entries = Self::network_egress_to_firewall_rules(policy, uses_directional_keys)?;
-        for entry in &entries {
-            let host = entry.destination.as_str();
-            let action = entry.action;
+        let egress_firewall_rules =
+            Self::network_egress_to_firewall_rules(policy, uses_directional_keys)?;
+        for firewall_rule in &egress_firewall_rules {
+            let host = firewall_rule.destination.as_str();
+            let action = firewall_rule.action;
             let destinations = Self::resolve_host(host);
+
             if destinations.is_empty() {
                 if default_permits && matches!(action, RuleAction::Deny) {
                     return Err(format!(
@@ -1201,20 +1196,25 @@ impl NetworkIptablesManager {
             {
                 catch_all_allows.push(host);
             }
+
             let rule_args = Self::build_resolved_destination_rule_args(
                 chain_name,
                 &destinations,
                 &action,
-                entry.matching,
+                firewall_rule.matching,
             );
+
             for rule in &rule_args.ipv4 {
                 logger.log_line(&format!("Programmed iptables rule: {}", rule.join(" ")));
             }
+
             for rule in &rule_args.ipv6 {
                 logger.log_line(&format!("Programmed ip6tables rule: {}", rule.join(" ")));
             }
+
             args.extend(rule_args);
         }
+
         if !unresolved_denies.is_empty() && !catch_all_allows.is_empty() {
             return Err(format!(
                 "blocked host(s) {} resolved to no address, so no rule can be programmed \
