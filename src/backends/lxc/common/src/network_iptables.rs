@@ -127,6 +127,9 @@ enum RuleMatch {
 enum TransportProtocol {
     Tcp,
     Udp,
+    Sctp,
+    Dccp,
+    UdpLite,
 }
 
 impl TransportProtocol {
@@ -134,25 +137,49 @@ impl TransportProtocol {
         match self {
             Self::Tcp => "tcp",
             Self::Udp => "udp",
+            Self::Sctp => "sctp",
+            Self::Dccp => "dccp",
+            Self::UdpLite => "udplite",
+        }
+    }
+
+    // iptables ships a port match for the first four and none for UDP-Lite, so
+    // `-p udplite --dport 443` is rejected outright rather than ignored.  A
+    // rule that names a port can only be written for a protocol answering true
+    // here.
+    fn accepts_port_filter(self) -> bool {
+        match self {
+            Self::Tcp | Self::Udp | Self::Sctp | Self::Dccp => true,
+            Self::UdpLite => false,
         }
     }
 }
 
-// Every protocol an egress rule can name on this backend.  A chain closing on a
-// drop carries these and nothing else, and a workload speaking a protocol absent
-// from this list leaves the container on no rule.  Carrying one more is a change
-// to the backend, not to a configuration.
-const CARRIED_PROTOCOLS: [RuleMatch; 3] = [
-    RuleMatch::Transport {
-        protocol: TransportProtocol::Tcp,
-        ports: None,
-    },
-    RuleMatch::Transport {
-        protocol: TransportProtocol::Udp,
-        ports: None,
-    },
-    RuleMatch::Icmp,
+// Every transport protocol an egress rule can name on this backend.  A workload
+// speaking a protocol absent from this list leaves the container on no rule, and
+// the chain closes on a drop.  Carrying one more is a change to the backend, not
+// to a configuration.
+const TRANSPORT_PROTOCOLS: [TransportProtocol; 5] = [
+    TransportProtocol::Tcp,
+    TransportProtocol::Udp,
+    TransportProtocol::Sctp,
+    TransportProtocol::Dccp,
+    TransportProtocol::UdpLite,
 ];
+
+// One match per protocol the backend carries, for a rule that names no port.
+// No port means nothing to read, so every protocol can be stated here.
+fn carried_protocol_matches() -> Vec<RuleMatch> {
+    let mut matches: Vec<RuleMatch> = TRANSPORT_PROTOCOLS
+        .iter()
+        .map(|&protocol| RuleMatch::Transport {
+            protocol,
+            ports: None,
+        })
+        .collect();
+    matches.push(RuleMatch::Icmp);
+    matches
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PortRange {
@@ -939,7 +966,7 @@ impl NetworkIptablesManager {
     ) -> Result<(), String> {
         for peer in Self::every_destination_peers() {
             for destination in Self::peer_destinations(&peer)? {
-                for matching in CARRIED_PROTOCOLS {
+                for matching in carried_protocol_matches() {
                     Self::push_entry(
                         entries,
                         remaining,
@@ -1055,9 +1082,31 @@ impl NetworkIptablesManager {
         if ports.is_empty() {
             return Self::every_protocol_matches(action);
         }
-        ports
+        let mut matches: Vec<RuleMatch> = ports
             .iter()
             .flat_map(|port| Self::lower_port_selector(port, action))
+            .collect();
+
+        let names_a_port_without_a_protocol = ports
+            .iter()
+            .any(|port| matches!(port.protocol, NetworkProtocol::Any) && port.port.is_some());
+        if matches!(action, RuleAction::Deny) && names_a_port_without_a_protocol {
+            matches.extend(Self::unfilterable_protocol_matches());
+        }
+        matches
+    }
+
+    // A protocol whose port iptables cannot read is refused to the destination
+    // on every port, which denies more than the rule names.  One entry covers
+    // the whole rule however many ports it lists, since none of them narrows it.
+    fn unfilterable_protocol_matches() -> Vec<RuleMatch> {
+        TRANSPORT_PROTOCOLS
+            .iter()
+            .filter(|protocol| !protocol.accepts_port_filter())
+            .map(|&protocol| RuleMatch::Transport {
+                protocol,
+                ports: None,
+            })
             .collect()
     }
 
@@ -1068,12 +1117,13 @@ impl NetworkIptablesManager {
     fn every_protocol_matches(action: RuleAction) -> Vec<RuleMatch> {
         match action {
             RuleAction::Deny => vec![RuleMatch::AnyTraffic],
-            RuleAction::Allow => CARRIED_PROTOCOLS.to_vec(),
+            RuleAction::Allow => carried_protocol_matches(),
         }
     }
 
-    // Protocol `any` with a port yields separate TCP and UDP matches because
-    // `-p all` accepts no `--dport`.
+    // `-p all` accepts no `--dport`, so protocol `any` with a port becomes one
+    // match per protocol whose port iptables can read.  The protocols it cannot
+    // read are handled once for the whole rule, by the caller.
     fn lower_port_selector(port: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
         let ports = port.port.map(|start| PortRange {
             start,
@@ -1093,16 +1143,11 @@ impl NetworkIptablesManager {
             }],
             NetworkProtocol::Any => match ports {
                 None => Self::every_protocol_matches(action),
-                Some(_) => vec![
-                    RuleMatch::Transport {
-                        protocol: TransportProtocol::Tcp,
-                        ports,
-                    },
-                    RuleMatch::Transport {
-                        protocol: TransportProtocol::Udp,
-                        ports,
-                    },
-                ],
+                Some(_) => TRANSPORT_PROTOCOLS
+                    .iter()
+                    .filter(|protocol| protocol.accepts_port_filter())
+                    .map(|&protocol| RuleMatch::Transport { protocol, ports })
+                    .collect(),
             },
         }
     }

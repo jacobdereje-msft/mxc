@@ -157,6 +157,21 @@ partially installed chain from a failed run is torn down regardless.
 
 If using the legacy network shape, `enforcementMode` cannot be `capabilities`.
 
+### Protocols a rule covers
+
+A rule that names no port covers TCP, UDP, SCTP, DCCP, UDP-Lite and ICMP.  A
+rule that names a port covers the first four of those.
+
+UDP-Lite is the exception, and it is one-sided.  The kernel's filter offers no
+way to read a port out of a UDP-Lite header.  A permit written at a port leaves
+UDP-Lite out, and a UDP-Lite packet to that port is thrown away by the rule at
+the bottom of the chain.  A denial written at a port goes the other way and
+blocks UDP-Lite to that destination on every port, not just the one written.
+Both directions fail safe: less gets through than the rule names, never more.
+
+Only `tcp`, `udp` and `icmp` can be written as a protocol.  The rest are
+reached by writing `any`, or by leaving the protocol out.
+
 ### Proxy
 
 **LXC does not support proxied egress (`runtimeConfig.networkProxy`) today.**
@@ -294,6 +309,11 @@ The zone query should answer the zone you assigned.
   `CAP_NET_ADMIN` dropped from its bounding set whenever chains are installed, so
   it cannot. Default-deny closes external reachability for a container that does
   not deliberately tear it down, including services the workload itself starts.
+- **UDP-Lite cannot be permitted at a particular port.** A permit written at a
+  port covers TCP, UDP, SCTP and DCCP; the kernel's filter cannot read a port
+  out of a UDP-Lite header, and that traffic is thrown away by the rule at the
+  bottom of the chain. A workload that needs UDP-Lite out needs a rule that
+  names no port at all.
 - **Raw sockets bypass egress filtering.** `CAP_NET_RAW` is retained so that an
   explicit `protocol: "icmp"` allow works. It also permits `AF_PACKET` sockets,
   which write link-layer frames straight to the interface without traversing the

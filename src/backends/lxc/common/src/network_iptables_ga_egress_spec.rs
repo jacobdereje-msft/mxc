@@ -186,13 +186,13 @@ fn explicit_deny_precedes_an_overlapping_allow_in_both_families() {
 
     assert_eq!(
         destination_actions(&rules.ipv4, ipv4),
-        vec!["DROP", "ACCEPT", "ACCEPT", "ACCEPT"],
+        vec!["DROP", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT"],
         "input=allow+deny to {ipv4}, family=IPv4; output={:?}",
         rules.ipv4
     );
     assert_eq!(
         destination_actions(&rules.ipv6, ipv6),
-        vec!["DROP", "ACCEPT", "ACCEPT", "ACCEPT"],
+        vec!["DROP", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT"],
         "input=allow+deny to {ipv6}, family=IPv6; output={:?}",
         rules.ipv6
     );
@@ -347,7 +347,7 @@ fn each_cidr_is_emitted_only_in_its_matching_address_family() {
 
     assert_eq!(
         destination_actions(&rules.ipv4, ipv4),
-        vec!["ACCEPT", "ACCEPT", "ACCEPT"],
+        vec!["ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT"],
         "input=allow.to=[{ipv4},{ipv6}], expected {ipv4} in IPv4 only; output={:?}",
         rules.ipv4
     );
@@ -358,7 +358,7 @@ fn each_cidr_is_emitted_only_in_its_matching_address_family() {
     );
     assert_eq!(
         destination_actions(&rules.ipv6, ipv6),
-        vec!["ACCEPT", "ACCEPT", "ACCEPT"],
+        vec!["ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT"],
         "input=allow.to=[{ipv4},{ipv6}], expected {ipv6} in IPv6 only; output={:?}",
         rules.ipv6
     );
@@ -457,7 +457,7 @@ fn explicit_any_without_a_port_matches_every_protocol_and_port() {
 }
 
 #[test]
-fn any_with_a_port_expands_to_tcp_and_udp_rules() {
+fn any_with_a_port_expands_to_every_protocol_whose_port_can_be_matched() {
     let destination = "192.0.2.0/24";
     let policy = directional_policy(
         NetworkAction::Deny,
@@ -486,12 +486,16 @@ fn any_with_a_port_expands_to_tcp_and_udp_rules() {
     assert_eq!(
         selectors,
         vec![
+            (Some("dccp"), Some("1000:2000")),
+            (Some("dccp"), Some("443")),
+            (Some("sctp"), Some("1000:2000")),
+            (Some("sctp"), Some("443")),
             (Some("tcp"), Some("1000:2000")),
             (Some("tcp"), Some("443")),
             (Some("udp"), Some("1000:2000")),
             (Some("udp"), Some("443")),
         ],
-        "input=default deny, allow=[{{to:{destination}, ports:[any/443,any/1000-2000]}}]; expected one TCP and one UDP rule per selector; output={:?}",
+        "input=default deny, allow=[{{to:{destination}, ports:[any/443,any/1000-2000]}}]; expected every port-carrying protocol once per selector; output={:?}",
         rules.ipv4
     );
 
@@ -513,6 +517,37 @@ fn any_with_a_port_expands_to_tcp_and_udp_rules() {
     assert!(
         matching_emitted_rule(&rules.ipv4, address, "icmp", Some(443)).is_none(),
         "input=default deny, allow=[{{to:{destination}, ports:[any/443]}}], packet=192.0.2.25/icmp; expected no emitted rule match; output={:?}",
+        rules.ipv4
+    );
+}
+
+#[test]
+fn a_denied_port_without_a_protocol_also_blocks_the_protocol_whose_port_cannot_be_read() {
+    let destination = "192.0.2.0/24";
+    let policy = directional_policy(
+        NetworkAction::Allow,
+        Vec::new(),
+        vec![rule(
+            vec![peer(destination, &[])],
+            vec![port(NetworkProtocol::Any, Some(443), None)],
+        )],
+    );
+    let rules = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
+    let unfilterable_denials = rules
+        .ipv4
+        .iter()
+        .filter(|rule| {
+            argument_after(rule, "-d") == Some(destination)
+                && argument_after(rule, "-p") == Some("udplite")
+                && argument_after(rule, "-j") == Some("DROP")
+        })
+        .map(|rule| argument_after(rule, "--dport"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        unfilterable_denials,
+        vec![None],
+        "input=default allow, deny=[{{to:{destination}, ports:[any/443]}}]; a port the kernel cannot read in a UDP-Lite header is denied on every port instead of escaping, once for the rule; output={:?}",
         rules.ipv4
     );
 }

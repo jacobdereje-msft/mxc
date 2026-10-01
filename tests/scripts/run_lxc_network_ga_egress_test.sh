@@ -57,6 +57,12 @@ ANY_WRONG_PORT_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_any_wrong_p
 ANY_UDP_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_any_udp.json"
 ANY_UDP_WRONG_PORT_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_any_udp_wrong_port.json"
 ANY_UDP_UNSCOPED_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_any_udp_unscoped.json"
+DEFAULT_ALLOW_DENIED_UDP_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_default_allow_denied_udp.json"
+DEFAULT_ALLOW_CARRIED_TCP_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_default_allow_carried_tcp.json"
+DEFAULT_ALLOW_CARRIED_ICMP_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_default_allow_carried_icmp.json"
+PORTLESS_ALLOW_TCP_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_portless_allow_tcp.json"
+PORTLESS_ALLOW_UDP_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_portless_allow_udp.json"
+PORTLESS_ALLOW_ICMP_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_portless_allow_icmp.json"
 
 fail() {
     echo "FAIL: $1"
@@ -275,6 +281,10 @@ PEER_TARGETING_CONFIGS=(
     "$ANY_TCP_CONFIG" "$ANY_ICMP_CONFIG"
     "$ANY_PORT_MATCH_CONFIG" "$ANY_WRONG_PORT_CONFIG"
     "$ANY_UDP_CONFIG" "$ANY_UDP_WRONG_PORT_CONFIG" "$ANY_UDP_UNSCOPED_CONFIG"
+    "$DEFAULT_ALLOW_DENIED_UDP_CONFIG" "$DEFAULT_ALLOW_CARRIED_TCP_CONFIG"
+    "$DEFAULT_ALLOW_CARRIED_ICMP_CONFIG"
+    "$PORTLESS_ALLOW_TCP_CONFIG" "$PORTLESS_ALLOW_UDP_CONFIG"
+    "$PORTLESS_ALLOW_ICMP_CONFIG"
 )
 PEER_ALLOWING_CONFIGS=(
     "$ALLOW_CONFIG" "$WRONG_PORT_CONFIG"
@@ -284,6 +294,8 @@ PEER_ALLOWING_CONFIGS=(
     "$ANY_TCP_CONFIG" "$ANY_ICMP_CONFIG"
     "$ANY_PORT_MATCH_CONFIG" "$ANY_WRONG_PORT_CONFIG"
     "$ANY_UDP_CONFIG" "$ANY_UDP_WRONG_PORT_CONFIG" "$ANY_UDP_UNSCOPED_CONFIG"
+    "$PORTLESS_ALLOW_TCP_CONFIG" "$PORTLESS_ALLOW_UDP_CONFIG"
+    "$PORTLESS_ALLOW_ICMP_CONFIG"
 )
 for cfg in "${PEER_TARGETING_CONFIGS[@]}"; do
     grep -Fq "$PEER_IP" "$cfg" \
@@ -296,7 +308,8 @@ done
 
 # Both udp fixtures probe the echo service, so a port the listener does not hold
 # would read as the firewall blocking rather than as drift.
-for cfg in "$ANY_UDP_CONFIG" "$ANY_UDP_WRONG_PORT_CONFIG" "$ANY_UDP_UNSCOPED_CONFIG"; do
+for cfg in "$ANY_UDP_CONFIG" "$ANY_UDP_WRONG_PORT_CONFIG" "$ANY_UDP_UNSCOPED_CONFIG" \
+    "$DEFAULT_ALLOW_DENIED_UDP_CONFIG" "$PORTLESS_ALLOW_UDP_CONFIG"; do
     grep -Fq "$PEER_UDP_PORT" "$cfg" \
         || fail "fixture ${cfg##*/} no longer probes udp/$PEER_UDP_PORT; script and fixture drifted."
 done
@@ -374,6 +387,24 @@ assert_allowed "udp/$PEER_UDP_PORT was unreachable while protocol any allowed th
 
 run_case "protocol-any case: peer allowed on any port 8054, probe udp/$PEER_UDP_PORT" "$ANY_UDP_WRONG_PORT_CONFIG"
 assert_blocked "udp/$PEER_UDP_PORT succeeded while protocol any allowed only port 8054. The UDP half of the fan-out ignores the port selector."
+
+run_case "default-allow case: egress.default allow, peer denied on udp/$PEER_UDP_PORT, probe udp/$PEER_UDP_PORT" "$DEFAULT_ALLOW_DENIED_UDP_CONFIG"
+assert_blocked "a denied destination stayed reachable under egress.default allow. The blanket accepts that now carry the default are answering ahead of the operator's deny, which turns an allow-with-exceptions policy into no policy at all."
+
+run_case "default-allow case: the same policy, probe tcp/443" "$DEFAULT_ALLOW_CARRIED_TCP_CONFIG"
+assert_allowed "tcp/443 was unreachable under egress.default allow while the only deny named udp/$PEER_UDP_PORT. The chain closes on a drop, and traffic the operator never denied leaves only if the chain also carries a TCP accept. That accept is missing, which cuts the container off from everything it did not explicitly deny."
+
+run_case "default-allow case: the same policy, probe icmp" "$DEFAULT_ALLOW_CARRIED_ICMP_CONFIG"
+assert_allowed "an ICMP echo was unreachable under egress.default allow while the only deny named udp/$PEER_UDP_PORT. The chain's ICMP accept is missing, and a policy denying one UDP port is silently denying ICMP as well."
+
+run_case "portless-allow case: egress.default deny, peer allowed with no ports entry, probe tcp/443" "$PORTLESS_ALLOW_TCP_CONFIG"
+assert_allowed "tcp/443 was unreachable while an allow rule naming no ports covered the destination. Omitting ports matches every protocol, and the rule is not carrying TCP."
+
+run_case "portless-allow case: the same policy, probe udp/$PEER_UDP_PORT" "$PORTLESS_ALLOW_UDP_CONFIG"
+assert_allowed "udp/$PEER_UDP_PORT was unreachable while an allow rule naming no ports covered the destination. The rule is being lowered to a protocol list that omits udp, which makes it narrower than written."
+
+run_case "portless-allow case: the same policy, probe icmp" "$PORTLESS_ALLOW_ICMP_CONFIG"
+assert_allowed "an ICMP echo was unreachable while an allow rule naming no ports covered the destination. The rule is being lowered to the transports alone, which drops ICMP from a rule that names no protocol at all."
 
 echo "PASS: schema 0.8 egress rules filtered by destination, by port, by port range, by protocol, by resolver, by deny rule, and by exclusion, and no exclusion answered for a destination a later rule denied."
 echo "LXC schema 0.8 egress enforcement test complete."
