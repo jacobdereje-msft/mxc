@@ -1942,319 +1942,228 @@ mod tests {
     use wxc_common::logger::{Logger, Mode};
     use wxc_common::models::{ContainerPolicy, NetworkEnforcementMode, ProxyAddress, ProxyConfig};
 
-    const CARRIED_CHAIN: &str = "CARRIED-EGRESS";
-
-    fn carried_words(words: &[&str]) -> Vec<String> {
-        words.iter().map(|word| (*word).to_string()).collect()
-    }
-
-    fn carried_port(protocol: NetworkProtocol, port: Option<u16>) -> NetworkPort {
+    fn port_selector(
+        protocol: NetworkProtocol,
+        port: Option<u16>,
+        end_port: Option<u16>,
+    ) -> NetworkPort {
         NetworkPort {
             protocol,
             port,
-            end_port: None,
+            end_port,
         }
     }
 
-    fn carried_rule(to: Vec<NetworkPeer>, ports: Vec<NetworkPort>) -> NetworkRule {
-        NetworkRule { to, ports }
-    }
-
-    fn carried_egress_policy(
-        default: NetworkAction,
-        allow: Vec<NetworkRule>,
-        deny: Vec<NetworkRule>,
-    ) -> ContainerPolicy {
-        ContainerPolicy {
-            network_egress: Some(NetworkEgressPolicy {
-                default,
-                allow,
-                deny,
-            }),
-            ..Default::default()
+    fn transport(protocol: TransportProtocol, ports: Option<(u16, u16)>) -> RuleMatch {
+        RuleMatch::Transport {
+            protocol,
+            ports: ports.map(|(start, end)| PortRange { start, end }),
         }
     }
 
-    fn carried_value_after<'a>(rule: &'a [String], flag: &str) -> Option<&'a str> {
-        rule.windows(2)
-            .find(|pair| pair[0].as_str() == flag)
-            .map(|pair| pair[1].as_str())
-    }
-
-    fn carried_jumps_to(rule: &[String], verdict: &str) -> bool {
-        carried_value_after(rule, "-j") == Some(verdict)
-    }
-
-    fn carried_is_blanket_accept(rule: &[String], destination: &str, protocol: &str) -> bool {
-        carried_jumps_to(rule, "ACCEPT")
-            && carried_value_after(rule, "-d") == Some(destination)
-            && carried_value_after(rule, "-p") == Some(protocol)
-            && carried_value_after(rule, "--dport").is_none()
-    }
-
-    fn carried_is_tcp_443_drop(rule: &[String]) -> bool {
-        carried_jumps_to(rule, "DROP")
-            && carried_value_after(rule, "-p") == Some("tcp")
-            && carried_value_after(rule, "--dport") == Some("443")
-    }
-
-    fn carried_first_rule_index<F>(rules: &[Vec<String>], mut predicate: F) -> Option<usize>
-    where
-        F: FnMut(&[String]) -> bool,
-    {
-        rules.iter().position(|rule| predicate(rule))
-    }
-
-    fn carried_assert_directional_allow_accepts_only_named_protocols(
-        rules: &[Vec<String>],
-        input: &str,
-    ) {
-        let accepts: Vec<&Vec<String>> = rules
-            .iter()
-            .filter(|rule| carried_jumps_to(rule, "ACCEPT"))
-            .collect();
-
-        assert!(
-            !accepts.is_empty(),
-            "{input}: emitted no ACCEPT rules\nrules: {rules:?}"
+    #[test]
+    fn carried_protocol_matches_cases() {
+        assert_eq!(
+            carried_protocol_matches(),
+            vec![
+                transport(TransportProtocol::Tcp, None),
+                transport(TransportProtocol::Udp, None),
+                transport(TransportProtocol::Sctp, None),
+                transport(TransportProtocol::Dccp, None),
+                RuleMatch::Icmp,
+            ]
         );
+    }
 
-        for rule in accepts {
-            assert!(
-                carried_value_after(rule, "-p").is_some(),
-                "{input}: emitted an ACCEPT rule without an earlier -p argument\nrule: {rule:?}\nrules: {rules:?}"
+    #[test]
+    fn every_protocol_matches_cases() {
+        let cases = [
+            (RuleAction::Deny, vec![RuleMatch::AnyTraffic]),
+            (RuleAction::Allow, carried_protocol_matches()),
+        ];
+
+        for (action, expected) in cases {
+            assert_eq!(
+                NetworkIptablesManager::every_protocol_matches(action),
+                expected,
+                "every_protocol_matches({action:?})"
             );
         }
     }
 
-    fn carried_assert_blanket_accept_exists(
-        rules: &[Vec<String>],
-        destination: &str,
-        protocol: &str,
-        input: &str,
-    ) {
-        assert!(
-            rules
-                .iter()
-                .any(|rule| carried_is_blanket_accept(rule, destination, protocol)),
-            "{input}: missing blanket {protocol} ACCEPT for {destination}\nrules: {rules:?}"
-        );
-    }
-
-    fn carried_assert_no_blanket_accept(
-        rules: &[Vec<String>],
-        destination: &str,
-        protocol: &str,
-        input: &str,
-    ) {
-        assert!(
-            !rules
-                .iter()
-                .any(|rule| carried_is_blanket_accept(rule, destination, protocol)),
-            "{input}: emitted unexpected blanket {protocol} ACCEPT for {destination}\nrules: {rules:?}"
-        );
-    }
-
     #[test]
-    fn directional_allow_policy_closes_with_drop_and_accepts_only_named_protocols() {
-        let input = "default=Allow uses_directional_keys=true allow=[] deny=[]";
-        let policy = carried_egress_policy(NetworkAction::Allow, Vec::new(), Vec::new());
+    fn directional_egress_chain_cases() {
+        let cases = [
+            (
+                NetworkAction::Allow,
+                vec![
+                    EgressSection::OperatorDenies,
+                    EgressSection::CarriedProtocolFloor,
+                ],
+            ),
+            (
+                NetworkAction::Deny,
+                vec![EgressSection::OperatorDenies, EgressSection::OperatorAllows],
+            ),
+        ];
 
-        let closing = NetworkIptablesManager::closing_policy(&policy, true);
-        assert!(
-            matches!(&closing, NetworkPolicy::Block),
-            "{input}: closing_policy did not return Block"
-        );
-
-        let closing_rule =
-            NetworkIptablesManager::build_default_policy_rule_arg(CARRIED_CHAIN, closing, false);
-        assert_eq!(
-            closing_rule,
-            carried_words(&["-A", CARRIED_CHAIN, "-j", "DROP"]),
-            "{input}: closing rule did not drop packets no earlier rule matched"
-        );
-
-        let rules = NetworkIptablesManager::build_policy_rule_args(CARRIED_CHAIN, &policy, true);
-        carried_assert_directional_allow_accepts_only_named_protocols(&rules.ipv4, input);
-        carried_assert_directional_allow_accepts_only_named_protocols(&rules.ipv6, input);
-    }
-
-    #[test]
-    fn directional_allow_policy_carries_every_protocol_it_can_name_for_every_destination_and_port()
-    {
-        let input = "default=Allow uses_directional_keys=true allow=[] deny=[]";
-        let policy = carried_egress_policy(NetworkAction::Allow, Vec::new(), Vec::new());
-        let rules = NetworkIptablesManager::build_policy_rule_args(CARRIED_CHAIN, &policy, true);
-
-        for protocol in ["tcp", "udp", "sctp", "dccp", "icmp"] {
-            carried_assert_blanket_accept_exists(&rules.ipv4, "0.0.0.0/0", protocol, input);
-        }
-
-        for protocol in ["tcp", "udp", "sctp", "dccp", "icmpv6"] {
-            carried_assert_blanket_accept_exists(&rules.ipv6, "::/0", protocol, input);
+        for (default, expected) in cases {
+            assert_eq!(
+                directional_egress_chain(default),
+                expected,
+                "directional_egress_chain({default:?})"
+            );
         }
     }
 
     #[test]
-    fn the_stated_default_decides_which_operator_list_the_chain_is_built_from() {
-        assert_eq!(
-            directional_egress_chain(NetworkAction::Deny),
-            [EgressSection::OperatorDenies, EgressSection::OperatorAllows],
-            "a refusing default must be decided by the allow list, with denies ahead of it"
-        );
-        assert_eq!(
-            directional_egress_chain(NetworkAction::Allow),
-            [
-                EgressSection::OperatorDenies,
-                EgressSection::CarriedProtocolFloor
-            ],
-            "an accepting default must be decided by the deny list, with the floor behind it"
-        );
+    fn selector_matches_cases() {
+        let at_443 = |protocol| transport(protocol, Some((443, 443)));
+        let every_transport_at_443 = vec![
+            at_443(TransportProtocol::Tcp),
+            at_443(TransportProtocol::Udp),
+            at_443(TransportProtocol::Sctp),
+            at_443(TransportProtocol::Dccp),
+        ];
+
+        let cases = [
+            (
+                NetworkProtocol::Tcp,
+                None,
+                None,
+                RuleAction::Allow,
+                vec![transport(TransportProtocol::Tcp, None)],
+            ),
+            (
+                NetworkProtocol::Tcp,
+                Some(443),
+                None,
+                RuleAction::Allow,
+                vec![at_443(TransportProtocol::Tcp)],
+            ),
+            (
+                NetworkProtocol::Tcp,
+                Some(80),
+                Some(90),
+                RuleAction::Allow,
+                vec![transport(TransportProtocol::Tcp, Some((80, 90)))],
+            ),
+            (
+                NetworkProtocol::Udp,
+                Some(53),
+                None,
+                RuleAction::Deny,
+                vec![transport(TransportProtocol::Udp, Some((53, 53)))],
+            ),
+            (
+                NetworkProtocol::Icmp,
+                None,
+                None,
+                RuleAction::Allow,
+                vec![RuleMatch::Icmp],
+            ),
+            (
+                NetworkProtocol::Icmp,
+                Some(443),
+                None,
+                RuleAction::Allow,
+                vec![RuleMatch::Icmp],
+            ),
+            (
+                NetworkProtocol::Any,
+                None,
+                None,
+                RuleAction::Allow,
+                carried_protocol_matches(),
+            ),
+            (
+                NetworkProtocol::Any,
+                None,
+                None,
+                RuleAction::Deny,
+                vec![RuleMatch::AnyTraffic],
+            ),
+            (
+                NetworkProtocol::Any,
+                Some(443),
+                None,
+                RuleAction::Allow,
+                every_transport_at_443.clone(),
+            ),
+            (
+                NetworkProtocol::Any,
+                Some(443),
+                None,
+                RuleAction::Deny,
+                every_transport_at_443,
+            ),
+        ];
+
+        for (protocol, port, end_port, action, expected) in cases {
+            let selector = port_selector(protocol, port, end_port);
+
+            assert_eq!(
+                NetworkIptablesManager::selector_matches(&selector, action),
+                expected,
+                "selector_matches({protocol:?} port={port:?} end_port={end_port:?}, {action:?})"
+            );
+        }
     }
 
     #[test]
-    fn operator_denies_precede_added_allowances_in_both_families() {
-        let input = "default=Allow uses_directional_keys=true deny=[any destination tcp/443]";
-        let policy = carried_egress_policy(
-            NetworkAction::Allow,
-            Vec::new(),
-            vec![carried_rule(
-                Vec::new(),
-                vec![carried_port(NetworkProtocol::Tcp, Some(443))],
-            )],
-        );
+    fn closing_policy_cases() {
+        let cases = [
+            (
+                Some(NetworkAction::Allow),
+                NetworkPolicy::Allow,
+                true,
+                NetworkPolicy::Block,
+            ),
+            (
+                Some(NetworkAction::Allow),
+                NetworkPolicy::Block,
+                true,
+                NetworkPolicy::Block,
+            ),
+            (
+                Some(NetworkAction::Deny),
+                NetworkPolicy::Allow,
+                true,
+                NetworkPolicy::Block,
+            ),
+            (None, NetworkPolicy::Allow, true, NetworkPolicy::Allow),
+            (None, NetworkPolicy::Block, true, NetworkPolicy::Block),
+            (
+                Some(NetworkAction::Allow),
+                NetworkPolicy::Allow,
+                false,
+                NetworkPolicy::Allow,
+            ),
+            (
+                Some(NetworkAction::Allow),
+                NetworkPolicy::Block,
+                false,
+                NetworkPolicy::Block,
+            ),
+        ];
 
-        let rules = NetworkIptablesManager::build_policy_rule_args(CARRIED_CHAIN, &policy, true);
+        for (egress_default, stated, uses_directional_keys, expected) in cases {
+            let policy = ContainerPolicy {
+                default_network_policy: stated.clone(),
+                network_egress: egress_default.map(|default| NetworkEgressPolicy {
+                    default,
+                    allow: Vec::new(),
+                    deny: Vec::new(),
+                }),
+                ..Default::default()
+            };
 
-        let ipv4_deny = carried_first_rule_index(&rules.ipv4, carried_is_tcp_443_drop)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{input}: missing IPv4 TCP/443 DROP\nrules: {:?}",
-                    rules.ipv4
-                )
-            });
-        let ipv4_accept = carried_first_rule_index(&rules.ipv4, |rule| {
-            carried_is_blanket_accept(rule, "0.0.0.0/0", "tcp")
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "{input}: missing IPv4 blanket TCP ACCEPT\nrules: {:?}",
-                rules.ipv4
-            )
-        });
-        assert!(
-            ipv4_deny < ipv4_accept,
-            "{input}: IPv4 TCP/443 DROP did not precede blanket TCP ACCEPT\nrules: {:?}",
-            rules.ipv4
-        );
-
-        let ipv6_deny = carried_first_rule_index(&rules.ipv6, carried_is_tcp_443_drop)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{input}: missing IPv6 TCP/443 DROP\nrules: {:?}",
-                    rules.ipv6
-                )
-            });
-        let ipv6_accept = carried_first_rule_index(&rules.ipv6, |rule| {
-            carried_is_blanket_accept(rule, "::/0", "tcp")
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "{input}: missing IPv6 blanket TCP ACCEPT\nrules: {:?}",
-                rules.ipv6
-            )
-        });
-        assert!(
-            ipv6_deny < ipv6_accept,
-            "{input}: IPv6 TCP/443 DROP did not precede blanket TCP ACCEPT\nrules: {:?}",
-            rules.ipv6
-        );
-    }
-
-    #[test]
-    fn directional_deny_policy_gets_no_added_allowances() {
-        let input =
-            "default=Deny uses_directional_keys=true allow=[any destination tcp/443] deny=[]";
-        let policy = carried_egress_policy(
-            NetworkAction::Deny,
-            vec![carried_rule(
-                Vec::new(),
-                vec![carried_port(NetworkProtocol::Tcp, Some(443))],
-            )],
-            Vec::new(),
-        );
-
-        let closing = NetworkIptablesManager::closing_policy(&policy, true);
-        assert!(
-            matches!(&closing, NetworkPolicy::Block),
-            "{input}: closing_policy did not return Block"
-        );
-
-        let rules = NetworkIptablesManager::build_policy_rule_args(CARRIED_CHAIN, &policy, true);
-        carried_assert_no_blanket_accept(&rules.ipv4, "0.0.0.0/0", "tcp", input);
-        carried_assert_no_blanket_accept(&rules.ipv4, "0.0.0.0/0", "udp", input);
-        carried_assert_no_blanket_accept(&rules.ipv4, "0.0.0.0/0", "icmp", input);
-
-        carried_assert_no_blanket_accept(&rules.ipv6, "::/0", "tcp", input);
-        carried_assert_no_blanket_accept(&rules.ipv6, "::/0", "udp", input);
-        carried_assert_no_blanket_accept(&rules.ipv6, "::/0", "icmpv6", input);
-    }
-
-    #[test]
-    fn non_directional_policy_keeps_its_closing_posture() {
-        let allow_input = "default_network_policy=Allow uses_directional_keys=false";
-        let allow_policy = ContainerPolicy {
-            default_network_policy: NetworkPolicy::Allow,
-            ..Default::default()
-        };
-        let allow_effective =
-            NetworkIptablesManager::effective_default_policy(&allow_policy, false);
-        assert!(
-            matches!(&allow_effective, NetworkPolicy::Allow),
-            "{allow_input}: effective_default_policy did not return Allow"
-        );
-        let allow_closing = NetworkIptablesManager::closing_policy(&allow_policy, false);
-        assert!(
-            matches!(&allow_closing, NetworkPolicy::Allow),
-            "{allow_input}: closing_policy changed the non-directional posture"
-        );
-        let allow_closing_rule = NetworkIptablesManager::build_default_policy_rule_arg(
-            CARRIED_CHAIN,
-            allow_closing,
-            false,
-        );
-        assert_eq!(
-            allow_closing_rule,
-            carried_words(&["-A", CARRIED_CHAIN, "-j", "ACCEPT"]),
-            "{allow_input}: closing rule did not accept unmatched packets"
-        );
-
-        let block_input = "default_network_policy=Block uses_directional_keys=false";
-        let block_policy = ContainerPolicy {
-            default_network_policy: NetworkPolicy::Block,
-            ..Default::default()
-        };
-        let block_effective =
-            NetworkIptablesManager::effective_default_policy(&block_policy, false);
-        assert!(
-            matches!(&block_effective, NetworkPolicy::Block),
-            "{block_input}: effective_default_policy did not return Block"
-        );
-        let block_closing = NetworkIptablesManager::closing_policy(&block_policy, false);
-        assert!(
-            matches!(&block_closing, NetworkPolicy::Block),
-            "{block_input}: closing_policy changed the non-directional posture"
-        );
-        let block_closing_rule = NetworkIptablesManager::build_default_policy_rule_arg(
-            CARRIED_CHAIN,
-            block_closing,
-            false,
-        );
-        assert_eq!(
-            block_closing_rule,
-            carried_words(&["-A", CARRIED_CHAIN, "-j", "DROP"]),
-            "{block_input}: closing rule did not drop unmatched packets"
-        );
+            assert_eq!(
+                NetworkIptablesManager::closing_policy(&policy, uses_directional_keys),
+                expected,
+                "closing_policy(egress={egress_default:?} stated={stated:?}, {uses_directional_keys})"
+            );
+        }
     }
 
     fn policy_requesting_mode(mode: NetworkEnforcementMode) -> ContainerPolicy {
