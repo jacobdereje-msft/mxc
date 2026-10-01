@@ -387,9 +387,7 @@ impl LxcScriptRunner {
             }
         }
 
-        // The policy lowers to the same rules with or without a container, so
-        // one that cannot be programmed is refused before a container exists.
-        if let Err(msg) = NetworkIptablesManager::validate_egress_lowering(
+        if let Err(msg) = NetworkIptablesManager::refuse_unprogrammable_egress(
             &request.policy,
             uses_directional_keys(&request.policy),
         ) {

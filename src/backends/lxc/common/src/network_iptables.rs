@@ -922,12 +922,60 @@ impl NetworkIptablesManager {
         }
     }
 
-    /// Lower the egress policy for its refusals alone, discarding the rules.
-    pub(crate) fn validate_egress_lowering(
+    /// Refuse an egress policy that cannot be programmed.
+    ///
+    /// Reads the configuration and builds nothing, so it can run before a
+    /// container exists.
+    pub(crate) fn refuse_unprogrammable_egress(
         policy: &ContainerPolicy,
         uses_directional_keys: bool,
     ) -> Result<(), String> {
-        Self::lower_egress(policy, uses_directional_keys).map(|_| ())
+        let Some(egress) = Self::stated_egress(policy, uses_directional_keys) else {
+            return Ok(());
+        };
+        if Self::count_directional_egress(egress)? > MAX_EGRESS_ENTRIES {
+            return Err(format!(
+                "network.egress expands into more than {MAX_EGRESS_ENTRIES} firewall \
+                 rules. A rule becomes every destination block it resolves to, in \
+                 every port it names, in every protocol it covers. Narrow the peers, \
+                 the exclusions, or the ports, or name a protocol instead of leaving \
+                 it open."
+            ));
+        }
+        Ok(())
+    }
+
+    // How many entries the chain would push, without pushing them.  A producer
+    // emits one entry per destination block per match, and both are known from
+    // the configuration.
+    fn count_directional_egress(egress: &NetworkEgressPolicy) -> Result<usize, String> {
+        let mut total = 0usize;
+        for section in directional_egress_chain(egress.default) {
+            total += Self::count_section(*section, egress)?;
+        }
+        Ok(total)
+    }
+
+    fn count_section(
+        section: EgressSection,
+        egress: &NetworkEgressPolicy,
+    ) -> Result<usize, String> {
+        match section {
+            EgressSection::OperatorDenies => Self::count_rules(&egress.deny, RuleAction::Deny),
+            EgressSection::OperatorAllows => Self::count_rules(&egress.allow, RuleAction::Allow),
+            EgressSection::CarriedProtocolFloor => {
+                Ok(Self::floor_destinations()?.len() * carried_protocol_matches().len())
+            }
+        }
+    }
+
+    fn count_rules(rules: &[NetworkRule], action: RuleAction) -> Result<usize, String> {
+        let mut total = 0usize;
+        for rule in rules {
+            total += Self::rule_destinations(rule)?.len()
+                * Self::lower_port_selectors(&rule.ports, action).len();
+        }
+        Ok(total)
     }
 
     fn lower_egress(
@@ -967,9 +1015,8 @@ impl NetworkIptablesManager {
 
     fn lower_directional_egress(egress: &NetworkEgressPolicy) -> Result<Vec<EgressEntry>, String> {
         let mut entries = Vec::new();
-        let mut remaining = MAX_EGRESS_ENTRIES;
         for section in directional_egress_chain(egress.default) {
-            Self::lower_section(*section, egress, &mut entries, &mut remaining)?;
+            Self::lower_section(*section, egress, &mut entries)?;
         }
         Ok(entries)
     }
@@ -978,73 +1025,35 @@ impl NetworkIptablesManager {
         section: EgressSection,
         egress: &NetworkEgressPolicy,
         entries: &mut Vec<EgressEntry>,
-        remaining: &mut usize,
     ) -> Result<(), String> {
         match section {
             EgressSection::OperatorDenies => {
                 for rule in &egress.deny {
-                    Self::lower_rule(rule, RuleAction::Deny, entries, remaining)?;
+                    Self::lower_rule(rule, RuleAction::Deny, entries)?;
                 }
                 Ok(())
             }
             EgressSection::OperatorAllows => {
                 for rule in &egress.allow {
-                    Self::lower_rule(rule, RuleAction::Allow, entries, remaining)?;
+                    Self::lower_rule(rule, RuleAction::Allow, entries)?;
                 }
                 Ok(())
             }
-            EgressSection::CarriedProtocolFloor => {
-                Self::lower_carried_protocols(entries, remaining)
-            }
+            EgressSection::CarriedProtocolFloor => Self::lower_carried_protocols(entries),
         }
     }
 
     // One entry per address family per carried protocol.
-    fn lower_carried_protocols(
-        entries: &mut Vec<EgressEntry>,
-        remaining: &mut usize,
-    ) -> Result<(), String> {
-        for peer in Self::every_destination_peers() {
-            for destination in Self::peer_destinations(&peer)? {
-                for matching in carried_protocol_matches() {
-                    Self::push_entry(
-                        entries,
-                        remaining,
-                        destination.clone(),
-                        RuleAction::Allow,
-                        matching,
-                    )?;
-                }
+    fn lower_carried_protocols(entries: &mut Vec<EgressEntry>) -> Result<(), String> {
+        for destination in Self::floor_destinations()? {
+            for matching in carried_protocol_matches() {
+                entries.push(EgressEntry {
+                    destination: destination.clone(),
+                    action: RuleAction::Allow,
+                    matching,
+                });
             }
         }
-        Ok(())
-    }
-
-    // The cap bounds what the policy expands into, counted here so that every
-    // producer of an entry is counted by the gate that runs before a container
-    // exists.
-    fn push_entry(
-        entries: &mut Vec<EgressEntry>,
-        remaining: &mut usize,
-        destination: String,
-        action: RuleAction,
-        matching: RuleMatch,
-    ) -> Result<(), String> {
-        if *remaining == 0 {
-            return Err(format!(
-                "network.egress expands into more than {MAX_EGRESS_ENTRIES} firewall \
-                 rules. A rule becomes every destination block it resolves to, in \
-                 every port it names, in every protocol it covers. Narrow the peers, \
-                 the exclusions, or the ports, or name a protocol instead of leaving \
-                 it open."
-            ));
-        }
-        *remaining -= 1;
-        entries.push(EgressEntry {
-            destination,
-            action,
-            matching,
-        });
         Ok(())
     }
 
@@ -1052,9 +1061,23 @@ impl NetworkIptablesManager {
         rule: &NetworkRule,
         action: RuleAction,
         entries: &mut Vec<EgressEntry>,
-        remaining: &mut usize,
     ) -> Result<(), String> {
         let matches = Self::lower_port_selectors(&rule.ports, action);
+        for destination in Self::rule_destinations(rule)? {
+            for matching in &matches {
+                entries.push(EgressEntry {
+                    destination: destination.clone(),
+                    action,
+                    matching: *matching,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    // Counting and building both read the destinations from here, so the number
+    // the cap is checked against is the number that gets pushed.
+    fn rule_destinations(rule: &NetworkRule) -> Result<Vec<String>, String> {
         let wildcard_peers;
         let peers = if rule.to.is_empty() {
             wildcard_peers = Self::every_destination_peers();
@@ -1062,15 +1085,19 @@ impl NetworkIptablesManager {
         } else {
             &rule.to[..]
         };
+        Self::peer_list_destinations(peers)
+    }
 
+    fn floor_destinations() -> Result<Vec<String>, String> {
+        Self::peer_list_destinations(&Self::every_destination_peers())
+    }
+
+    fn peer_list_destinations(peers: &[NetworkPeer]) -> Result<Vec<String>, String> {
+        let mut destinations = Vec::new();
         for peer in peers {
-            for destination in Self::peer_destinations(peer)? {
-                for matching in &matches {
-                    Self::push_entry(entries, remaining, destination.clone(), action, *matching)?;
-                }
-            }
+            destinations.extend(Self::peer_destinations(peer)?);
         }
-        Ok(())
+        Ok(destinations)
     }
 
     /// The destinations a peer covers once its exclusions are removed.
@@ -2372,11 +2399,41 @@ mod tests {
             )],
         );
 
-        let validation = NetworkIptablesManager::validate_egress_lowering(&policy, true);
+        let validation = NetworkIptablesManager::refuse_unprogrammable_egress(&policy, true);
         assert!(
             validation.is_ok(),
-            "{input}: validate_egress_lowering rejected a policy whose added allowances fit the cap\nerror: {validation:?}"
+            "{input}: refuse_unprogrammable_egress rejected a policy whose added allowances fit the cap\nerror: {validation:?}"
         );
+    }
+
+    #[test]
+    fn the_counted_entries_are_the_entries_the_chain_pushes() {
+        for default in [NetworkAction::Allow, NetworkAction::Deny] {
+            let policy = carried_egress_policy(
+                default,
+                vec![carried_rule(
+                    vec![carried_peer("192.0.2.0/24")],
+                    vec![carried_port(NetworkProtocol::Tcp, Some(80))],
+                )],
+                vec![carried_rule(
+                    vec![carried_peer("10.0.0.0/8")],
+                    vec![carried_port(NetworkProtocol::Any, Some(443))],
+                )],
+            );
+            let egress = NetworkIptablesManager::stated_egress(&policy, true)
+                .expect("a directional policy states an egress section");
+
+            let counted = NetworkIptablesManager::count_directional_egress(egress)
+                .expect("the policy counts");
+            let pushed = NetworkIptablesManager::lower_directional_egress(egress)
+                .expect("the policy lowers");
+
+            assert_eq!(
+                counted,
+                pushed.len(),
+                "default={default:?}: the cap is checked against a count the chain does not push"
+            );
+        }
     }
 
     fn policy_requesting_mode(mode: NetworkEnforcementMode) -> ContainerPolicy {
