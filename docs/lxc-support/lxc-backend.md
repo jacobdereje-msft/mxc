@@ -186,24 +186,10 @@ A request that permits nothing and names no proxy keeps its own loopback and rea
 
 ### SDK
 
-```typescript
-import { spawnSandbox, SandboxPolicy } from '@microsoft/mxc-sdk';
-
-const policy: SandboxPolicy = {
-    filesystem: {
-        readwritePaths: ['/tmp/output'],
-        readonlyPaths: ['/opt/tools'],
-    },
-    network: {
-        allowOutbound: false,
-    },
-};
-
-// On Linux, this automatically uses lxc-exec
-const pty = spawnSandbox('echo hello', policy);
-pty.onData((data) => console.log(data));
-pty.onExit((e) => console.log('Exit:', e.exitCode));
-```
+The Node SDK executes through `mxc_ffi` and does not fall back to `lxc-exec`.
+The in-process Rust SDK currently rejects LXC one-shot requests because LXC
+does not expose the required native captured-pipe execution contract. Use the
+CLI directly until that backend capability is implemented.
 
 ## Building
 

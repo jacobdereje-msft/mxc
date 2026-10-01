@@ -183,7 +183,7 @@ Use `createConfigFromPolicy()` to build a config, then customize WSLC-specific
 fields before spawning:
 
 ```typescript
-import { createConfigFromPolicy, spawnSandboxFromConfig } from '@microsoft/mxc-sdk';
+import { createConfigFromPolicy, spawnAsync } from '@microsoft/mxc-sdk';
 
 const policy = {
   version: '0.9.0-alpha',
@@ -199,13 +199,11 @@ config.wslc!.image = 'python:3.12-alpine';
 config.wslc!.cpuCount = 2;
 config.wslc!.memoryMb = 1024;
 
-// PTY mode (interactive terminal):
-const ptyProcess = spawnSandboxFromConfig(config);
-
-// Non-PTY mode (reliable exit codes, separate stdout/stderr):
-const child = spawnSandboxFromConfig(config, { usePty: false });
-child.stdout?.on('data', (data) => console.log(data.toString()));
-child.on('close', (code) => console.log('Exit code:', code));
+const sandbox = await spawnAsync(config);
+sandbox.standardOutput?.on('data', (data) => console.log(data.toString()));
+sandbox.standardError?.on('data', (data) => console.error(data.toString()));
+const result = await sandbox.waitAsync();
+console.log('Exit code:', result.exitCode);
 ```
 
 ### Rust SDK

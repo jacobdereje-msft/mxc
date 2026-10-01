@@ -126,8 +126,9 @@ When `ui.disable=false` (UI enabled) with default settings, all sub-restrictions
 **Total default: 0x03FF** (all flags on)
 
 This is by design (least-privilege). Applications that need desktop access must explicitly
-configure relaxed UI settings via the advanced API (`createConfigFromPolicy` +
-`spawnSandboxFromConfig`) with appropriate `appContainer.ui` settings.
+configure relaxed UI settings with `createConfigFromPolicy`, update the
+appropriate `processContainer.ui` settings, and pass the resulting config to
+`spawn` or `runAsync`.
 
 ### Win32k Disabled (`ui.disable=true`)
 

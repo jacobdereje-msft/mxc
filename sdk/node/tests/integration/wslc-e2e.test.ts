@@ -1,14 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// SDK end-to-end tests — these tests spawn real containers via wxc-exec.exe.
+// SDK end-to-end tests - these tests spawn real containers through mxc_ffi.
 // They require the appropriate runtime to be installed and configured.
 //
 // WSLC tests require:
 //   - Windows 11 with WSL2 enabled
 //   - WSLC SDK runtime installed
-//   - wxc-exec.exe built with --features wslc
-//   - wslcsdk.dll in the same directory as wxc-exec.exe
+//   - mxc_ffi built with WSLC support
+//   - wslcsdk.dll beside mxc_ffi
 //   - alpine:latest and python:3.12-alpine images pre-pulled
 //
 // Run via: npm test (from integration directory)
@@ -19,7 +19,6 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import os from 'os';
-import { ChildProcess } from 'child_process';
 import { sdk } from './test-helpers.js';
 
 // WSLC tests require a Windows machine with WSL2 and WSLC SDK installed.
@@ -79,19 +78,7 @@ describe('WSLC SDK E2E — createConfigFromPolicy → customize → spawn', {
       // fresh temp directory would point WSLC at an empty image store and
       // fail with "image not found" — MXC does not pull at runtime.
 
-      const { stdout, stderr, exitCode } = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve, reject) => {
-        const child = sdk.spawnSandboxFromConfig(config, { debug: true, usePty: false }) as ChildProcess;
-        let stdout = '';
-        let stderr = '';
-        child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
-        child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-        child.on('error', (error: Error) => {
-          reject(new Error(`Failed to spawn WSLC sandbox process: ${error.message}${stderr ? `\n${stderr}` : ''}`));
-        });
-        child.on('close', (code: number | null) => {
-          resolve({ stdout, stderr, exitCode: code ?? -1 });
-        });
-      });
+      const { stdout, stderr, exitCode } = await sdk.runAsync(config);
 
       assert.strictEqual(exitCode, 0, `exit=${exitCode}\nstdout=${stdout}\nstderr=${stderr}`);
       assert.ok(stdout.includes('Python 3.12'), `Python 3.12 not found in stdout=${stdout}`);
@@ -147,17 +134,15 @@ srv.handle_request()
       { windowsPort: HOST_PORT, containerPort: CONTAINER_PORT, protocol: 'tcp' },
     ];
 
-    const child = sdk.spawnSandboxFromConfig(config, { debug: true, usePty: false }) as ChildProcess;
+    const child = sdk.spawn(config);
     let stdout = '';
     let stderr = '';
-    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
-    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
-    const closed = new Promise<number | null>((resolve) => {
-      if (child.exitCode !== null) {
-        resolve(child.exitCode);
-      } else {
-        child.on('close', (code: number | null) => resolve(code));
-      }
+    child.standardOutput?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.standardError?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    let childExit: { exitCode: number; timedOut: boolean } | undefined;
+    const closed = child.waitAsync().then((result) => {
+      childExit = result;
+      return result;
     });
 
     let body = '';
@@ -169,8 +154,8 @@ srv.handle_request()
       // when the container crashed).
       const probeDeadline = Date.now() + 60_000;
       while (Date.now() < probeDeadline) {
-        if (child.exitCode !== null) {
-          throw new Error(`Container exited before probe could succeed (code=${child.exitCode}). stdout=${stdout} stderr=${stderr}`);
+        if (childExit !== undefined) {
+          throw new Error(`Container exited before probe could succeed (code=${childExit.exitCode}). stdout=${stdout} stderr=${stderr}`);
         }
         try {
           body = await new Promise<string>((resolve, reject) => {
@@ -198,12 +183,13 @@ srv.handle_request()
         new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 20_000)),
       ]);
       if (cleanExit === 'timeout') {
-        child.kill('SIGKILL');
+        child.kill();
         await Promise.race([
           closed,
           new Promise((r) => setTimeout(r, 5_000)),
         ]);
       }
+      child.dispose();
     }
   });
 
@@ -229,20 +215,12 @@ srv.handle_request()
       { windowsPort: 39000, containerPort: 9000, protocol: 'udp' as unknown as 'tcp' },
     ];
 
-    const { exitCode, combined } = await new Promise<{ exitCode: number; combined: string }>((resolve, reject) => {
-      const child = sdk.spawnSandboxFromConfig(config, { debug: true, usePty: false }) as ChildProcess;
-      let combined = '';
-      const onData = (d: Buffer) => { combined += d.toString(); };
-      child.stdout?.on('data', onData);
-      child.stderr?.on('data', onData);
-      child.on('error', reject);
-      child.on('close', (code: number | null) => resolve({ exitCode: code ?? -1, combined }));
-    });
-
-    assert.notStrictEqual(exitCode, 0, `expected non-zero exit when UDP is requested; output=${combined}`);
-    assert.ok(
-      /udp/i.test(combined) && /not supported|not implemented/i.test(combined),
-      `expected SDK-limitation message mentioning UDP; output=${combined}`,
+    await assert.rejects(
+      sdk.runAsync(config),
+      (error: unknown) =>
+        error instanceof Error
+        && /udp/i.test(error.message)
+        && /not supported|not implemented/i.test(error.message),
     );
   });
 });

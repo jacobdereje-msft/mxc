@@ -103,7 +103,6 @@
     "global-agent": "^4.1.3"
   },
   "dependencies": {
-    "@microsoft/mxc-sdk": "file:../../sdk/node",
-    "node-pty": "^1.0.0"
+    "@microsoft/mxc-sdk": "file:../../sdk/node"
   }
 }

@@ -10,7 +10,7 @@ npm install @microsoft/mxc-sdk
 
 ```typescript
 import {
-  spawnSandboxFromConfig, createConfigFromPolicy,
+  createConfigFromPolicy, spawnAsync,
   getAvailableToolsPolicy, getTemporaryFilesPolicy,
   getPlatformSupport,
 } from '@microsoft/mxc-sdk';
@@ -34,9 +34,11 @@ const config = createConfigFromPolicy({
 });
 config.process!.commandLine = 'python -c "print(\'hello from sandbox\')"';
 
-const child = spawnSandboxFromConfig(config, { usePty: false });
-child.stdout!.on('data', (d) => process.stdout.write(d));
-child.on('close', (code) => console.log('exit:', code));
+const sandbox = await spawnAsync(config);
+sandbox.standardOutput!.on('data', (d) => process.stdout.write(d));
+sandbox.standardError!.on('data', (d) => process.stderr.write(d));
+const result = await sandbox.waitAsync();
+console.log('exit:', result.exitCode);
 ```
 
 ---
@@ -111,7 +113,7 @@ requirements determine how that proxy endpoint is made reachable.
 ```typescript
 import {
   createConfigFromPolicy,
-  spawnSandboxFromConfig,
+  runAsync,
 } from '@microsoft/mxc-sdk';
 
 const directConfig = createConfigFromPolicy({
@@ -128,7 +130,7 @@ const directConfig = createConfigFromPolicy({
   },
 });
 directConfig.process!.commandLine = 'node agent.js';
-spawnSandboxFromConfig(directConfig);
+await runAsync(directConfig);
 ```
 
 **Simple model 2 example — loopback HTTP/S proxy:**
@@ -143,7 +145,7 @@ const proxyConfig = createConfigFromPolicy({
   runtimeConfig: { networkProxy: 'http://127.0.0.1:8080' },
 });
 proxyConfig.process!.commandLine = 'node agent.js';
-spawnSandboxFromConfig(proxyConfig);
+await runAsync(proxyConfig);
 ```
 
 These are example configurations rather than universal backend recipes.
@@ -182,15 +184,22 @@ It is reported **fail closed**: if the probe cannot run, the result is `'unsuppo
 
 ---
 
-## Three Ways to Spawn
+## One-shot execution
 
-The SDK provides three entry points. **Prefer the config-based path** (`createConfigFromPolicy` + `spawnSandboxFromConfig`) — it gives you backend selection, backend-specific tuning, and (with `usePty: false`) separated stdout/stderr.
+All one-shot APIs accept a complete `ContainerConfig` and execute through the
+in-process `mxc_ffi` library. The SDK does not launch MXC executables and does
+not return Node `ChildProcess` or `IPty` objects.
 
-### 1. Config-based — recommended
+| API | Behavior | Return type |
+| --- | --- | --- |
+| `spawn(config, options?)` | Start synchronously; stream and control the workload | `MxcSandboxProcess` |
+| `spawnAsync(config, options?)` | Start without blocking the Node event loop | `Promise<MxcSandboxProcess>` |
+| `run(config, options?)` | Run synchronously to completion | `SandboxRunResult` |
+| `runAsync(config, options?)` | Run asynchronously to completion | `Promise<SandboxRunResult>` |
 
 ```typescript
 import {
-  createConfigFromPolicy, spawnSandboxFromConfig,
+  createConfigFromPolicy, spawn, runAsync,
   getAvailableToolsPolicy, getTemporaryFilesPolicy,
 } from '@microsoft/mxc-sdk';
 
@@ -210,86 +219,24 @@ const config = createConfigFromPolicy(
   'process', // intent: "process" | "vm" | "microvm"
 );
 
-// Add the script and any backend-specific runtime settings on the returned config.
+// Add the command and any backend-specific runtime settings.
 config.process!.commandLine = 'python script.py';
 
-// PTY mode (default) — IPty, merged stdout+stderr
-const pty = spawnSandboxFromConfig(config);
-pty.onData((d) => process.stdout.write(d));
-pty.onExit(({ exitCode }) => console.log('exit:', exitCode));
+// Live execution with separate native streams.
+const sandbox = spawn(config);
+sandbox.standardOutput!.on('data', (data) => process.stdout.write(data));
+sandbox.standardError!.on('data', (data) => process.stderr.write(data));
+const outcome = await sandbox.waitAsync();
+console.log('exit:', outcome.exitCode, 'timedOut:', outcome.timedOut);
 
-// Pipe mode — ChildProcess with separated stdout/stderr + reliable exit codes
-const child = spawnSandboxFromConfig(config, { usePty: false });
-child.stdout!.on('data', (d) => process.stdout.write(d));
-child.stderr!.on('data', (d) => process.stderr.write(d));
-child.on('close', (code) => console.log('exit:', code));
-```
-
-### 2. `spawnSandbox(script, policy, ...)` — convenience
-
-Quick path for **process-isolation only** (`processcontainer` on Windows, `lxc` on Linux, `seatbelt` on macOS). Returns a `node-pty` `IPty` with merged stdout/stderr.
-
-```typescript
-import {
-  spawnSandbox,
-  getAvailableToolsPolicy, getTemporaryFilesPolicy,
-} from '@microsoft/mxc-sdk';
-
-const tools = getAvailableToolsPolicy(process.env);
-const temp  = getTemporaryFilesPolicy();
-
-const pty = spawnSandbox('python script.py', {
-  version: '0.9.0-alpha',
-  filesystem: {
-    readonlyPaths:  tools.readonlyPaths,
-    readwritePaths: temp.readwritePaths,
-  },
-  timeoutMs: 30_000,
-}, {
-  inheritDefaultEnv: true,
-}, undefined, undefined, {
-  APP_MODE: 'development',
-});
-pty.onData((d) => process.stdout.write(d));
-pty.onExit(({ exitCode }) => console.log('exit:', exitCode));
-```
-
-An explicitly supplied environment is used verbatim by default. Set
-`inheritDefaultEnv: true` to layer those entries on the backend default instead;
-on Windows process containers, that default is the user profile environment
-block. This option requires schema version `0.9.0-alpha` or later. The SDK never
-implicitly copies `process.env` into the child.
-
-### 3. `spawnSandboxAsync(script, policy, ...)` — promise-style
-
-The `await`-friendly API runs the abstract `process` containment intent and
-resolves with `{ stdout, stderr, exitCode }`. That intent maps to the native
-process backend for each host and selects Windows ProcessContainer when the
-policy contains ProcessContainer-specific settings. Requests execute through
-`mxc_ffi` and return separate stdout and stderr.
-
-```typescript
-import {
-  spawnSandboxAsync,
-  getAvailableToolsPolicy, getTemporaryFilesPolicy,
-} from '@microsoft/mxc-sdk';
-
-const tools = getAvailableToolsPolicy(process.env);
-const temp  = getTemporaryFilesPolicy();
-
-const result = await spawnSandboxAsync(
-  'python -c "import sys; print(sys.version)"',
-  {
-    version: '0.6.0-alpha',
-    filesystem: {
-      readonlyPaths:  tools.readonlyPaths,
-      readwritePaths: temp.readwritePaths,
-    },
-    timeoutMs: 30_000,
-  },
-);
+// Or capture stdout/stderr and completion metadata.
+const result = await runAsync(config);
 console.log(result.stdout);
 ```
+
+Set `config.process.cwd`, `config.process.env`, and
+`config.process.inheritDefaultEnv` directly. MXC never implicitly copies
+`process.env` into the sandbox.
 
 > **Tip:** for agentic workloads, prefer **multiple narrow sandboxes** (one policy per task step) over a single broad policy. Add task-specific paths on top of the discovered base (e.g. a scoped output directory in `readwritePaths`, a project source tree in `readonlyPaths`, secrets in `deniedPaths`).
 
@@ -323,14 +270,14 @@ Experimental backends require `{ experimental: true }` in `SandboxSpawnOptions`:
 ```typescript
 const config = createConfigFromPolicy(policy, 'vm'); // → windows_sandbox on Windows
 config.process!.commandLine = 'cmd /c whoami';
-const pty = spawnSandboxFromConfig(config, { experimental: true });
+const sandbox = spawn(config, { experimental: true });
 ```
 
 IsolationSession one-shot execution uses the explicit configuration path and
 requires the standard directional all-allow network posture:
 
 ```typescript
-import { ContainerConfig, spawnSandboxFromConfig } from '@microsoft/mxc-sdk';
+import { ContainerConfig, spawn } from '@microsoft/mxc-sdk';
 
 const config: ContainerConfig = {
   version: '0.9.0-alpha',
@@ -342,7 +289,7 @@ const config: ContainerConfig = {
   },
 };
 
-const pty = spawnSandboxFromConfig(config);
+const sandbox = spawn(config);
 ```
 
 Legacy network fields are rejected. Selecting the backend never supplies an
@@ -370,7 +317,7 @@ capability names are reserved and must not be added directly to
 
 For long-lived sandboxes where you provision once, exec many times, and tear down at the end (e.g. agentic loops), use the state-aware lifecycle.
 
-> **Backend support:** the state-aware lifecycle is currently implemented for `isolation_session`, `windows_sandbox`, and `wslc` (all Windows-only). Node exposes live, buffered, and dry-run exec only for backends that support native piped execution: IsolationSession and WSLC. Windows Sandbox supports provision, start, stop, and deprovision through Node, but its exec APIs are unavailable because the backend cannot return native pipes. IsolationSession and WSLC do not require an experimental opt-in; Windows Sandbox does. The one-shot spawn APIs (`spawnSandbox` / `spawnSandboxFromConfig`) are the supported execution path for every other backend.
+> **Backend support:** the state-aware lifecycle is currently implemented for `isolation_session`, `windows_sandbox`, and `wslc` (all Windows-only). Node exposes live, buffered, and dry-run exec only for backends that support native piped execution: IsolationSession and WSLC. Windows Sandbox supports provision, start, stop, and deprovision through Node, but its exec APIs are unavailable because the backend cannot return native pipes. IsolationSession and WSLC do not require an experimental opt-in; Windows Sandbox does. The one-shot `spawn`, `spawnAsync`, `run`, and `runAsync` APIs are the supported execution path for every other backend supported by the in-process native SDK.
 
 ```typescript
 import {
@@ -509,7 +456,7 @@ Each helper returns `{ readonlyPaths, readwritePaths }` — merge what you want 
 The `policy.ui` block is enforced on all supported schema versions, and `policy.ui.allowWindows` defaults to `false`. Most non-interactive command-line tools work fine, but on Windows some shells make win32k system calls during startup and fail without UI access. **All versions of PowerShell are affected** — both Windows PowerShell 5.1 (`powershell.exe`) and PowerShell 7 (`pwsh.exe`). Set `ui.allowWindows: true` when launching a shell:
 
 ```typescript
-import { spawnSandboxFromConfig, createConfigFromPolicy } from '@microsoft/mxc-sdk';
+import { createConfigFromPolicy, runAsync } from '@microsoft/mxc-sdk';
 
 const config = createConfigFromPolicy({
   version: '0.6.0-alpha',
@@ -517,16 +464,16 @@ const config = createConfigFromPolicy({
 });
 config.process!.commandLine = 'powershell.exe -NoProfile -Command "Get-Date"';
 
-const child = spawnSandboxFromConfig(config, { usePty: false });
+const result = await runAsync(config);
 ```
 
 ### Buffered output keeps stdout and stderr separate
 
-`spawnSandboxAsync` returns separate `stdout` and `stderr` strings.
+`run` and `runAsync` return separate `stdout` and `stderr` strings.
 
 ### `createConfigFromPolicy` leaves `commandLine` empty
 
-You must set `config.process!.commandLine = '…'` before calling `spawnSandboxFromConfig`.
+You must set `config.process!.commandLine = '…'` before calling a one-shot API.
 
 ### Default-deny applies to everything
 
@@ -534,7 +481,7 @@ No `network` field → no network. No `readwritePaths` → process can't write `
 
 ### `process.cwd` doesn't grant filesystem access
 
-Setting `cwd` (or the `workingDirectory` argument) does **not** add that path to the policy. Add it to `readonlyPaths` / `readwritePaths` explicitly.
+Setting `config.process.cwd` does **not** add that path to the policy. Add it to `readonlyPaths` / `readwritePaths` explicitly.
 
 For Windows ProcessContainer requests using schema `0.9.0-alpha`,
 `processContainer.filesystem.enumeratePaths` permits directory listing without
@@ -551,12 +498,12 @@ granting file content reads. It requires a BaseContainer host with PSEC 1.1
 | Error | Cause | Fix |
 | --- | --- | --- |
 | `MXC is not supported on this platform` | `getPlatformSupport()` returned `isSupported: false`. On Linux, neither LXC nor a usable Bubblewrap 0.5.0+ installation is available. On macOS, the Seatbelt platform probe could not find `/usr/bin/sandbox-exec`. | Inspect `support.reason`. On Linux, also inspect `support.unavailableReasons` and install LXC or Bubblewrap 0.5.0+. On macOS, verify that `/usr/bin/sandbox-exec` exists; its absence indicates an incomplete or unsupported macOS installation. |
-| `wxc-exec.exe not found` / `lxc-exec not found` | The SDK couldn't locate the native binary. | Set `MXC_BIN_DIR=<dir>` so `<dir>/<arch>/wxc-exec.exe` (or `lxc-exec`) exists, or pass `options.executablePath` explicitly. |
+| `mxc_ffi native library was not found` | The package does not contain the native library for the current platform/architecture, or it cannot be loaded. | Install the complete platform package and ensure its native assets remain beside the SDK package. |
 | `Invalid containment value '<x>'` | `containment` field doesn't match the parser's accepted values. | Use one of the abstract intents (`process`, `vm`, `microvm`) or a concrete backend listed in [Choosing a Backend](#choosing-a-backend). |
 | `'<x>' containment requires experimental mode` | A `windows_sandbox` / `microvm` / `hyperlight` backend was selected without the flag. | Pass `{ experimental: true }` in `SandboxSpawnOptions`. |
-| `process.commandLine starts with an unquoted Windows path containing a space` | `wxc-exec` rejects unquoted paths with spaces at parse time. | Quote the executable: `'"C:\\Program Files\\…\\foo.exe" args'`. |
+| `process.commandLine starts with an unquoted Windows path containing a space` | Native request validation rejects ambiguous command lines. | Quote the executable: `'"C:\\Program Files\\…\\foo.exe" args'`. |
 | `CreateProcessW(PROC_THREAD_ATTRIBUTE_SECURITY_ENVIRONMENT) failed: ...` | The process security environment launch returned an OS-level error. Backend-unavailable failures automatically fall through to an AppContainer tier during selection. | Check the Windows build requirements for the backend you selected. |
-| Process exits `-1` / `4294967295` with no stdout | Native binary terminated abnormally. | Re-run with `options.debug: true` (or `options.logDir: '<dir>'`) to capture diagnostic logs. |
+| Process exits `-1` / `4294967295` with no stdout | The sandboxed process terminated abnormally. | Inspect the returned warnings and native error details. |
 | `Policy version '<x>' is older than supported` / `newer than supported` | Version is outside the supported version lines. | Use an exact registered version: `0.6.0-alpha`, `0.7.0-alpha`, `0.8.0-alpha`, `0.9.0-alpha`, or `0.10.0-alpha`. See [Compatibility](#compatibility). |
 | `Policy version '<x>' is not a registered schema contract` / `Unsupported contract version` | The declaration is not registered, even if it falls between supported versions (for example, `0.6.1-alpha`). | Use an exact version from [Compatibility](#compatibility); IsolationSession and WSLC state-aware requests use `0.9.0-alpha`, while Windows Sandbox uses `0.10.0-alpha`. |
 | `Schema <x> does not support containment '<backend>'` | The selected backend was introduced after the declared schema version. | Use the backend's minimum version from [Choosing a Backend](#choosing-a-backend). Seatbelt requires `0.7.0-alpha`; IsolationSession and WSLC require `0.9.0-alpha`; Windows Sandbox, MicroVM, and Hyperlight require `0.10.0-alpha`. |
@@ -573,13 +520,12 @@ For backend-specific errors, see the per-backend guide linked from the [Choosing
 <summary>Every export at a glance — click to expand.</summary>
 
 ```typescript
-// Spawn — config-based (recommended)
+// One-shot
 createConfigFromPolicy(policy, containment?, containerName?) → ContainerConfig
-spawnSandboxFromConfig(config, options?, workingDirectory?, env?) → IPty | ChildProcess
-
-// Spawn — convenience (process containment only)
-spawnSandbox(script, policy, options?, workingDirectory?, containerName?, env?) → IPty
-spawnSandboxAsync(script, policy, ...) → Promise<{ stdout, stderr, exitCode }>
+spawn(config, options?)      → MxcSandboxProcess
+spawnAsync(config, options?) → Promise<MxcSandboxProcess>
+run(config, options?)        → SandboxRunResult
+runAsync(config, options?)   → Promise<SandboxRunResult>
 
 // State-aware lifecycle (currently `isolation_session`, `windows_sandbox`, and `wslc` — all Windows-only)
 // `config` on provisionSandbox is required for backends whose provision config

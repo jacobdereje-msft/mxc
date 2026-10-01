@@ -231,7 +231,7 @@ export function resolveExecutableAndArgs(
     );
   }
   if (!config.process?.commandLine) {
-    throw new Error('script is required. Set process.commandLine on the config or pass a script to spawnSandbox().');
+    throw new Error('process.commandLine is required on ContainerConfig.');
   }
 
   // Resolve deprecated wire values (e.g. "appcontainer" → "processcontainer",

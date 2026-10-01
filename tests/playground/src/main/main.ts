@@ -3,10 +3,10 @@
 
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import * as path from 'path';
-import * as pty from 'node-pty';
+import type { MxcSandboxProcess } from '@microsoft/mxc-sdk';
 
 let mainWindow: BrowserWindow | null = null;
-let activePty: pty.IPty | null = null;
+let activeProcess: MxcSandboxProcess | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -52,16 +52,17 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
-    killActivePty();
+    killActiveProcess();
   });
 }
 
-function killActivePty(): void {
-  if (activePty) {
+function killActiveProcess(): void {
+  if (activeProcess) {
     try {
-      activePty.kill();
+      activeProcess.kill();
     } catch { /* already dead */ }
-    activePty = null;
+    activeProcess.dispose();
+    activeProcess = null;
   }
 }
 
@@ -69,34 +70,21 @@ function loadSdk(): typeof import('@microsoft/mxc-sdk') {
   return require('@microsoft/mxc-sdk');
 }
 
-/** Resolve wxc-exec path — checks extraResources for packaged app, then falls back to SDK discovery. */
-function resolveExecutablePath(): string | undefined {
-  const fs = require('fs');
-  const sdk = loadSdk();
-
-  // Packaged Electron app: binary is in resources/bin/x64/
-  if ((process as any).resourcesPath) {
-    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-    const packaged = path.join((process as any).resourcesPath, 'bin', arch, 'wxc-exec.exe');
-    if (fs.existsSync(packaged)) {
-      return packaged;
-    }
-  }
-
-  // Dev mode: let SDK discover it normally
-  return undefined;
-}
-
-function attachPtyListeners(ptyProcess: pty.IPty): void {
-  activePty = ptyProcess;
-
-  ptyProcess.onData((data: string) => {
+function attachProcessListeners(sandboxProcess: MxcSandboxProcess): void {
+  activeProcess = sandboxProcess;
+  sandboxProcess.standardOutput?.on('data', (data: Buffer) => {
     mainWindow?.webContents.send('pty-data', data);
   });
-
-  ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
-    activePty = null;
+  sandboxProcess.standardError?.on('data', (data: Buffer) => {
+    mainWindow?.webContents.send('pty-data', data);
+  });
+  void sandboxProcess.waitAsync().then(({ exitCode }) => {
+    if (activeProcess === sandboxProcess) activeProcess = null;
     mainWindow?.webContents.send('pty-exit', exitCode);
+  }).catch((error: Error) => {
+    if (activeProcess === sandboxProcess) activeProcess = null;
+    mainWindow?.webContents.send('pty-data', `\r\n${error.message}\r\n`);
+    mainWindow?.webContents.send('pty-exit', -1);
   });
 }
 
@@ -124,40 +112,32 @@ ipcMain.handle('get-temp-policy', () => {
   return sdk.getTemporaryFilesPolicy();
 });
 
-// IPC: Simple mode — spawnSandbox(script, policy)
+// IPC: Simple mode
 ipcMain.handle('run-sandbox', (_event, scriptText: string, policyJson: string, debug: boolean, experimental: boolean) => {
-  killActivePty();
-  const sdk = loadSdk();
-
-  try {
-    const policy = JSON.parse(policyJson);
-    const ptyProcess = sdk.spawnSandbox(scriptText, policy, {
-      debug,
-      experimental,
-      executablePath: resolveExecutablePath(), skipPlatformCheck: true,
-    });
-    attachPtyListeners(ptyProcess);
-    return { success: true };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-});
-
-// IPC: Advanced mode — createConfigFromPolicy + spawnSandboxFromConfig
-ipcMain.handle('run-sandbox-advanced', (_event, scriptText: string, policyJson: string, debug: boolean, experimental: boolean) => {
-  killActivePty();
+  killActiveProcess();
   const sdk = loadSdk();
 
   try {
     const policy = JSON.parse(policyJson);
     const config = sdk.createConfigFromPolicy(policy);
     config.process!.commandLine = scriptText;
-    const ptyProcess = sdk.spawnSandboxFromConfig(config, {
-      debug,
-      experimental,
-      executablePath: resolveExecutablePath(), skipPlatformCheck: true,
-    });
-    attachPtyListeners(ptyProcess);
+    attachProcessListeners(sdk.spawn(config, { experimental }));
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+});
+
+// IPC: Advanced mode
+ipcMain.handle('run-sandbox-advanced', (_event, scriptText: string, policyJson: string, debug: boolean, experimental: boolean) => {
+  killActiveProcess();
+  const sdk = loadSdk();
+
+  try {
+    const policy = JSON.parse(policyJson);
+    const config = sdk.createConfigFromPolicy(policy);
+    config.process!.commandLine = scriptText;
+    attachProcessListeners(sdk.spawn(config, { experimental }));
     return { success: true, config: JSON.stringify(config, null, 2) };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -166,7 +146,7 @@ ipcMain.handle('run-sandbox-advanced', (_event, scriptText: string, policyJson: 
 
 // IPC: Kill active sandbox
 ipcMain.handle('kill-sandbox', () => {
-  killActivePty();
+  killActiveProcess();
   return { success: true };
 });
 
@@ -514,54 +494,12 @@ ipcMain.handle('get-test-script', (_event, scriptName: string) => {
 
 // IPC: Run sandbox with raw JSON config (bypass policy creation)
 ipcMain.handle('run-sandbox-raw', (_event, configJson: string, debug: boolean, experimental: boolean) => {
-  killActivePty();
+  killActiveProcess();
   const sdk = loadSdk();
 
   try {
     const config = JSON.parse(configJson);
-    const execPath = resolveExecutablePath();
-
-    // MicroVM (nanvixd) requires CWD to be the binary directory
-    let workingDir: string | undefined;
-    if (config.containment === 'microvm') {
-      const fs = require('fs');
-      // Match the SDK's binary discovery layout (sdk/src/platform.ts):
-      // npm-packaged binaries live under sdk/bin/<arch>, local dev builds
-      // under src/target/<triple>/{release,debug}.
-      const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-      const triple = process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
-      const repoRoot = path.join(__dirname, '..', '..', '..');
-      const candidates = [
-        execPath,
-        path.join(repoRoot, 'sdk', 'bin', arch),
-        path.join(repoRoot, 'src', 'target', triple, 'release'),
-        path.join(repoRoot, 'src', 'target', triple, 'debug'),
-        path.join(repoRoot, 'src', 'target', 'release'),
-        path.join(repoRoot, 'src', 'target', 'debug'),
-      ].filter(Boolean);
-      for (const c of candidates) {
-        const dir = c!.endsWith('.exe') ? path.dirname(c!) : c!;
-        if (fs.existsSync(path.join(dir, 'nanvixd.exe'))) {
-          workingDir = dir;
-          break;
-        }
-      }
-      if (!workingDir) {
-        return {
-          success: false,
-          error: `nanvixd.exe not found for arch '${arch}'. Looked in: ${candidates.join('; ')}. ` +
-                 `MicroVM requires nanvixd.exe to be co-located with wxc-exec (and CWD must point at it).`,
-        };
-      }
-    }
-
-    const ptyProcess = sdk.spawnSandboxFromConfig(config, {
-      debug,
-      experimental,
-      executablePath: execPath, skipPlatformCheck: true,
-    }, workingDir);
-
-    attachPtyListeners(ptyProcess);
+    attachProcessListeners(sdk.spawn(config, { experimental }));
     return { success: true, config };
   } catch (e: any) {
     return { success: false, error: e.message };
@@ -571,6 +509,6 @@ ipcMain.handle('run-sandbox-raw', (_event, configJson: string, debug: boolean, e
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  killActivePty();
+  killActiveProcess();
   app.quit();
 });

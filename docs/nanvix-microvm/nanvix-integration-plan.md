@@ -20,12 +20,12 @@ Path A — CLI (direct):
     └── Parses args → loads JSON → dispatches to NanVixScriptRunner
 
 Path B — SDK (programmatic):
-  App calls: spawnSandbox("print('hello')", policy, { containment: "microvm" })
+  App calls: runAsync(config, { experimental: true })
     ├── Builds JSON config with containment = "microvm"
-    └── Spawns wxc-exec.exe with the config
+    └── Calls mxc_ffi in-process with the config
 
 Both paths converge here:
-  wxc-exec.exe
+  mxc_engine
     ├── Parses JSON config → sees containment = "microvm"
     ├── Creates NanVixScriptRunner (via existing Box<dyn ScriptRunner> dispatch)
     ├── Validates paths next to wxc-exec.exe:
@@ -352,13 +352,14 @@ Python 3.12.3 (tags/0715636-nanvix-03bba66:0715636) on nanvix
 ### SDK Usage (After Phase 2)
 
 ```typescript
-import { spawnSandboxAsync } from '@microsoft/mxc-sdk';
+import { runAsync, type ContainerConfig } from '@microsoft/mxc-sdk';
 
-const result = await spawnSandboxAsync(
-  "print('Hello from NanVix!')",
-  {},  // no policy needed — NanVix is isolated by design
-  { containment: 'microvm' }
-);
+const config: ContainerConfig = {
+  version: '0.10.0-alpha',
+  containment: 'microvm',
+  process: { commandLine: "print('Hello from NanVix!')" },
+};
+const result = await runAsync(config, { experimental: true });
 
 console.log(result.stdout);  // "Hello from NanVix!"
 console.log(result.exitCode); // 0

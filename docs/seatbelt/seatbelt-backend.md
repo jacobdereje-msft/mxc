@@ -495,7 +495,11 @@ fail with `Operation not permitted`. Grant the working directory in
 ### SDK
 
 ```typescript
-import { spawnSandbox, SandboxPolicy } from '@microsoft/mxc-sdk';
+import {
+    createConfigFromPolicy,
+    runAsync,
+    type SandboxPolicy,
+} from '@microsoft/mxc-sdk';
 
 const policy: SandboxPolicy = {
     version: '0.9.0-alpha',
@@ -509,10 +513,11 @@ const policy: SandboxPolicy = {
     },
 };
 
-// On macOS this resolves to mxc-exec-mac and builds a seatbelt config.
-const pty = spawnSandbox('echo hello', policy);
-pty.onData((data) => console.log(data));
-pty.onExit((e) => console.log('Exit:', e.exitCode));
+const config = createConfigFromPolicy(policy);
+config.process!.commandLine = 'echo hello';
+const result = await runAsync(config, { experimental: true });
+console.log(result.stdout);
+console.log('Exit:', result.exitCode);
 ```
 
 `version` is required and must fall in the supported range. The SDK rejects a

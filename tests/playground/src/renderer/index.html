@@ -159,7 +159,7 @@
             <div id="rawJsonSection" class="script-section hidden">
               <button id="btnOpenJsonEditor" class="btn btn-run" style="width:100%;">📋 Open JSON Editor</button>
               <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
-                ⚠️ MXC JSON mode skips policy generation. Config is passed to spawnSandboxFromConfig.
+                ⚠️ MXC JSON mode skips policy generation. Config is passed directly to spawn.
               </div>
               <div id="dropZone" class="drop-zone">
                 <span class="drop-zone-icon">＋</span>
@@ -404,7 +404,7 @@
     </div>
     <div class="json-editor-body">
       <div class="json-editor-note">
-        ⚠️ MXC JSON mode skips policy generation — the config is passed to spawnSandboxFromConfig.
+        ⚠️ MXC JSON mode skips policy generation — the config is passed directly to spawn.
       </div>
       <textarea id="rawJsonText" class="json-editor-textarea" spellcheck="false" placeholder="Paste or type your MXC ContainerConfig JSON here..."></textarea>
       <div class="json-editor-preview">

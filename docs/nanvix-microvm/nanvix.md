@@ -78,14 +78,10 @@ wxc-exec.exe --experimental config.json
 
 ## SDK Usage
 
-Use `spawnSandboxFromConfig` with `usePty: false` for reliable exit codes and
-separate stdout/stderr streams:
+Use `runAsync` for captured stdout/stderr and reliable exit/timeout results:
 
 ```typescript
-const child = spawnSandboxFromConfig(config, {
-  experimental: true,
-  usePty: false,
-});
+const result = await runAsync(config, { experimental: true });
 
 ```
 

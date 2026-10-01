@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import {
   createStateAwareStreamingDriver,
   createStreamingDriver,
+  createStreamingDriverAsync,
   type StreamingNativeFacade,
 } from '../../src/bindings/streaming.js';
 import {
@@ -22,6 +23,7 @@ class FakeNative implements StreamingNativeFacade {
   readonly freedStrings: unknown[] = [];
   closeFailureHandle: number | bigint | undefined;
   spawnStatus = 0;
+  spawnAsyncCount = 0;
   takeStatus = 0;
   killCount = 0;
   timeoutKillCount = 0;
@@ -47,6 +49,16 @@ class FakeNative implements StreamingNativeFacade {
   spawn(_request: string, outHandle: unknown[], _error: unknown): number {
     outHandle[0] = this.handle;
     return this.spawnStatus;
+  }
+
+  spawnAsync(
+    request: string,
+    outHandle: unknown[],
+    error: unknown,
+    completion: (error: Error | null, status: number) => void,
+  ): void {
+    this.spawnAsyncCount += 1;
+    queueMicrotask(() => completion(null, this.spawn(request, outHandle, error)));
   }
 
   stateAwareExec(
@@ -274,6 +286,24 @@ describe('native streaming binding ownership', () => {
     assert.deepStrictEqual(streams.writableHandles, [11]);
     assert.deepStrictEqual(streams.readableHandles, [12, 13]);
     assert.deepStrictEqual(native.closedHandles, []);
+    await driver.free();
+    assert.strictEqual(native.freeCount, 1);
+  });
+
+  it('creates the streaming driver through asynchronous native spawn', async () => {
+    const native = new FakeNative();
+    const streams = new FakeStreams();
+
+    const driver = await createStreamingDriverAsync(
+      {} as never,
+      native,
+      streams,
+    );
+
+    assert.strictEqual(native.spawnAsyncCount, 1);
+    assert.strictEqual(driver.id, 23);
+    assert.deepStrictEqual(streams.writableHandles, [11]);
+    assert.deepStrictEqual(streams.readableHandles, [12, 13]);
     await driver.free();
     assert.strictEqual(native.freeCount, 1);
   });

@@ -33,7 +33,7 @@ const lxcSkipReason = !isLinuxRoot
     : undefined;
 
 // Route through explicit `containment: 'lxc'` so these tests genuinely exercise
-// the LXC backend. spawnSandboxAsync internally routes through abstract
+// the LXC backend. The one-shot APIs route through abstract
 // `containment: 'process'`, which on Linux resolves to a different backend
 // (Bubblewrap). The LXC backend is covered by an explicit opt-in only.
 async function runLxc(

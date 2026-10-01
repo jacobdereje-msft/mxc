@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft Corporation.
+﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 import { describe, it, afterEach } from 'node:test';
@@ -12,6 +12,7 @@ import {
   sdk,
   debugSpawnOptions,
   NETWORK_TEST_URL,
+  runWithPolicyAsync,
   createTempDir,
 } from './test-helpers.js';
 
@@ -59,7 +60,7 @@ describe('macOS Seatbelt Container', {
   });
 
   it('should execute hello world in seatbelt sandbox', async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       "echo 'Hello from seatbelt'",
       { version: schemaVersion },
       { experimental: true },
@@ -71,7 +72,7 @@ describe('macOS Seatbelt Container', {
   });
 
   it('should propagate exit code', async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       'exit 42',
       { version: schemaVersion },
       inProcessSeatbeltOptions,
@@ -94,7 +95,7 @@ describe('macOS Seatbelt Container', {
       'trap - 0',
       'test "$status" -eq 143',
     ].join('\n');
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       script,
       { version: schemaVersion },
       inProcessSeatbeltOptions,
@@ -107,7 +108,7 @@ describe('macOS Seatbelt Container', {
 
   it('should deny filesystem access by default', async () => {
     // The default seatbelt profile denies access to /Users.
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       'ls /Users 2>&1 || true',
       { version: schemaVersion },
       inProcessSeatbeltOptions,
@@ -127,7 +128,7 @@ describe('macOS Seatbelt Container', {
       version: schemaVersion,
       network: { allowOutbound: false },
     };
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       "curl --max-time 5 --fail --silent --show-error https://example.com 2>&1; echo CURL_EXIT=$?",
       policy,
       inProcessSeatbeltOptions,
@@ -146,7 +147,7 @@ describe('macOS Seatbelt Container', {
       version: schemaVersion,
       network: { allowOutbound: true },
     };
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       `RESULT=$(curl --max-time 10 --fail --silent '${NETWORK_TEST_URL}') && echo 'NETWORK_OK'`,
       policy,
       inProcessSeatbeltOptions,
@@ -162,7 +163,7 @@ describe('macOS Seatbelt Container', {
       version: schemaVersion,
       ui: { clipboard: 'none' as const },
     };
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       "echo test_clip | pbcopy 2>&1 && pbpaste 2>&1",
       policy,
       inProcessSeatbeltOptions,
@@ -179,7 +180,7 @@ describe('macOS Seatbelt Container', {
       version: schemaVersion,
       ui: { clipboard: 'all' as const },
     };
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       `echo '${uniqueToken}' | pbcopy && pbpaste`,
       policy,
       inProcessSeatbeltOptions,
@@ -199,11 +200,10 @@ describe('macOS Seatbelt Container', {
       },
     };
     // blockedHosts is unsupported on seatbelt; the runner rejects it and emits
-    // a structured `backend_error` envelope, so spawnSandboxAsync rejects with
-    // an MxcError (parity with wxc-exec / lxc-exec — issue #564).
+    // a structured `backend_error` envelope.
     await assert.rejects(
       () =>
-        sdk.spawnSandboxAsync(
+        runWithPolicyAsync(
           'echo should-not-run',
           policy,
           inProcessSeatbeltOptions,
@@ -224,7 +224,7 @@ describe('macOS Seatbelt Container', {
   });
 
   it('should run multi-command pipeline', async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       "echo 'step 1' && uname -s && echo 'step 2' && whoami && echo 'Pipeline complete'",
       { version: schemaVersion },
       inProcessSeatbeltOptions,
@@ -241,28 +241,14 @@ describe('macOS Seatbelt Container', {
       version: schemaVersion,
       timeoutMs: 2000,
     };
-    // On timeout the runner kills the process and emits a structured
-    // `backend_error` envelope, so spawnSandboxAsync rejects with an MxcError
-    // (parity with wxc-exec / lxc-exec — issue #564).
-    await assert.rejects(
-      () =>
-        sdk.spawnSandboxAsync(
-          'sleep 30',
-          policy,
-          inProcessSeatbeltOptions,
-          undefined,
-          'seatbelt-timeout',
-        ),
-      (err: unknown) => {
-        assert.ok(err instanceof MxcError, `Expected MxcError, got: ${err}`);
-        assert.strictEqual(err.code, 'backend_error');
-        assert.ok(
-          err.message.includes('timed out'),
-          `Expected timeout message, got: ${err.message}`,
-        );
-        return true;
-      },
+    const result = await runWithPolicyAsync(
+      'sleep 30',
+      policy,
+      inProcessSeatbeltOptions,
+      undefined,
+      'seatbelt-timeout',
     );
+    assert.strictEqual(result.timedOut, true);
   });
 
   it('should apply profile override from seatbelt config', { timeout: 30_000 }, async () => {
@@ -272,16 +258,7 @@ describe('macOS Seatbelt Container', {
     config.seatbelt = { profileOverride: '(version 1)\n(allow default)' };
     config.containerId = 'seatbelt-profile-override';
 
-    const result = await new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
-      const ptyProcess = sdk.spawnSandboxFromConfig(config, seatbeltSpawnOptions);
-      let stdout = '';
-      const timer = setTimeout(() => reject(new Error('Test timed out waiting for onExit')), 25_000);
-      ptyProcess.onData((data: string) => { stdout += data; });
-      ptyProcess.onExit((event: { exitCode: number }) => {
-        clearTimeout(timer);
-        resolve({ exitCode: event.exitCode, stdout });
-      });
-    });
+    const result = await sdk.runAsync(config, seatbeltSpawnOptions);
     assert.strictEqual(result.exitCode, 0, `Expected exit 0: ${result.stdout}`);
     assert.ok(result.stdout.includes('profile override works'));
   });

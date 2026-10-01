@@ -186,7 +186,7 @@ npm install @microsoft/mxc-sdk
 
 ```typescript
 import {
-  spawnSandboxFromConfig, createConfigFromPolicy,
+  createConfigFromPolicy, runAsync,
   getAvailableToolsPolicy, getTemporaryFilesPolicy,
   getPlatformSupport,
 } from '@microsoft/mxc-sdk';
@@ -209,9 +209,10 @@ const config = createConfigFromPolicy({
 });
 config.process!.commandLine = 'python -c "print(\'hello from sandbox\')"';
 
-const child = spawnSandboxFromConfig(config, { usePty: false });
-child.stdout!.on('data', (d) => process.stdout.write(d));
-child.on('close', (code) => console.log('exit:', code));
+const result = await runAsync(config);
+process.stdout.write(result.stdout);
+process.stderr.write(result.stderr);
+console.log('exit:', result.exitCode);
 ```
 
 The SDK also provides a **state-aware lifecycle** API for long-lived sandboxes:

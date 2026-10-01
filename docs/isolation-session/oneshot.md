@@ -274,7 +274,7 @@ The full field-by-field table is in
 
 - **C# one-shot SDK support.** The Rust SDK already supports one-shot `run` and
   `spawn_sandbox` behind the `isolation_session` feature. The Node JSON/config
-  path (`spawnSandboxFromConfig`) and
+  path (`spawn` / `runAsync`) and
   `wxc-exec` support the required network posture. The C# SDK still reaches
   IsolationSession only through the state-aware lifecycle APIs.
 

@@ -1,25 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// MicroVM SDK end-to-end tests — these tests spawn NanVix VMs via wxc-exec.exe.
+// MicroVM SDK end-to-end tests.
 //
 // Requirements:
 //   - Windows with WHP enabled (bcdedit /set hypervisorlaunchtype auto)
-//   - wxc-exec.exe built (in src/target/debug/ or src/target/x86_64-pc-windows-msvc/debug/)
-//   - NanVix binaries next to wxc-exec.exe: nanvixd.exe, kernel.elf, python3.12, nanvix_rootfs.img
+//   - mxc_ffi built with MicroVM support
+//   - NanVix runtime assets available to the native runtime
 //
 // Run: cd sdk/tests/integration && npx tsc -p tsconfig.json && node --test dist/microvm-filesystem.test.js
 //
-// All tests use spawnSandboxFromConfig with usePty:false (non-PTY mode).
-// PTY mode is not supported for the MicroVM backend.
-
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'os';
 import { execSync } from 'child_process';
-import { ChildProcess } from 'child_process';
 import { sdk } from './test-helpers.js';
 import type { ContainerConfig } from '@microsoft/mxc-sdk';
 
@@ -46,50 +42,25 @@ function pyEscape(p: string): string {
 }
 
 /**
- * Spawn a microvm sandbox using spawnSandboxFromConfig with usePty:false.
- * Returns stdout, stderr, and exit code.
+ * Run a MicroVM sandbox through the in-process native SDK.
  */
 function runMicrovm(
   config: ContainerConfig,
   options: { timeoutMs?: number } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolve, reject) => {
-    const timeout = options.timeoutMs ?? 120_000;
-
-    try {
-      const child: ChildProcess = sdk.spawnSandboxFromConfig(config, {
-        experimental: true,
-        debug: true,
-        usePty: false,
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
-      child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-      const timer = setTimeout(() => {
-        child.kill();
-        reject(new Error(`MicroVM test timed out after ${timeout}ms.\nstdout: ${stdout}\nstderr: ${stderr}`));
-      }, timeout);
-
-      child.on('error', (error: Error) => {
-        clearTimeout(timer);
-        reject(new Error(`Failed to spawn wxc-exec: ${error.message}`));
-      });
-
-      child.on('close', (code: number | null) => {
-        clearTimeout(timer);
-        resolve({ stdout, stderr, exitCode: code ?? -1 });
-      });
-    } catch (error) {
-      reject(error);
-    }
-  });
+  const timeout = options.timeoutMs ?? 120_000;
+  return Promise.race([
+    sdk.runAsync(config, { experimental: true }),
+    new Promise<never>((_, reject) => {
+      setTimeout(
+        () => reject(new Error(`MicroVM test timed out after ${timeout}ms.`)),
+        timeout,
+      );
+    }),
+  ]);
 }
 
-describe('MicroVM SDK E2E — spawnSandboxFromConfig with containment: microvm', {
+describe('MicroVM SDK E2E - runAsync with containment: microvm', {
   skip: !isMicrovmAvailable ? 'MicroVM tests require Windows with WHP' : undefined,
 }, () => {
 

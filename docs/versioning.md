@@ -86,26 +86,21 @@ the native trust boundary. A high-level SDK API connects the two by selecting
 the exact schema contract that it constructs.
 
 In the current v0.x API, callers put an exact schema version in
-`SandboxPolicy`. In the v1 high-level API, the policy arguments to
-`spawnSandbox`, `spawnSandboxAsync`, and `createConfigFromPolicy` will not
-contain a `version` field. The installed SDK package will select the exact
-contract and put its version in the generated `ContainerConfig`.
+`SandboxPolicy` when using `createConfigFromPolicy`. The resulting
+`ContainerConfig` is passed to `spawn`, `spawnAsync`, `run`, or `runAsync`.
+In the v1 high-level API, policy authoring will not contain a `version` field.
+The installed SDK package will select the exact contract and put its version in
+the generated request.
 
 Raw configuration remains explicitly versioned. This includes a
-`ContainerConfig` passed to `spawnSandboxFromConfig`, a JSON configuration
-file, `--config-base64` input, and replay tooling.
+`ContainerConfig` passed to a one-shot Node API, a JSON configuration file,
+`--config-base64` input, and replay tooling.
 
 For example:
 
 ```typescript
-// High-level API: the caller supplies policy intent; the SDK selects the
-// exact contract.
-spawnSandbox("python script.py", {
-  filesystem: { readonlyPaths: ["C:\\tools"] },
-});
-
-// Raw configuration API: the caller selects an exact registered contract.
-spawnSandboxFromConfig({
+// Current raw configuration API: the caller selects an exact registered contract.
+await runAsync({
   version: "1.0.0",
   process: { commandLine: "python script.py" },
 });
@@ -340,22 +335,15 @@ regardless of the flag; parsing is flag-independent. The `--experimental` flag o
 
 **2. SDK (`@microsoft/mxc-sdk`):**
 ```typescript
-// With policy:
-const pty = spawnSandbox("python app.py", policy, {
-  experimental: true,
-  debug: false
-});
-
-// Or with config:
 const config = createConfigFromPolicy(policy, "process");
 config.process!.commandLine = "python app.py";
-const pty = spawnSandboxFromConfig(config, {
+const sandbox = spawn(config, {
   experimental: true,
-  debug: false,
 });
 ```
 
-The SDK passes `--experimental` to the underlying binary when this option is set.
+The SDK passes the experimental authorization through `mxc_ffi` when this
+option is set.
 
 ### Forking Code for Experimental Features
 

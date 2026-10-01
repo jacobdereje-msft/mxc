@@ -62,10 +62,8 @@ const STATE_AWARE_OPTION_SUPPORT = {
   inheritDefaultEnv: 'unsupported-when-defined',
   executablePath: 'unsupported-when-defined',
   skipPlatformCheck: 'unsupported-when-true',
-  ptyOptions: 'unsupported-when-defined',
   dryRun: 'supported',
   logDir: 'unsupported-when-defined',
-  usePty: 'unsupported-when-true',
   signal: 'supported',
 } satisfies Record<keyof SandboxSpawnOptions, StateAwareOptionSupport>;
 

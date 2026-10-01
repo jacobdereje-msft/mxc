@@ -92,7 +92,7 @@ function decodeRunResult(status: number, result: AbiRunResult): BindingRunResult
   };
 }
 
-export function runBindingRequest(request: RequestSpec): BindingRunResult {
+function runBindingRequestNative(request: RequestSpec): BindingRunResult {
   const native = loadMxcFfi();
   try {
     const { run, free } = bindRunFunctions(native);
@@ -139,17 +139,38 @@ async function runBindingRequestAsyncNative(
   }
 }
 
+type RunImplementation = (request: RequestSpec) => BindingRunResult;
 type AsyncRunImplementation = (
   request: RequestSpec,
 ) => Promise<BindingRunResult>;
 
+let runImplementation = runBindingRequestNative;
 let asyncRunImplementation = runBindingRequestAsyncNative;
+
+/** @internal Replaces the synchronous native call for one process's unit tests. */
+export function _setBindingRunImplementation(
+  implementation?: RunImplementation,
+): void {
+  runImplementation = implementation ?? runBindingRequestNative;
+}
 
 /** @internal Replaces the async native call for one process's unit tests. */
 export function _setBindingRunAsyncImplementation(
   implementation?: AsyncRunImplementation,
 ): void {
   asyncRunImplementation = implementation ?? runBindingRequestAsyncNative;
+}
+
+export function runBindingRequest(request: RequestSpec): BindingRunResult {
+  try {
+    return runImplementation(request);
+  } catch (error) {
+    if (error instanceof MxcError) throw error;
+    throw new MxcError(
+      'backend_error',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 export function runBindingRequestAsync(

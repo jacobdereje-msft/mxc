@@ -14,6 +14,7 @@ import {
   isLinuxRoot,
   isLinuxBubblewrap,
   debugSpawnOptions,
+  runWithPolicyAsync,
   spawnFromConfigAsync,
   startUnixTestProxy,
   getSdkBinDir,
@@ -42,9 +43,7 @@ describe(`Linux Bubblewrap (schema ${schemaVersion})`, {
   skip: !isLinuxRoot ? 'Linux Bubblewrap tests require Linux with root privileges (sudo npm test)' : undefined,
 }, () => {
   it('should default to Bubblewrap when containment is omitted (silent default)', async () => {
-    // spawnSandboxAsync routes through abstract `containment: 'process'`,
-    // which on Linux resolves to Bubblewrap in the binary.
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       BWRAP_PROBE,
       { version: schemaVersion.raw },
       {},

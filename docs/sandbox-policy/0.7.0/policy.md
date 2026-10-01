@@ -55,13 +55,17 @@ Omitted policy fields = most restrictive permissions. Adding a field opts *in* t
 
 ```typescript
 // Fully locked down:
-spawnSandbox("script.sh", { version: "0.6.0-alpha" });
+const lockedDown = createConfigFromPolicy({ version: "0.6.0-alpha" });
+lockedDown.process!.commandLine = "script.sh";
+await runAsync(lockedDown);
 
 // Allow outbound network:
-spawnSandbox("script.sh", {
+const networked = createConfigFromPolicy({
   version: "0.6.0-alpha",
   network: { allowOutbound: true },
 });
+networked.process!.commandLine = "script.sh";
+await runAsync(networked);
 ```
 
 New fields added in future versions default to "denied" for existing policies that do not set
@@ -99,22 +103,20 @@ Windows, LXC on Linux).
 ### Flow
 
 ```
-SandboxPolicy --> createConfigFromPolicy(policy, containment) --> ContainerConfig --> spawnSandboxFromConfig() --> executor --> OS
+SandboxPolicy --> createConfigFromPolicy(policy, containment) --> ContainerConfig --> run/spawn --> mxc_ffi --> OS
 ```
 
-### Two API paths
+### Authoring and execution
 
 ```typescript
-// Simple: policy in, sandbox out. Always uses process containment.
-spawnSandbox(script, policy);
-
-// Advanced: choose containment, get config, modify, then spawn.
 const config = createConfigFromPolicy(policy, "process");
 config.processContainer!.ui!.isolation = "atoms";  // backend-specific tweak
-spawnSandboxFromConfig(config);
+config.process!.commandLine = "myapp.exe";
+const result = await runAsync(config);
 ```
 
-`spawnSandbox` accepts a SandboxPolicy. For pre-built configs, use `spawnSandboxFromConfig`.
+The one-shot APIs accept a complete `ContainerConfig`. Use `run`/`runAsync`
+for captured output or `spawn`/`spawnAsync` for a live native process.
 
 ### Layer diagram
 
@@ -125,15 +127,14 @@ spawnSandboxFromConfig(config);
 │ Users: GitHub CLI, Copilot, third-party agents                │
 │                                                               │
 │ SandboxPolicy: filesystem, network, ui, timeout               │
-│ Simple:   spawnSandbox(script, policy)                        │
-│ Advanced: createConfigFromPolicy(policy, "process")           │
-│             → modify config                                   │
-│             → spawnSandboxFromConfig(config)                  │
+│ Author:   createConfigFromPolicy(policy, "process")           │
+│             → modify config and set process.commandLine       │
+│ Execute:  run/runAsync or spawn/spawnAsync                    │
 └─────────────────────────────┬─────────────────────────────────┘
                               │ ContainerConfig (JSON)
                               ▼
 ┌───────────────────────────────────────────────────────────────┐
-│ LAYER 2: Executors (wxc-exec, lxc-exec)                       │
+│ LAYER 2: In-process mxc_ffi and mxc_engine                    │
 │                                                               │
 │ Parse ContainerConfig JSON, select backend runner             │
 │ Backends: BaseProcessContainer, LXC,                          │
@@ -242,7 +243,9 @@ Execution timeout in milliseconds. Omitted = SDK default (no timeout).
 An empty policy is fully locked down:
 
 ```typescript
-spawnSandbox("script.sh", { version: "0.6.0-alpha" });
+const config = createConfigFromPolicy({ version: "0.6.0-alpha" });
+config.process!.commandLine = "script.sh";
+await runAsync(config);
 // No filesystem, no network, no UI, no input injection.
 ```
 
@@ -252,7 +255,7 @@ spawnSandbox("script.sh", { version: "0.6.0-alpha" });
 
 `createConfigFromPolicy()` returns a ContainerConfig: the complete configuration for one
 specific backend. Users receive it, may modify backend-specific fields, then pass it to
-`spawnSandboxFromConfig()`.
+`run`, `runAsync`, `spawn`, or `spawnAsync`.
 Key rules:
 
 - **One backend per Config.** A Windows process config has an `processcontainer` section; no `lxc`
@@ -374,7 +377,7 @@ const config = createConfigFromPolicy(policy, "process");
 
 Only `"process"` is end-to-end implemented today.
 
-`spawnSandbox(script, policy)` always defaults to `"process"`.
+`createConfigFromPolicy(policy)` defaults to `"process"`.
 
 ---
 
@@ -417,7 +420,9 @@ const policy: SandboxPolicy = {
   timeoutMs: 60000,
 };
 
-spawnSandbox("myapp.exe --flag1 arg", policy);
+const config = createConfigFromPolicy(policy);
+config.process!.commandLine = "myapp.exe --flag1 arg";
+await runAsync(config);
 ```
 
 **Advanced path:** choose containment, get config, tweak:
@@ -425,7 +430,8 @@ spawnSandbox("myapp.exe --flag1 arg", policy);
 ```typescript
 const config = createConfigFromPolicy(policy, "process");
 config.processContainer!.ui!.isolation = "atoms";
-spawnSandboxFromConfig(config);
+config.process!.commandLine = "myapp.exe --flag1 arg";
+await runAsync(config);
 ```
 
 ### 10.2 MXC developer perspective
@@ -554,13 +560,15 @@ inside ProcessContainerConfig). Policy stays cross-platform.
 ### "Can a developer bypass the SDK defaults?"
 
 Yes, via the advanced path. `createConfigFromPolicy()` returns secure defaults; the user
-modifies any Config field before calling `spawnSandboxFromConfig()`. No bypass needed: Config is the
+modifies any Config field before calling a one-shot API. No bypass is needed: Config is the
 thing they modify.
 
 ### "What happens if I omit all policy fields?"
 
 ```typescript
-spawnSandbox("script.sh", { version: "0.6.0-alpha" });
+const config = createConfigFromPolicy({ version: "0.6.0-alpha" });
+config.process!.commandLine = "script.sh";
+await runAsync(config);
 ```
 
 Produces a fully locked-down config: no filesystem access, no network, UI disabled, no input

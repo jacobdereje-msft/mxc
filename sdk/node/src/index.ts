@@ -4,7 +4,7 @@
 /**
  * MXC SDK - TypeScript SDK for Microsoft eXecution Containers
  *
- * This package provides a Node.js interface for spawning sandboxed containers.
+ * This package provides a Node.js interface for running sandboxed containers.
  * For direct Windows ProcessContainer configs, set
  * `processContainer.learningMode: true` to enable deny-and-record learning
  * mode. Learning-mode capability names are reserved and must not be supplied
@@ -24,17 +24,16 @@
  *
  * @example
  * ```typescript
- * import { spawnSandbox, spawnSandboxWithPty, SandboxPolicy, getPlatformSupport } from '@microsoft/mxc-sdk';
+ * import { createConfigFromPolicy, runAsync, getPlatformSupport } from '@microsoft/mxc-sdk';
  *
  * if (getPlatformSupport().isSupported) {
- *   const policy: SandboxPolicy = {
+ *   const config = createConfigFromPolicy({
  *     version: '0.6.0-alpha',
  *     network: { allowOutbound: true },
- *   };
- *
- *   const ptyProcess = spawnSandboxWithPty('python -c "print(\'Hello from sandbox\')"', policy);
- *   ptyProcess.onData((data) => console.log(data));
- *   ptyProcess.onExit((event) => console.log('Exit code:', event.exitCode));
+ *   });
+ *   config.process!.commandLine = 'python -c "print(\'Hello from sandbox\')"';
+ *   const result = await runAsync(config);
+ *   console.log(result.stdout);
  * }
  * ```
  *
@@ -71,14 +70,16 @@ export {
   getPlatformSupport,
 } from './platform.js';
 
-// Export sandbox spawning functions
+// Export one-shot sandbox functions
 export {
   createConfigFromPolicy,
-  spawnSandbox,
-  spawnSandboxAsync,
-  spawnSandboxFromConfig,
   buildSandboxPayload,
+  spawn,
+  spawnAsync,
+  run,
+  runAsync,
   SandboxSpawnOptions,
+  SandboxRunResult,
 } from './sandbox.js';
 
 // Export policy discovery functions

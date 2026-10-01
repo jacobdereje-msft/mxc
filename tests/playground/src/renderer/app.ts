@@ -1275,7 +1275,7 @@ async function runSandbox(): Promise<void> {
     terminalFullText = '';
 
     termInfo('[Playground] Running MXC JSON config');
-    termInfo('[MXC] API: spawnSandboxFromConfig');
+    termInfo('[MXC] API: spawn');
 
     var rawDebug = (document.getElementById('debugToggle') as HTMLInputElement).checked;
     var rawExperimental = (document.getElementById('experimentalToggle') as HTMLInputElement).checked;
@@ -1346,7 +1346,7 @@ async function runSandbox(): Promise<void> {
       termInfo('[Playground] Scenario: ' + state.selectedScenario.name + ' (' + state.selectedScenario.id + ')');
     }
     termInfo('[Playground] Script: ' + rawScript);
-    termInfo('[MXC] API: spawnSandboxFromConfig (raw config)');
+    termInfo('[MXC] API: spawn (raw config)');
     if (currentContainment === 'windows_sandbox') {
       termDim('[MXC] Note: First run may take 3-5 minutes while the sandbox VM boots.');
     } else if (currentContainment === 'microvm') {
@@ -1464,9 +1464,9 @@ async function runSandbox(): Promise<void> {
   }
   termInfo('[Playground] Script: ' + script);
   if (useAdvanced) {
-    termInfo('[MXC] API: createConfigFromPolicy → spawnSandboxFromConfig');
+    termInfo('[MXC] API: createConfigFromPolicy -> spawn');
   } else {
-    termInfo('[MXC] API: spawnSandbox()');
+    termInfo('[MXC] API: spawn()');
   }
   termInfo('[MXC] Schema: ' + state.version);
 
@@ -2301,7 +2301,7 @@ function init(): void {
       $('btnRun').classList.remove('hidden');
       $('btnRunAll').classList.add('hidden');
       state.selectedScenario = null;
-      $('scenarioDesc').textContent = 'Paste a ContainerConfig JSON. Runs via spawnSandboxFromConfig — no policy generation step.';
+      $('scenarioDesc').textContent = 'Paste a ContainerConfig JSON. Runs via spawn - no policy generation step.';
       $('scenarioOutcome').textContent = '';
       $('scenarioOutcome').className = 'outcome-badge';
       $chk('experimentalToggle').checked = true;

@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft Corporation.
+﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 import { describe, it, before, after, afterEach } from 'node:test';
@@ -18,6 +18,7 @@ import {
   startTestProxy,
   pythonCommand,
   pythonSkipReason,
+  runWithPolicyAsync,
 } from './test-helpers.js';
 
 for (const schemaVersion of supportedVersions) {
@@ -34,7 +35,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
   });
 
   it('should execute cmd.exe in process container', { skip: sandboxSkipReason }, async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       'cmd.exe /c echo Container test successful',
       { version: schemaVersion.raw },
       {},
@@ -46,7 +47,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
   });
 
   it('should execute powershell 5.1 in process container', { skip: sandboxSkipReason }, async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       "powershell.exe -NoProfile -Command Write-Output 'PowerShell test successful'",
       { version: schemaVersion.raw, ui: { allowWindows: true } },
       {},
@@ -59,7 +60,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
 
   it('should execute python in process container', { skip: sandboxSkipReason ?? pythonSkipReason }, async () => {
     const policy = withToolPaths({ version: schemaVersion.raw, ui: { allowWindows: true } }) as SandboxPolicy;
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       `${pythonCommand} -c "print('Python test successful')"`,
       policy,
       {},
@@ -80,7 +81,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
       ui: { allowWindows: true },
       filesystem: { readwritePaths: [tempDir] },
     }) as SandboxPolicy;
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       `${pythonCommand} ${scriptFile}`,
       policy,
       {},
@@ -100,7 +101,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
       version: schemaVersion.raw,
       filesystem: { readonlyPaths: [tempDir] },
     }) as SandboxPolicy;
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       `cmd.exe /c type ${inputFile}`,
       policy,
       {},
@@ -112,7 +113,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
   });
 
   it('should launch basic process container with valid version', { skip: sandboxSkipReason }, async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await runWithPolicyAsync(
       'cmd.exe /c echo version ok',
       { version: schemaVersion.raw },
       {},
@@ -144,7 +145,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
       }
     });
 
-    it('should route traffic through built-in proxy', async () => {
+    it('should reject the executor-only built-in proxy', async () => {
       tempDir = createTempDir('mxc-proxy-test');
       const policy = withToolPaths({
         version: schemaVersion.raw,
@@ -157,26 +158,16 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
         `$h.Open('GET','https://api.github.com/zen',$false); ` +
         `$h.Send(); ` +
         `Write-Output ('PROXY_RESPONSE: ' + $h.ResponseText)"`;
-      const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
-        (resolve) => {
-          const sandboxProcess = sdk.spawnSandbox(
-            script,
-            policy,
-            { debug: true, allowTestingFeatures: true },
-            undefined,
-            `proxy-builtin-${schemaVersion}`,
-          );
-          let stdout = '';
-          sandboxProcess.onData((data: string) => { stdout += data; });
-          sandboxProcess.onExit(({ exitCode }: { exitCode: number }) => {
-            resolve({ stdout, stderr: '', exitCode });
-          });
-        },
+      const config = sdk.createConfigFromPolicy(
+        policy,
+        'process',
+        `proxy-builtin-${schemaVersion}`,
       );
-
-      assert.strictEqual(result.exitCode, 0, `[${schemaVersion}] Expected exit 0: ${result.stderr}`);
-      assert.ok(result.stdout.includes('PROXY_RESPONSE:'));
-      assert.ok(result.stdout.includes('Proxy policy active'));
+      config.process!.commandLine = script;
+      await assert.rejects(
+        sdk.runAsync(config, { allowTestingFeatures: true }),
+        /not supported by the in-process Node SDK/,
+      );
     });
 
     it('should route traffic through external proxy', async () => {
@@ -195,7 +186,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
         `$h.Open('GET','https://api.github.com/zen',$false); ` +
         `$h.Send(); ` +
         `Write-Output ('PROXY_RESPONSE: ' + $h.ResponseText)"`;
-      const result = await sdk.spawnSandboxAsync(
+      const result = await runWithPolicyAsync(
         script, policy, {}, undefined, `proxy-ext-${schemaVersion}`,
       );
 
