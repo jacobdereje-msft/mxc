@@ -186,13 +186,13 @@ fn explicit_deny_precedes_an_overlapping_allow_in_both_families() {
 
     assert_eq!(
         destination_actions(&rules.ipv4, ipv4),
-        vec!["DROP", "ACCEPT"],
+        vec!["DROP", "ACCEPT", "ACCEPT", "ACCEPT"],
         "input=allow+deny to {ipv4}, family=IPv4; output={:?}",
         rules.ipv4
     );
     assert_eq!(
         destination_actions(&rules.ipv6, ipv6),
-        vec!["DROP", "ACCEPT"],
+        vec!["DROP", "ACCEPT", "ACCEPT", "ACCEPT"],
         "input=allow+deny to {ipv6}, family=IPv6; output={:?}",
         rules.ipv6
     );
@@ -347,7 +347,7 @@ fn each_cidr_is_emitted_only_in_its_matching_address_family() {
 
     assert_eq!(
         destination_actions(&rules.ipv4, ipv4),
-        vec!["ACCEPT"],
+        vec!["ACCEPT", "ACCEPT", "ACCEPT"],
         "input=allow.to=[{ipv4},{ipv6}], expected {ipv4} in IPv4 only; output={:?}",
         rules.ipv4
     );
@@ -358,7 +358,7 @@ fn each_cidr_is_emitted_only_in_its_matching_address_family() {
     );
     assert_eq!(
         destination_actions(&rules.ipv6, ipv6),
-        vec!["ACCEPT"],
+        vec!["ACCEPT", "ACCEPT", "ACCEPT"],
         "input=allow.to=[{ipv4},{ipv6}], expected {ipv6} in IPv6 only; output={:?}",
         rules.ipv6
     );
