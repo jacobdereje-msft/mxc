@@ -960,13 +960,13 @@ impl NetworkIptablesManager {
     fn lower_directional_egress(egress: &NetworkEgressPolicy) -> Result<Vec<EgressEntry>, String> {
         let mut entries = Vec::new();
         for section in directional_egress_chain(egress.default) {
-            entries.extend(Self::lower_section(*section, egress)?);
+            entries.extend(Self::lower_section(section, egress)?);
         }
         Ok(entries)
     }
 
     fn lower_section(
-        section: EgressSection,
+        section: &EgressSection,
         egress: &NetworkEgressPolicy,
     ) -> Result<Vec<EgressEntry>, String> {
         let (rules, action) = match section {
