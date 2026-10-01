@@ -993,9 +993,10 @@ impl NetworkIptablesManager {
         if *remaining == 0 {
             return Err(format!(
                 "network.egress expands into more than {MAX_EGRESS_ENTRIES} firewall \
-                 rules. A rule becomes every destination block it resolves to in \
-                 every port it names, so narrow the peers, the exclusions, or the \
-                 ports."
+                 rules. A rule becomes every destination block it resolves to, in \
+                 every port it names, in every protocol it covers. Narrow the peers, \
+                 the exclusions, or the ports, or name a protocol instead of leaving \
+                 it open."
             ));
         }
         *remaining -= 1;
@@ -2142,18 +2143,19 @@ mod tests {
     }
 
     #[test]
-    fn directional_allow_policy_carries_tcp_udp_and_icmp_for_every_destination_and_port() {
+    fn directional_allow_policy_carries_every_protocol_it_can_name_for_every_destination_and_port()
+    {
         let input = "default=Allow uses_directional_keys=true allow=[] deny=[]";
         let policy = carried_egress_policy(NetworkAction::Allow, Vec::new(), Vec::new());
         let rules = NetworkIptablesManager::build_policy_rule_args(CARRIED_CHAIN, &policy, true);
 
-        carried_assert_blanket_accept_exists(&rules.ipv4, "0.0.0.0/0", "tcp", input);
-        carried_assert_blanket_accept_exists(&rules.ipv4, "0.0.0.0/0", "udp", input);
-        carried_assert_blanket_accept_exists(&rules.ipv4, "0.0.0.0/0", "icmp", input);
+        for protocol in ["tcp", "udp", "sctp", "dccp", "udplite", "icmp"] {
+            carried_assert_blanket_accept_exists(&rules.ipv4, "0.0.0.0/0", protocol, input);
+        }
 
-        carried_assert_blanket_accept_exists(&rules.ipv6, "::/0", "tcp", input);
-        carried_assert_blanket_accept_exists(&rules.ipv6, "::/0", "udp", input);
-        carried_assert_blanket_accept_exists(&rules.ipv6, "::/0", "icmpv6", input);
+        for protocol in ["tcp", "udp", "sctp", "dccp", "udplite", "icmpv6"] {
+            carried_assert_blanket_accept_exists(&rules.ipv6, "::/0", protocol, input);
+        }
     }
 
     #[test]

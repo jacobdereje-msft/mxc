@@ -529,7 +529,10 @@ fn a_denied_port_without_a_protocol_also_blocks_the_protocol_whose_port_cannot_b
         Vec::new(),
         vec![rule(
             vec![peer(destination, &[])],
-            vec![port(NetworkProtocol::Any, Some(443), None)],
+            vec![
+                port(NetworkProtocol::Any, Some(443), None),
+                port(NetworkProtocol::Any, Some(8443), None),
+            ],
         )],
     );
     let rules = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
@@ -547,7 +550,7 @@ fn a_denied_port_without_a_protocol_also_blocks_the_protocol_whose_port_cannot_b
     assert_eq!(
         unfilterable_denials,
         vec![None],
-        "input=default allow, deny=[{{to:{destination}, ports:[any/443]}}]; a port the kernel cannot read in a UDP-Lite header is denied on every port instead of escaping, once for the rule; output={:?}",
+        "input=default allow, deny=[{{to:{destination}, ports:[any/443, any/8443]}}]; a port the kernel cannot read in a UDP-Lite header is denied on every port instead of escaping, once for the rule and not once per port; output={:?}",
         rules.ipv4
     );
 }
