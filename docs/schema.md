@@ -518,8 +518,8 @@ Phase / sandboxId / containment validation:
 | `deprovision`   | **Required** | Ignored if present |
 
 State-aware-capable backends today are `isolation_session`, `windows_sandbox`,
-and `wslc` (all Windows-only). IsolationSession does not require runtime
-experimental authorization; Windows Sandbox does.
+and `wslc` (all Windows-only). Windows Sandbox requires runtime experimental
+authorization.
 
 Full lifecycle API: [`docs/state-aware-lifecycle/mxc-state-aware-sandbox-api.md`](state-aware-lifecycle/mxc-state-aware-sandbox-api.md).
 

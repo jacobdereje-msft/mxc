@@ -3,7 +3,7 @@
 
 use crate::config_contract_adapters::v1_0::{adapt_request, AdaptedConfigRequest};
 use crate::state_aware_input::StateAwareInput;
-use crate::state_aware_operation::StateAwareOperation;
+use crate::state_aware_operation::{StateAwareOperation, StateAwareStart};
 use crate::wire;
 use mxc_config_contract::published::v1_0_0 as contract;
 
@@ -76,6 +76,7 @@ fn controlled_input_rejects_every_routing_and_one_shot_field() {
                 common,
                 StateAwareOperation::Start {
                     sandbox_id: "iso:example".to_owned(),
+                    config: StateAwareStart::Absent,
                 }
             )
             .is_err(),

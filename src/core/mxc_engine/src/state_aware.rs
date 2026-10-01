@@ -796,7 +796,10 @@ pub fn start_sandbox(
     options: OperationOptions,
 ) -> Result<LifecycleResult, Error> {
     let input = lifecycle_sdk_input(sandbox_id, options.telemetry_opt_in, |sandbox_id| {
-        wxc_common::state_aware_operation::StateAwareOperation::Start { sandbox_id }
+        wxc_common::state_aware_operation::StateAwareOperation::Start {
+            sandbox_id,
+            config: wxc_common::state_aware_operation::StateAwareStart::Absent,
+        }
     })
     .map_err(Error::from)?;
     run_typed_state_aware(input, options, false)?
@@ -810,7 +813,10 @@ pub fn validate_start(
     options: OperationOptions,
 ) -> Result<ValidationResult, Error> {
     let input = lifecycle_sdk_input(sandbox_id, options.telemetry_opt_in, |sandbox_id| {
-        wxc_common::state_aware_operation::StateAwareOperation::Start { sandbox_id }
+        wxc_common::state_aware_operation::StateAwareOperation::Start {
+            sandbox_id,
+            config: wxc_common::state_aware_operation::StateAwareStart::Absent,
+        }
     })
     .map_err(Error::from)?;
     run_typed_state_aware(input, options, true)?
@@ -931,8 +937,7 @@ pub fn validate_exec(
 /// or [`exec_state_aware_json`] to drive the pipes yourself.
 ///
 /// `experimental` opts in to Windows Sandbox; without it that backend is
-/// refused with `backend_unavailable` before any work is done. WSLC and
-/// IsolationSession do not require the runtime opt-in.
+/// refused with `backend_unavailable` before any work is done.
 pub fn run_state_aware_json(
     request_json: &str,
     dry_run: bool,
@@ -1025,7 +1030,10 @@ mod tests {
                     .into_sdk_input(telemetry_opt_in)
                     .unwrap(),
                 lifecycle_sdk_input(&sandbox_id, telemetry_opt_in, |sandbox_id| {
-                    wxc_common::state_aware_operation::StateAwareOperation::Start { sandbox_id }
+                    wxc_common::state_aware_operation::StateAwareOperation::Start {
+                        sandbox_id,
+                        config: wxc_common::state_aware_operation::StateAwareStart::Absent,
+                    }
                 })
                 .unwrap(),
                 lifecycle_sdk_input(&sandbox_id, telemetry_opt_in, |sandbox_id| {
@@ -1178,7 +1186,10 @@ mod tests {
             (
                 r#"{"version":"1.0.0","phase":"start","sandboxId":"iso:abc"}"#,
                 lifecycle_sdk_input(&SandboxId::parse("iso:abc").unwrap(), None, |sandbox_id| {
-                    wxc_common::state_aware_operation::StateAwareOperation::Start { sandbox_id }
+                    wxc_common::state_aware_operation::StateAwareOperation::Start {
+                        sandbox_id,
+                        config: wxc_common::state_aware_operation::StateAwareStart::Absent,
+                    }
                 })
                 .unwrap(),
             ),

@@ -604,7 +604,7 @@ mod tests {
     use super::*;
     use crate::models::ExecutionRequest;
     use crate::mxc_error::MxcErrorCode;
-    use crate::state_aware_operation::{StateAwareOperation, StateAwareProvision};
+    use crate::state_aware_operation::{StateAwareOperation, StateAwareProvision, StateAwareStart};
     use serde_json::json;
     use std::cell::Cell;
     use std::time::Duration;
@@ -1153,6 +1153,7 @@ mod tests {
             ExecutionRequest::default(),
             StateAwareOperation::Start {
                 sandbox_id: id.into(),
+                config: StateAwareStart::Absent,
             },
         )
     }

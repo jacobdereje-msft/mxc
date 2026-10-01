@@ -78,8 +78,11 @@
 use serde_json::{Map, Value};
 
 use crate::hashing::sha256_hex;
-use crate::models::{ExecutionRequest, IsolationSessionProvisionConfig, WslcProvisionConfig};
-use crate::state_aware_operation::{StateAwareOperation, StateAwareProvision};
+use crate::models::{
+    ExecutionRequest, IsolationSessionProvisionConfig, IsolationSessionStartConfig,
+    WslcProvisionConfig,
+};
+use crate::state_aware_operation::{StateAwareOperation, StateAwareProvision, StateAwareStart};
 
 /// Algorithm tag prefixed to the hex digest, so the algorithm can change
 /// without breaking a consumer that only does equality comparison.
@@ -127,8 +130,12 @@ pub fn state_aware_policy_hash(
 /// explicitly instead of accidentally hashing a newly added secret.
 fn state_aware_config_projection(operation: &StateAwareOperation) -> Value {
     match operation {
+        // Entra credentials are identity, not policy.
         StateAwareOperation::Provision(StateAwareProvision::IsolationSession(Some(
-            IsolationSessionProvisionConfig { app_id },
+            IsolationSessionProvisionConfig {
+                app_id,
+                user: _excluded_credentials,
+            },
         ))) => {
             let mut config = Map::new();
             if let Some(app_id) = app_id {
@@ -155,8 +162,17 @@ fn state_aware_config_projection(operation: &StateAwareOperation) -> Value {
             | StateAwareProvision::Wslc(None),
         ) => Value::Null,
         // Sandbox IDs are not policy and can contain account identities.
+        // Entra credentials are identity, not policy.
         StateAwareOperation::Start {
             sandbox_id: _excluded_sandbox_id,
+            config:
+                StateAwareStart::IsolationSession(IsolationSessionStartConfig {
+                    user: _excluded_credentials,
+                }),
+        } => Value::Null,
+        StateAwareOperation::Start {
+            sandbox_id: _excluded_sandbox_id,
+            config: StateAwareStart::Absent,
         }
         | StateAwareOperation::Exec {
             sandbox_id: _excluded_sandbox_id,
@@ -980,6 +996,7 @@ mod tests {
             (
                 StateAwareOperation::Start {
                     sandbox_id: "wsb:deadbeef".into(),
+                    config: StateAwareStart::Absent,
                 },
                 "start",
             ),
@@ -1093,6 +1110,36 @@ mod tests {
             state_aware_policy_hash(baseline.request(), "wslc", baseline.operation()),
             state_aware_policy_hash(changed.request(), "wslc", changed.operation()),
             "command, env, telemetry, comments, dry-run and unverified IDs are excluded"
+        );
+    }
+
+    #[test]
+    fn state_aware_hash_excludes_entra_credentials() {
+        const NETWORK: &str = r#""network":{"egress":{"default":"allow"},"ingress":{"default":"allow","hostLoopback":"allow"}}"#;
+        const USER: &str = r#""user":{"upn":"alice@contoso.com","wamToken":"synthetic-wam-token"}"#;
+        let provision = |fields: &str| {
+            format!(
+                r#"{{"version":"1.1.0-alpha","phase":"provision","containment":"isolation_session",{NETWORK},"isolationSession":{{"provision":{{{fields}}}}}}}"#
+            )
+        };
+        assert_eq!(
+            parsed_state_aware_hash(&provision(r#""appId":"Contoso.App""#), "isolation_session"),
+            parsed_state_aware_hash(
+                &provision(&format!(r#""appId":"Contoso.App",{USER}"#)),
+                "isolation_session"
+            ),
+            "provision credentials are excluded"
+        );
+
+        let start = |fields: &str| {
+            format!(
+                r#"{{"version":"1.1.0-alpha","phase":"start","sandboxId":"iso:example","isolationSession":{{"start":{{{fields}}}}}}}"#
+            )
+        };
+        assert_eq!(
+            parsed_state_aware_hash(&start(""), "isolation_session"),
+            parsed_state_aware_hash(&start(USER), "isolation_session"),
+            "start credentials are excluded"
         );
     }
 }

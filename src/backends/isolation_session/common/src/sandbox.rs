@@ -123,7 +123,7 @@ fn spawn_piped(
 
     // The manager comes from `add_user` rather than a separate `new()` — see
     // its doc for why a second activation can strand the account it just minted.
-    let (provisioned, manager) = IsolationSessionManager::add_user(None)?;
+    let (provisioned, manager) = IsolationSessionManager::add_user(None, None)?;
     let _ = writeln!(
         logger,
         "Isolation Session: agent user = {}",
@@ -134,7 +134,7 @@ fn spawn_piped(
     // abandoning it.
     let mut session = OwnedSession::new(manager, provisioned.agent_user_name);
 
-    if let Err(e) = session.manager.start_session() {
+    if let Err(e) = session.manager.start_session(None) {
         session.reclaim("start");
         return Err(with_cleanup_failures(e, &session.warnings));
     }

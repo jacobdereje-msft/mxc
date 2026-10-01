@@ -42,6 +42,7 @@ impl StateAwareProvision {
                 RuntimeProvision::IsolationSession(app_id.clone().map(|app_id| {
                     wxc_common::models::IsolationSessionProvisionConfig {
                         app_id: Some(app_id),
+                        user: None,
                     }
                 }))
             }

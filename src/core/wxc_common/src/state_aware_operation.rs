@@ -7,7 +7,10 @@
 //! backend even when no configuration was supplied. Later phases always carry
 //! an ID, whose contents are validated at the existing dispatch boundary.
 
-use crate::models::{ContainmentBackend, IsolationSessionProvisionConfig, WslcProvisionConfig};
+use crate::models::{
+    ContainmentBackend, IsolationSessionProvisionConfig, IsolationSessionStartConfig,
+    WslcProvisionConfig,
+};
 use crate::state_aware_request::Phase;
 
 /// Backend-specific provision input, before backend-owned validation/defaulting.
@@ -32,6 +35,18 @@ impl StateAwareProvision {
     }
 }
 
+/// Backend-specific start input, before backend-owned validation.
+///
+/// Start routes by sandbox ID, so a supplied configuration names the backend it
+/// belongs to and binding rejects one addressed to a different backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateAwareStart {
+    /// No backend-specific start configuration was supplied.
+    Absent,
+    /// IsolationSession start configuration.
+    IsolationSession(IsolationSessionStartConfig),
+}
+
 /// A lifecycle operation with exactly the routing and configuration it needs.
 ///
 /// Execution process settings, policy, and telemetry belong to the common
@@ -40,10 +55,19 @@ impl StateAwareProvision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateAwareOperation {
     Provision(StateAwareProvision),
-    Start { sandbox_id: String },
-    Exec { sandbox_id: String },
-    Stop { sandbox_id: String },
-    Deprovision { sandbox_id: String },
+    Start {
+        sandbox_id: String,
+        config: StateAwareStart,
+    },
+    Exec {
+        sandbox_id: String,
+    },
+    Stop {
+        sandbox_id: String,
+    },
+    Deprovision {
+        sandbox_id: String,
+    },
 }
 
 impl StateAwareOperation {
@@ -73,7 +97,7 @@ impl StateAwareOperation {
     pub fn sandbox_id(&self) -> Option<&str> {
         match self {
             Self::Provision(_) => None,
-            Self::Start { sandbox_id }
+            Self::Start { sandbox_id, .. }
             | Self::Exec { sandbox_id }
             | Self::Stop { sandbox_id }
             | Self::Deprovision { sandbox_id } => Some(sandbox_id),
@@ -112,6 +136,7 @@ mod tests {
             (
                 StateAwareOperation::Start {
                     sandbox_id: id.into(),
+                    config: StateAwareStart::Absent,
                 },
                 Phase::Start,
             ),
@@ -145,16 +170,26 @@ mod tests {
         let absent = StateAwareProvision::IsolationSession(None);
         let empty = StateAwareProvision::IsolationSession(Some(IsolationSessionProvisionConfig {
             app_id: None,
+            user: None,
         }));
         let empty_app_id =
             StateAwareProvision::IsolationSession(Some(IsolationSessionProvisionConfig {
                 app_id: Some(String::new()),
+                user: None,
             }));
         assert_ne!(absent, empty);
         assert_ne!(empty, empty_app_id);
         assert_ne!(
             StateAwareProvision::Wslc(None),
             StateAwareProvision::Wslc(Some(WslcProvisionConfig::default()))
+        );
+    }
+
+    #[test]
+    fn start_presence_is_distinct_from_an_empty_configuration() {
+        assert_ne!(
+            StateAwareStart::Absent,
+            StateAwareStart::IsolationSession(IsolationSessionStartConfig::default())
         );
     }
 }

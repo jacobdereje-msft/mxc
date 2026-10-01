@@ -689,8 +689,8 @@ Configs defined in §6.1:
 interface StateAwareBackendSections {
   isolationSession?: {
     provision?: { appId?: string };
-    // start, exec, stop, deprovision omitted — IsolationSession has no
-    // backend-specific config for those phases.
+    // start, exec, stop, deprovision omitted — the SDK sends no
+    // IsolationSession config for those phases.
   };
   wslc?: {
     provision?: { image?: string; imageTarPath?: string };
@@ -916,9 +916,8 @@ Direct executor routing: remove `phase` and `sandboxId`, then pass
 `--operation start --sandbox-id <id>`.
 
 ```rust
-// `start` carries no per-phase config for this backend — its StartConfig is
-// `()`, so the envelope above has no backend-specific section and the
-// dispatcher passes None:
+// The envelope above has no backend-specific section, so the dispatcher
+// passes None:
 backend.start(
     "iso:eyJ2ZXJzaW9uIjoxLCJhZ2VudFVzZXJOYW1lIjoiX2lzb19hYmNfMTIzIn0",
     &request,
@@ -1755,9 +1754,8 @@ execution request. The SDK is responsible for splitting
 the consumer Config into top-level common fields and
 the permanent backend section; Rust sees only the post-split shape.
 
-`provision` is used here because it is IsolationSession's **only** phase with a
-per-phase config; `start`, `exec`, `stop` and `deprovision` declare `()` and reject
-any payload in their slot.
+Phases without a per-phase config declare `()` and reject any payload in their
+slot.
 
 ### 10.3 Cross-cutting policy honor matrix
 
