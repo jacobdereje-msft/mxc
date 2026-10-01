@@ -192,40 +192,18 @@ enum EgressSection {
     CarriedProtocolFloor,
 }
 
-// The shape of a directional egress chain, for each stated default.  This list
-// is the whole statement of what a packet meets and in what order; the lowering
-// walks it, so nothing is implied by where a loop sits in the source below.
-//
-// The stated default names which of the operator's two lists decides, and only
-// that list appears below.  An accepting default is decided by the deny list:
-// everything else leaves, which is what the floor says.  A refusing default is
-// decided by the allow list: nothing else leaves, which is what the closing
-// drop says.
-//
-// So an allow list under an accepting default is not consulted, and lowering it
-// would add nothing a packet could reach.  It cannot rescue an address a deny
-// names, because the denies are read first, and it cannot widen the floor
-// beneath it, which already accepts every protocol this backend can name at
-// every port to every address.
-//
-// Denies lead in both postures because iptables takes the first rule that
-// matches, and a deny has to beat an allow that overlaps it.
-//
-// Whatever the list, the chain ends with a drop that `closing_policy` writes.
-// That is what makes the two postures differ by a floor rather than by a
-// verdict: nothing a chain lists can be reached once it closes on a drop unless
-// some rule accepts it first.
+// Both postures close on a drop that `closing_policy` writes, whatever the
+// stated default.  That is why an accepting default needs a floor: without one
+// the chain would refuse everything the denies did not already name.
 fn directional_egress_chain(default: NetworkAction) -> &'static [EgressSection] {
     match default {
-        // Everything may leave unless a deny names it.  The floor is what says
-        // so, and it goes last because it accepts every address: ahead of the
-        // denies it would match first and they would never be read.
+        // The floor goes last: it accepts every address, and ahead of the
+        // denies it would match first.
         NetworkAction::Allow => &[
             EgressSection::OperatorDenies,
             EgressSection::CarriedProtocolFloor,
         ],
-        // Only what the allow list names may leave, so there is no floor to
-        // add.  One here would accept every address and erase the list above.
+        // No floor: it would accept every address and erase the allow list.
         NetworkAction::Deny => &[EgressSection::OperatorDenies, EgressSection::OperatorAllows],
     }
 }
