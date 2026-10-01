@@ -881,8 +881,6 @@ impl NetworkIptablesManager {
         }
     }
 
-    // The rules above name one protocol each, and most protocols have no name.
-    // An allowing default would let those out unmatched.
     fn closing_policy(policy: &ContainerPolicy, uses_directional_keys: bool) -> NetworkPolicy {
         match Self::stated_egress(policy, uses_directional_keys) {
             Some(_) => NetworkPolicy::Block,
