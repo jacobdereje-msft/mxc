@@ -387,13 +387,6 @@ impl LxcScriptRunner {
             }
         }
 
-        if let Err(msg) = NetworkIptablesManager::refuse_unprogrammable_egress(
-            &request.policy,
-            uses_directional_keys(&request.policy),
-        ) {
-            return Err(ScriptResponse::error(&msg));
-        }
-
         if self.destroy_on_exit {
             signal_cleanup::set_active(&container_name);
         }
