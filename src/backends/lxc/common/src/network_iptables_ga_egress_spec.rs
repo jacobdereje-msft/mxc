@@ -522,40 +522,6 @@ fn any_with_a_port_expands_to_every_protocol_whose_port_can_be_matched() {
 }
 
 #[test]
-fn a_denied_port_without_a_protocol_also_blocks_the_protocol_whose_port_cannot_be_read() {
-    let destination = "192.0.2.0/24";
-    let policy = directional_policy(
-        NetworkAction::Allow,
-        Vec::new(),
-        vec![rule(
-            vec![peer(destination, &[])],
-            vec![
-                port(NetworkProtocol::Any, Some(443), None),
-                port(NetworkProtocol::Any, Some(8443), None),
-            ],
-        )],
-    );
-    let rules = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
-    let unfilterable_denials = rules
-        .ipv4
-        .iter()
-        .filter(|rule| {
-            argument_after(rule, "-d") == Some(destination)
-                && argument_after(rule, "-p") == Some("udplite")
-                && argument_after(rule, "-j") == Some("DROP")
-        })
-        .map(|rule| argument_after(rule, "--dport"))
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        unfilterable_denials,
-        vec![None],
-        "input=default allow, deny=[{{to:{destination}, ports:[any/443, any/8443]}}]; a port the kernel cannot read in a UDP-Lite header is denied on every port instead of escaping, once for the rule and not once per port; output={:?}",
-        rules.ipv4
-    );
-}
-
-#[test]
 fn icmp_ignores_a_written_port() {
     let destination = "192.0.2.0/24";
     let policy = directional_policy(

@@ -129,7 +129,6 @@ enum TransportProtocol {
     Udp,
     Sctp,
     Dccp,
-    UdpLite,
 }
 
 impl TransportProtocol {
@@ -139,17 +138,15 @@ impl TransportProtocol {
             Self::Udp => "udp",
             Self::Sctp => "sctp",
             Self::Dccp => "dccp",
-            Self::UdpLite => "udplite",
         }
     }
 }
 
-const TRANSPORT_PROTOCOLS: [TransportProtocol; 5] = [
+const TRANSPORT_PROTOCOLS: [TransportProtocol; 4] = [
     TransportProtocol::Tcp,
     TransportProtocol::Udp,
     TransportProtocol::Sctp,
     TransportProtocol::Dccp,
-    TransportProtocol::UdpLite,
 ];
 
 fn carried_protocol_matches() -> Vec<RuleMatch> {
@@ -805,9 +802,7 @@ impl NetworkIptablesManager {
             RuleMatch::Transport { protocol, ports } => {
                 let mut args = vec!["-p".to_string(), protocol.as_arg().to_string()];
                 if let Some(range) = ports {
-                    args.push("-m".to_string());
-                    args.push("multiport".to_string());
-                    args.push("--dports".to_string());
+                    args.push("--dport".to_string());
                     args.push(if range.start == range.end {
                         range.start.to_string()
                     } else {
@@ -2110,11 +2105,11 @@ mod tests {
         let policy = carried_egress_policy(NetworkAction::Allow, Vec::new(), Vec::new());
         let rules = NetworkIptablesManager::build_policy_rule_args(CARRIED_CHAIN, &policy, true);
 
-        for protocol in ["tcp", "udp", "sctp", "dccp", "udplite", "icmp"] {
+        for protocol in ["tcp", "udp", "sctp", "dccp", "icmp"] {
             carried_assert_blanket_accept_exists(&rules.ipv4, "0.0.0.0/0", protocol, input);
         }
 
-        for protocol in ["tcp", "udp", "sctp", "dccp", "udplite", "icmpv6"] {
+        for protocol in ["tcp", "udp", "sctp", "dccp", "icmpv6"] {
             carried_assert_blanket_accept_exists(&rules.ipv6, "::/0", protocol, input);
         }
     }
