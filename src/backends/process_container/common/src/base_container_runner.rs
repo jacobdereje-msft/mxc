@@ -45,7 +45,7 @@ use crate::launch_diagnostics::{
 };
 use crate::native_capture::CaptureSession;
 use crate::proxy_coordinator::ProxyCoordinator;
-use crate::pseudo_console::PseudoConsole;
+use crate::pseudo_console::{close_after_termination, PseudoConsole};
 use crate::secenv::{
     self, ProcessSecurityEnvironment, SecurityEnvironmentStartupInfo, SecurityEnvironmentSupport,
     SecurityEnvironmentVersion, PROCESS_SECURITY_ENVIRONMENT_FLAG_NONE,
@@ -1756,7 +1756,7 @@ impl SandboxProcess for BaseContainerSandboxProcess {
 
     fn take_native_stdio(&mut self) -> std::io::Result<Option<NativeStdio>> {
         if let Some(pty) = &self.pseudo_console {
-            return pty.take_native_stdio().map(Some);
+            return pty.take_native_stdio();
         }
         let stdio = duplicate_and_take_native_stdio(
             &mut self.stdin,
@@ -1865,6 +1865,13 @@ impl SandboxProcess for BaseContainerSandboxProcess {
     }
 
     fn wait(&mut self) -> std::io::Result<i32> {
+        let pty_output_thread = self
+            .pseudo_console
+            .as_ref()
+            .map(PseudoConsole::prepare_wait)
+            .transpose()?
+            .flatten();
+
         // Close our copy of any not-taken stdin so the child sees EOF and can
         // exit reliably (an interactive command would otherwise block waiting
         // for input).
@@ -1912,7 +1919,7 @@ impl SandboxProcess for BaseContainerSandboxProcess {
         let termination_result = self.terminate_and_reap();
         // Closing the ConPTY after the process tree is gone closes its output
         // side so a caller-owned reader observes EOF.
-        self.pseudo_console.take();
+        close_after_termination(&mut self.pseudo_console, pty_output_thread)?;
         cancel_and_join_discard(stdout_thread, &self.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.stderr_canceller);
         termination_result?;
@@ -1926,6 +1933,21 @@ impl SandboxProcess for BaseContainerSandboxProcess {
 
 impl Drop for BaseContainerSandboxProcess {
     fn drop(&mut self) {
+        let pty_output_thread = match self
+            .pseudo_console
+            .as_ref()
+            .map(PseudoConsole::prepare_wait)
+            .transpose()
+        {
+            Ok(thread) => thread.flatten(),
+            Err(error) => {
+                write_stderr_line_best_effort(format_args!(
+                    "failed to prepare PTY output drain during drop: {error}"
+                ));
+                None
+            }
+        };
+
         // Kill and reap before tearing down proxy / sandbox state, so an
         // abandoned-but-running sandbox cannot outlive its enforcement (or
         // leak as an orphan).
@@ -1933,7 +1955,13 @@ impl Drop for BaseContainerSandboxProcess {
             write_stderr_line_best_effort(format_args!(
                 "failed to terminate sandbox process tree during drop: {error}"
             ));
+            let _ = close_after_termination(&mut self.pseudo_console, pty_output_thread);
             return;
+        }
+        if let Err(error) = close_after_termination(&mut self.pseudo_console, pty_output_thread) {
+            write_stderr_line_best_effort(format_args!(
+                "failed to finish PTY output drain during drop: {error}"
+            ));
         }
         // A dropped handle has no observer for output metadata, so retaining
         // its ETL would leave a sensitive artifact with no discoverable owner.

@@ -45,7 +45,7 @@ use crate::launch_diagnostics::{
 };
 use crate::network_policy_helpers::{add_default_network_capabilities, allows_network_egress};
 use crate::process_mitigation;
-use crate::pseudo_console::PseudoConsole;
+use crate::pseudo_console::{close_after_termination, PseudoConsole};
 use wxc_common::audit::{
     sanitize_identity, AuditEvent, AuditEventName, KillMethod, OperationStatus, TeardownSkipReason,
     TeardownStatus,
@@ -2146,7 +2146,7 @@ impl SandboxProcess for AppContainerSandboxProcess {
 
     fn take_native_stdio(&mut self) -> std::io::Result<Option<NativeStdio>> {
         if let Some(pty) = &self.pseudo_console {
-            return pty.take_native_stdio().map(Some);
+            return pty.take_native_stdio();
         }
         let stdio = duplicate_and_take_native_stdio(
             &mut self.stdin,
@@ -2277,6 +2277,13 @@ impl SandboxProcess for AppContainerSandboxProcess {
     }
 
     fn wait(&mut self) -> std::io::Result<i32> {
+        let pty_output_thread = self
+            .pseudo_console
+            .as_ref()
+            .map(PseudoConsole::prepare_wait)
+            .transpose()?
+            .flatten();
+
         // Close our copy of any not-taken stdin so the child sees EOF and can
         // exit reliably (an interactive command would otherwise block waiting
         // for input).
@@ -2330,7 +2337,7 @@ impl SandboxProcess for AppContainerSandboxProcess {
         }
         // Closing the ConPTY after the process tree is gone closes its output
         // side so a caller-owned reader observes EOF.
-        self.pseudo_console.take();
+        close_after_termination(&mut self.pseudo_console, pty_output_thread)?;
         cancel_and_join_discard(stdout_thread, &self.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.stderr_canceller);
         termination_result?;
@@ -2344,6 +2351,21 @@ impl SandboxProcess for AppContainerSandboxProcess {
 
 impl Drop for AppContainerSandboxProcess {
     fn drop(&mut self) {
+        let pty_output_thread = match self
+            .pseudo_console
+            .as_ref()
+            .map(PseudoConsole::prepare_wait)
+            .transpose()
+        {
+            Ok(thread) => thread.flatten(),
+            Err(error) => {
+                capture_output::write_stderr_line_best_effort(format_args!(
+                    "failed to prepare PTY output drain during drop: {error}"
+                ));
+                None
+            }
+        };
+
         // Kill the tree and reap before tearing down firewall/filesystem
         // policy, so an abandoned-but-running sandbox cannot outlive its
         // enforcement (or leak as an orphan). `kill()` terminates the job.
@@ -2352,10 +2374,16 @@ impl Drop for AppContainerSandboxProcess {
                 "failed to terminate sandbox job during drop: {error}"
             ));
             self.release_guarded_capture_after_termination_failure();
+            let _ = close_after_termination(&mut self.pseudo_console, pty_output_thread);
             return;
         }
         unsafe {
             let _ = WaitForSingleObject(self.process.get(), u32::MAX);
+        }
+        if let Err(error) = close_after_termination(&mut self.pseudo_console, pty_output_thread) {
+            capture_output::write_stderr_line_best_effort(format_args!(
+                "failed to finish PTY output drain during drop: {error}"
+            ));
         }
         if let Err(error) = self.run_teardown(false) {
             capture_output::write_stderr_line_best_effort(format_args!(
