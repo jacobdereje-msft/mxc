@@ -164,15 +164,14 @@ If using the legacy network shape, `enforcementMode` cannot be `capabilities`.
 
 ### Protocols a rule covers
 
-A deny and an allow written the same way do not cover the same traffic.  A deny
-that names no port stops every protocol to the destinations it names, including
-ones a rule has no way to name on its own.  An allow that names no port permits
-five: TCP, UDP, SCTP, DCCP, and ICMP.  Each side resolves toward less traffic
-leaving the container.
+| Rule | No port named | A port named |
+|------|---------------|--------------|
+| `deny` | every protocol to the destinations it names, including ones a rule has no way to name | TCP, UDP, SCTP, and DCCP |
+| `allow` | TCP, UDP, SCTP, DCCP, and ICMP | TCP, UDP, SCTP, and DCCP |
 
-Naming a port narrows either one to the four protocols that carry a port: TCP,
-UDP, SCTP, and DCCP.  A port written beside `icmp` is refused; ICMP carries
-none.
+Where the two differ, each resolves toward less traffic leaving the container.
+
+A port written beside `icmp` is refused; ICMP carries none.
 
 ### Proxy
 
