@@ -403,6 +403,64 @@ compile-time features — **WSLC** and **IsolationSession**.
 > restore outlives the child. A host with none of the tiers available surfaces a
 > clear error rather than silently running unsandboxed.
 
+## Caller-owned pseudo-terminal
+
+[`v1::spawn_with_pty`] returns an MXC-owned [`MxcPty`] instead of ordinary
+stdout/stderr pipes. The wrapper uses the `portable-pty` reader, writer, and
+resize contract internally while retaining MXC-specific wait, timeout, warning,
+metadata, and process-tree kill behavior.
+
+```rust,no_run
+use std::io::{Read, Write};
+use mxc_sdk::{build_request, MxcPtySize, SandboxPolicy};
+use mxc_sdk::v1::spawn_with_pty;
+
+let request = build_request(&SandboxPolicy::default(), "cmd.exe", None)?;
+let mut terminal = spawn_with_pty(
+    request,
+    MxcPtySize {
+        rows: 30,
+        cols: 100,
+        ..Default::default()
+    },
+)?;
+let mut output = terminal.try_clone_reader()?;
+let mut input = terminal.take_writer()?;
+
+input.write_all(b"echo hello\r\nexit\r\n")?;
+input.write_all(b"\x03")?; // Ctrl-C; any terminal input bytes are accepted.
+terminal.resize(MxcPtySize {
+    rows: 40,
+    cols: 120,
+    ..Default::default()
+})?;
+drop(input);
+
+let outcome = terminal.wait()?; // closes the PTY output side after process exit
+let mut bytes = Vec::new();
+output.read_to_end(&mut bytes)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+PTY output is one merged terminal stream; there is no separate stderr stream.
+Control characters and escape sequences are written through the same input
+writer as ordinary terminal input, and dropping the writer sends EOF. Windows
+ProcessContainer and IsolationSession support PTY spawning; other backends
+reject it before sandbox creation.
+
+Spawning in an existing container returns the same PTY type:
+
+```rust,no_run
+let mut terminal = mxc_sdk::v1::container::spawn_in_container_with_pty(
+    &sandbox_id,
+    exec_request,
+    MxcPtySize::default(),
+    Default::default(),
+)?;
+let outcome = terminal.wait()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## State-aware lifecycle
 
 Beyond the one-shot `v1::run` / `v1::spawn_sandbox` paths, the SDK exposes the

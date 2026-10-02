@@ -660,25 +660,9 @@ creates the terminal inside MXC, and returns an `MxcPtyProcess` with merged outp
 resize, timeout-aware waiting, and process-tree kill semantics:
 
 ```csharp
-var request = new SandboxRequest(
-    new SandboxPolicy
-    {
-        Network = new NetworkPolicy
-        {
-            Egress = new NetworkEgressPolicy { Default = NetworkAction.Allow },
-            Ingress = new NetworkIngressPolicy
-            {
-                Default = NetworkAction.Allow,
-                HostLoopback = NetworkAction.Allow,
-            },
-        },
-    },
-    "cmd.exe")
-{
-    Containment = new IsolationSessionContainment(),
-};
 using var terminal = MxcSandbox.SpawnWithPty(
-    request,
+    policy,
+    "cmd.exe",
     new MxcPtySize(Rows: 30, Columns: 100));
 
 using var writer = new StreamWriter(terminal.Input) { AutoFlush = true };
@@ -697,8 +681,8 @@ Console.WriteLine($"exit={result.ExitCode} timedOut={result.TimedOut}");
 
 PTY stderr is merged into `Output`; there is no separate error stream. Closing
 `Input` sends EOF. Write control characters and escape sequences to `Input`
-like any other terminal bytes. IsolationSession supports this API; unsupported
-backends are rejected before sandbox creation.
+like any other terminal bytes. Windows ProcessContainer and IsolationSession
+support this API; unsupported backends are rejected before sandbox creation.
 
 For an already-started container, use the same terminal type:
 

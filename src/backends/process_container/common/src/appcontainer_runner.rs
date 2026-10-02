@@ -27,8 +27,9 @@ use windows::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
     PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTUPINFOW,
 };
 use windows_core::{PCWSTR, PWSTR};
 
@@ -44,6 +45,7 @@ use crate::launch_diagnostics::{
 };
 use crate::network_policy_helpers::{add_default_network_capabilities, allows_network_egress};
 use crate::process_mitigation;
+use crate::pseudo_console::PseudoConsole;
 use wxc_common::audit::{
     sanitize_identity, AuditEvent, AuditEventName, KillMethod, OperationStatus, TeardownSkipReason,
     TeardownStatus,
@@ -59,8 +61,8 @@ use wxc_common::process_util::{
 };
 use wxc_common::sandbox_process::{
     boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, spawn_discard,
-    take_boxed_read, take_boxed_write, NativeStdio, SandboxBackend, SandboxProcess, StdioMode,
-    StreamCloser,
+    take_boxed_read, take_boxed_write, NativeStdio, PtySize, SandboxBackend, SandboxProcess,
+    StdioMode, StreamCloser,
 };
 use wxc_common::script_runner::get_timeout_milliseconds;
 use wxc_common::validator::{validate_network_policy_support, NetworkPolicySupport};
@@ -371,8 +373,14 @@ struct SecurityCapabilities {
 ///
 /// Always at least 1 (`SECURITY_CAPABILITIES`). LPAC adds one
 /// (`ALL_APPLICATION_PACKAGES_POLICY`); UI-disable adds one
-/// (`MITIGATION_POLICY` for Win32k disable).
-fn compute_attr_count(least_privilege_mode: bool, ui_disable: bool, pipe_mode: bool) -> u32 {
+/// (`MITIGATION_POLICY` for Win32k disable); pipe and PTY modes each add their
+/// corresponding startup attribute.
+fn compute_attr_count(
+    least_privilege_mode: bool,
+    ui_disable: bool,
+    pipe_mode: bool,
+    pty_mode: bool,
+) -> u32 {
     let mut n = 1; // SECURITY_CAPABILITIES always present
     if least_privilege_mode {
         n += 1;
@@ -382,6 +390,9 @@ fn compute_attr_count(least_privilege_mode: bool, ui_disable: bool, pipe_mode: b
     }
     if pipe_mode {
         n += 1; // one attribute slot for HANDLE_LIST (the list itself can hold 1..N handles)
+    }
+    if pty_mode {
+        n += 1;
     }
     n
 }
@@ -763,8 +774,13 @@ impl AppContainerScriptRunner {
         &self,
         request: &ExecutionRequest,
         logger: &mut Logger,
-        capture: bool,
+        stdio: StdioMode,
     ) -> Result<SpawnedChild, WxcError> {
+        let capture = stdio == StdioMode::Pipes;
+        let pty_size = match stdio {
+            StdioMode::Pty(size) => Some(size),
+            _ => None,
+        };
         // --- Learning-mode capabilities ---
         // `learningModeLogging` (deny-and-record) and `permissiveLearningMode`
         // (allow-all audit) are distinct. Emit per-capability diagnostics for
@@ -825,8 +841,8 @@ impl AppContainerScriptRunner {
         // In capture mode (`StdioMode::Pipes`) we always take the pipe
         // path — but instead of forwarding our own std handles we wire the
         // child to capture pipes that the streaming handle reads from.
-        let pipe_mode =
-            capture || !std::io::stdout().is_terminal() || !std::io::stderr().is_terminal();
+        let pipe_mode = pty_size.is_none()
+            && (capture || !std::io::stdout().is_terminal() || !std::io::stderr().is_terminal());
 
         if pipe_mode {
             if capture {
@@ -838,10 +854,16 @@ impl AppContainerScriptRunner {
         }
 
         // --- Allocate and initialize attribute list ---
+        let pseudo_console = pty_size
+            .map(PseudoConsole::new)
+            .transpose()
+            .map_err(|error| WxcError::Process(format!("CreatePseudoConsole: {error}")))?;
+
         let attr_count = compute_attr_count(
             request.policy.least_privilege_mode,
             request.policy.ui.disable,
             pipe_mode,
+            pseudo_console.is_some(),
         );
 
         // Lifetime spans the attribute list and CreateProcessW:
@@ -1050,6 +1072,23 @@ impl AppContainerScriptRunner {
             h_stdin = HANDLE::default();
             h_stdout = HANDLE::default();
             h_stderr = HANDLE::default();
+        }
+
+        if let Some(pty) = &pseudo_console {
+            unsafe {
+                UpdateProcThreadAttribute(
+                    attr_list,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                    Some(pty.attribute_value()),
+                    std::mem::size_of::<windows::Win32::System::Console::HPCON>(),
+                    None,
+                    None,
+                )
+            }
+            .map_err(|error| {
+                WxcError::Process(format!("UpdateProcThreadAttribute(PSEUDOCONSOLE): {error}"))
+            })?;
         }
 
         // --- Setup STARTUPINFOEXW ---
@@ -1303,6 +1342,7 @@ impl AppContainerScriptRunner {
             stdin_write: captured_stdin_write,
             stdout_read,
             stderr_read,
+            pseudo_console,
             timeout_ms: get_timeout_milliseconds(request.script_timeout),
         })
     }
@@ -1361,6 +1401,7 @@ struct SpawnedChild {
     /// Parent's stdout/stderr read-ends (Some only in streaming mode).
     stdout_read: Option<OwnedHandle>,
     stderr_read: Option<OwnedHandle>,
+    pseudo_console: Option<PseudoConsole>,
     timeout_ms: u32,
 }
 
@@ -1814,8 +1855,7 @@ impl SandboxBackend for AppContainerScriptRunner {
 
         // Pipes → capture pipes the caller drives; Inherit → the child inherits
         // the binary's own std handles / console (a TTY when the binary has one).
-        let capture = stdio == StdioMode::Pipes;
-        let mut child = match self.spawn_suspended(request, logger, capture) {
+        let mut child = match self.spawn_suspended(request, logger, stdio) {
             Ok(c) => c,
             Err(e) => {
                 self.teardown(&mut prepared, request.lifecycle.preserve_policy, logger);
@@ -1863,6 +1903,7 @@ struct AppContainerSandboxProcess {
     /// closers can mint a [`StreamCloser`] even after the stream is taken.
     stdout_canceller: Option<PipeReadCanceller>,
     stderr_canceller: Option<PipeReadCanceller>,
+    pseudo_console: Option<PseudoConsole>,
     prepared: Prepared,
     filesystem_mode: FilesystemMode,
     preserve_policy: bool,
@@ -1934,6 +1975,7 @@ impl AppContainerSandboxProcess {
             stderr,
             stdout_canceller,
             stderr_canceller,
+            pseudo_console: child.pseudo_console.take(),
             prepared,
             filesystem_mode,
             preserve_policy: request.lifecycle.preserve_policy,
@@ -2103,6 +2145,9 @@ impl SandboxProcess for AppContainerSandboxProcess {
     }
 
     fn take_native_stdio(&mut self) -> std::io::Result<Option<NativeStdio>> {
+        if let Some(pty) = &self.pseudo_console {
+            return pty.take_native_stdio().map(Some);
+        }
         let stdio = duplicate_and_take_native_stdio(
             &mut self.stdin,
             &mut self.stdout,
@@ -2116,6 +2161,38 @@ impl SandboxProcess for AppContainerSandboxProcess {
             self.stderr_canceller.take();
         }
         Ok(stdio)
+    }
+
+    fn is_pty(&self) -> bool {
+        self.pseudo_console.is_some()
+    }
+
+    fn pty_clone_reader(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        self.pseudo_console
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("sandbox process has no PTY"))?
+            .clone_reader()
+    }
+
+    fn pty_take_writer(&self) -> std::io::Result<Box<dyn std::io::Write + Send>> {
+        self.pseudo_console
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("sandbox process has no PTY"))?
+            .take_writer()
+    }
+
+    fn pty_resize(&self, size: PtySize) -> std::io::Result<()> {
+        self.pseudo_console
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("sandbox process has no PTY"))?
+            .resize(size)
+    }
+
+    fn pty_size(&self) -> std::io::Result<PtySize> {
+        self.pseudo_console
+            .as_ref()
+            .map(PseudoConsole::size)
+            .ok_or_else(|| std::io::Error::other("sandbox process has no PTY"))
     }
 
     fn take_stdin(&mut self) -> Option<Box<dyn std::io::Write + Send>> {
@@ -2251,6 +2328,9 @@ impl SandboxProcess for AppContainerSandboxProcess {
                 let _ = WaitForSingleObject(self.process.get(), u32::MAX);
             }
         }
+        // Closing the ConPTY after the process tree is gone closes its output
+        // side so a caller-owned reader observes EOF.
+        self.pseudo_console.take();
         cancel_and_join_discard(stdout_thread, &self.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.stderr_canceller);
         termination_result?;
@@ -2335,28 +2415,34 @@ mod tests {
 
     #[test]
     fn attr_count_neither() {
-        assert_eq!(super::compute_attr_count(false, false, false), 1);
+        assert_eq!(super::compute_attr_count(false, false, false, false), 1);
     }
 
     #[test]
     fn attr_count_lpac_only() {
-        assert_eq!(super::compute_attr_count(true, false, false), 2);
+        assert_eq!(super::compute_attr_count(true, false, false, false), 2);
     }
 
     #[test]
     fn attr_count_ui_disable_only() {
-        assert_eq!(super::compute_attr_count(false, true, false), 2);
+        assert_eq!(super::compute_attr_count(false, true, false, false), 2);
     }
 
     #[test]
     fn attr_count_both() {
-        assert_eq!(super::compute_attr_count(true, true, false), 3);
+        assert_eq!(super::compute_attr_count(true, true, false, false), 3);
     }
 
     #[test]
     fn attr_count_pipe_mode() {
-        assert_eq!(super::compute_attr_count(false, false, true), 2);
-        assert_eq!(super::compute_attr_count(true, true, true), 4);
+        assert_eq!(super::compute_attr_count(false, false, true, false), 2);
+        assert_eq!(super::compute_attr_count(true, true, true, false), 4);
+    }
+
+    #[test]
+    fn attr_count_pty_mode() {
+        assert_eq!(super::compute_attr_count(false, false, false, true), 2);
+        assert_eq!(super::compute_attr_count(true, true, false, true), 4);
     }
 
     #[test]

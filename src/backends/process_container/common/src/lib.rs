@@ -44,6 +44,8 @@ pub mod process_mitigation;
 #[cfg(target_os = "windows")]
 pub mod proxy_coordinator;
 #[cfg(target_os = "windows")]
+mod pseudo_console;
+#[cfg(target_os = "windows")]
 pub mod sandbox_tracking;
 #[cfg(target_os = "windows")]
 mod secenv;

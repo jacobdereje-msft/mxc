@@ -24,7 +24,7 @@
 use wxc_common::logger::Logger;
 use wxc_common::models::{ContainmentBackend, ExecutionRequest, ScriptResponse};
 use wxc_common::mxc_error::MxcError;
-use wxc_common::sandbox_process::{PtySize, SandboxProcess};
+use wxc_common::sandbox_process::{PtySize, SandboxProcess, StdioMode};
 
 /// `Err` when the host OS has no MXC sandbox backend. Checked before backend
 /// selection so an unsupported platform reports a clear message rather than a
@@ -99,6 +99,9 @@ pub fn spawn_pty_runner(
     }
     crate::run::log_policy_hash(request, logger);
     match &request.containment {
+        ContainmentBackend::ProcessContainer => {
+            spawn_process_container_with_stdio(request, logger, StdioMode::Pty(size))
+        }
         ContainmentBackend::IsolationSession => spawn_isolation_session_pty(request, logger, size),
         other => Err(MxcError::unsupported_containment(format!(
             "the mxc engine does not yet support PTY spawning for the '{}' backend",
@@ -208,11 +211,19 @@ fn spawn_process_container(
     request: &ExecutionRequest,
     logger: &mut Logger,
 ) -> Result<Box<dyn SandboxProcess>, MxcError> {
+    spawn_process_container_with_stdio(request, logger, StdioMode::Pipes)
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_process_container_with_stdio(
+    request: &ExecutionRequest,
+    logger: &mut Logger,
+    stdio: StdioMode,
+) -> Result<Box<dyn SandboxProcess>, MxcError> {
     use process_container_common::dispatcher::{
         spawn_with_fallback, DispatchError, SpawnDispatchError,
     };
     use std::fmt::Write;
-    use wxc_common::sandbox_process::StdioMode;
 
     // ProcessContainer resolves to a concrete backend + isolation tier purely
     // by host capability, via the shared `spawn_with_fallback`
@@ -228,7 +239,7 @@ fn spawn_process_container(
     // AppContainer fallback tier can still honor it instead of failing
     // closed.
     let capture_factory = crate::guarded_capture::factory_for_request(request);
-    match spawn_with_fallback(request, logger, StdioMode::Pipes, capture_factory) {
+    match spawn_with_fallback(request, logger, stdio, capture_factory) {
         Ok(dispatched) => {
             for w in &dispatched.warnings {
                 let _ = writeln!(logger, "warning: {w}");
@@ -274,6 +285,17 @@ fn spawn_process_container(
 fn spawn_process_container(
     _request: &ExecutionRequest,
     _logger: &mut Logger,
+) -> Result<Box<dyn SandboxProcess>, MxcError> {
+    Err(MxcError::unsupported_containment(
+        "ProcessContainer (AppContainer / BaseContainer) is only available on Windows",
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_process_container_with_stdio(
+    _request: &ExecutionRequest,
+    _logger: &mut Logger,
+    _stdio: StdioMode,
 ) -> Result<Box<dyn SandboxProcess>, MxcError> {
     Err(MxcError::unsupported_containment(
         "ProcessContainer (AppContainer / BaseContainer) is only available on Windows",

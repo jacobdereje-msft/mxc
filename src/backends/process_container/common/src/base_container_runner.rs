@@ -45,6 +45,7 @@ use crate::launch_diagnostics::{
 };
 use crate::native_capture::CaptureSession;
 use crate::proxy_coordinator::ProxyCoordinator;
+use crate::pseudo_console::PseudoConsole;
 use crate::secenv::{
     self, ProcessSecurityEnvironment, SecurityEnvironmentStartupInfo, SecurityEnvironmentSupport,
     SecurityEnvironmentVersion, PROCESS_SECURITY_ENVIRONMENT_FLAG_NONE,
@@ -67,8 +68,8 @@ use wxc_common::process_util::{
 };
 use wxc_common::sandbox_process::{
     boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, spawn_discard,
-    take_boxed_read, take_boxed_write, NativeStdio, SandboxBackend, SandboxProcess, StdioMode,
-    StreamCloser,
+    take_boxed_read, take_boxed_write, NativeStdio, PtySize, SandboxBackend, SandboxProcess,
+    StdioMode, StreamCloser,
 };
 use wxc_common::script_runner::get_timeout_milliseconds;
 use wxc_common::string_util;
@@ -390,8 +391,13 @@ impl BaseContainerRunner {
         &mut self,
         request: &ExecutionRequest,
         logger: &mut Logger,
-        capture: bool,
+        stdio: StdioMode,
     ) -> Result<BaseChild, ScriptResponse> {
+        let capture = stdio == StdioMode::Pipes;
+        let pty_size = match stdio {
+            StdioMode::Pty(size) => Some(size),
+            _ => None,
+        };
         let _ = writeln!(
             logger,
             "{EMOJI_SECTION} SECTION: Backend runner 'BaseContainer'"
@@ -532,8 +538,8 @@ impl BaseContainerRunner {
         // In capture mode (`StdioMode::Pipes`) we always take the pipe
         // path and wire the child to capture pipes that the streaming handle
         // reads from.
-        let pipe_mode =
-            capture || !std::io::stdout().is_terminal() || !std::io::stderr().is_terminal();
+        let pipe_mode = pty_size.is_none()
+            && (capture || !std::io::stdout().is_terminal() || !std::io::stderr().is_terminal());
 
         if pipe_mode {
             if capture {
@@ -648,6 +654,13 @@ impl BaseContainerRunner {
                 }
             }
         }
+
+        let pseudo_console = pty_size
+            .map(PseudoConsole::new)
+            .transpose()
+            .map_err(|error| {
+                ScriptResponse::error(&format!("CreatePseudoConsole failed: {error}"))
+            })?;
 
         // STARTUPINFOW -- in pipe mode, pass parent handles via STARTF_USESTDHANDLES
         // so child output streams directly to the SDK caller.
@@ -782,44 +795,49 @@ impl BaseContainerRunner {
                     .map(ProcessSecurityEnvironment::raw)
             })
             .expect("PSEC environment owner is initialized before launch");
-        let extended_startup =
-            match SecurityEnvironmentStartupInfo::new(si, environment_handle, &inherited_handles) {
-                Ok(startup) => startup,
-                Err(primary) => {
-                    let cleanup_error = capture_session
-                        .take()
-                        .map(|session| session.finish(None))
-                        .unwrap_or(Ok(()))
-                        .err();
-                    let mut msg =
-                        format!("failed to attach the process security environment: {primary}");
-                    if let Some(cleanup_error) = &cleanup_error {
-                        let _ = write!(
+        let extended_startup = match SecurityEnvironmentStartupInfo::new(
+            si,
+            environment_handle,
+            &inherited_handles,
+            pseudo_console.as_ref().map(PseudoConsole::attribute_value),
+        ) {
+            Ok(startup) => startup,
+            Err(primary) => {
+                let cleanup_error = capture_session
+                    .take()
+                    .map(|session| session.finish(None))
+                    .unwrap_or(Ok(()))
+                    .err();
+                let mut msg =
+                    format!("failed to attach the process security environment: {primary}");
+                if let Some(cleanup_error) = &cleanup_error {
+                    let _ = write!(
                         msg,
                         "; additionally failed to discard the learning-mode trace: {cleanup_error}"
                     );
-                    }
-                    let _ = writeln!(logger, "Error: {msg}");
-                    let failure_phase = if primary.is_api_unavailable()
-                        || cleanup_error.as_ref().is_some_and(
-                            learning_mode_windows::LearningModeError::is_api_unavailable,
-                        ) {
-                        FailurePhase::BackendUnavailable
-                    } else {
-                        FailurePhase::LaunchFailed
-                    };
-                    if capture_denials.is_some() {
-                        self.cleanup_capture_begin_failure(logger);
-                    }
-                    return Err(ScriptResponse {
-                        exit_code: -1,
-                        error_message: msg.clone(),
-                        standard_err: msg,
-                        failure_phase,
-                        ..Default::default()
-                    });
                 }
-            };
+                let _ = writeln!(logger, "Error: {msg}");
+                let failure_phase = if primary.is_api_unavailable()
+                    || cleanup_error
+                        .as_ref()
+                        .is_some_and(learning_mode_windows::LearningModeError::is_api_unavailable)
+                {
+                    FailurePhase::BackendUnavailable
+                } else {
+                    FailurePhase::LaunchFailed
+                };
+                if capture_denials.is_some() {
+                    self.cleanup_capture_begin_failure(logger);
+                }
+                return Err(ScriptResponse {
+                    exit_code: -1,
+                    error_message: msg.clone(),
+                    standard_err: msg,
+                    failure_phase,
+                    ..Default::default()
+                });
+            }
+        };
         let environment = (!current_env_ptr.is_null()).then_some(current_env_ptr);
         let result = unsafe {
             CreateProcessW(
@@ -1088,6 +1106,7 @@ impl BaseContainerRunner {
             stdin_write: captured_stdin_write,
             stdout_read,
             stderr_read,
+            pseudo_console,
             timeout_ms: get_timeout_milliseconds(request.script_timeout),
             preserve_policy: request.lifecycle.preserve_policy,
             identity,
@@ -1119,6 +1138,7 @@ struct BaseChild {
     stdin_write: Option<OwnedHandle>,
     stdout_read: Option<OwnedHandle>,
     stderr_read: Option<OwnedHandle>,
+    pseudo_console: Option<PseudoConsole>,
     timeout_ms: u32,
     preserve_policy: bool,
     identity: String,
@@ -1199,8 +1219,7 @@ impl SandboxBackend for BaseContainerRunner {
 
         // Pipes → capture pipes the caller drives; Inherit → the child inherits
         // the binary's own std handles / console (a TTY when the binary has one).
-        let capture = stdio == StdioMode::Pipes;
-        let child = self.spawn_base(request, logger, capture)?;
+        let child = self.spawn_base(request, logger, stdio)?;
         Ok(Box::new(BaseContainerSandboxProcess::from_child(
             child, logger,
         )))
@@ -1232,6 +1251,7 @@ struct BaseContainerSandboxProcess {
     /// closers can mint a [`StreamCloser`] even after the stream is taken.
     stdout_canceller: Option<PipeReadCanceller>,
     stderr_canceller: Option<PipeReadCanceller>,
+    pseudo_console: Option<PseudoConsole>,
     timeout_ms: u32,
     // Retained here, in addition to the optional engine telemetry wrapper, so
     // callers still receive timeout classification when telemetry is disabled.
@@ -1286,6 +1306,7 @@ impl BaseContainerSandboxProcess {
             stderr,
             stdout_canceller,
             stderr_canceller,
+            pseudo_console: child.pseudo_console.take(),
             timeout_ms: child.timeout_ms,
             timeout_requested: false,
             preserve_policy: child.preserve_policy,
@@ -1734,6 +1755,9 @@ impl SandboxProcess for BaseContainerSandboxProcess {
     }
 
     fn take_native_stdio(&mut self) -> std::io::Result<Option<NativeStdio>> {
+        if let Some(pty) = &self.pseudo_console {
+            return pty.take_native_stdio().map(Some);
+        }
         let stdio = duplicate_and_take_native_stdio(
             &mut self.stdin,
             &mut self.stdout,
@@ -1747,6 +1771,38 @@ impl SandboxProcess for BaseContainerSandboxProcess {
             self.stderr_canceller.take();
         }
         Ok(stdio)
+    }
+
+    fn is_pty(&self) -> bool {
+        self.pseudo_console.is_some()
+    }
+
+    fn pty_clone_reader(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        self.pseudo_console
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("sandbox process has no PTY"))?
+            .clone_reader()
+    }
+
+    fn pty_take_writer(&self) -> std::io::Result<Box<dyn std::io::Write + Send>> {
+        self.pseudo_console
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("sandbox process has no PTY"))?
+            .take_writer()
+    }
+
+    fn pty_resize(&self, size: PtySize) -> std::io::Result<()> {
+        self.pseudo_console
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("sandbox process has no PTY"))?
+            .resize(size)
+    }
+
+    fn pty_size(&self) -> std::io::Result<PtySize> {
+        self.pseudo_console
+            .as_ref()
+            .map(PseudoConsole::size)
+            .ok_or_else(|| std::io::Error::other("sandbox process has no PTY"))
     }
 
     fn take_stdin(&mut self) -> Option<Box<dyn std::io::Write + Send>> {
@@ -1854,6 +1910,9 @@ impl SandboxProcess for BaseContainerSandboxProcess {
         // the pipe drains — and killing the tree closes the descendant's pipe
         // write-ends, so the drains can finish.
         let termination_result = self.terminate_and_reap();
+        // Closing the ConPTY after the process tree is gone closes its output
+        // side so a caller-owned reader observes EOF.
+        self.pseudo_console.take();
         cancel_and_join_discard(stdout_thread, &self.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.stderr_canceller);
         termination_result?;
