@@ -977,10 +977,11 @@ impl NetworkIptablesManager {
         let matches = if rule.ports.is_empty() {
             Self::unconstrained_matches(action)
         } else {
-            rule.ports
-                .iter()
-                .flat_map(|selector| Self::selector_matches(selector, action))
-                .collect()
+            let mut selected = Vec::new();
+            for selector in &rule.ports {
+                selected.extend(Self::selector_matches(selector, action)?);
+            }
+            selected
         };
 
         let mut entries = Vec::new();
@@ -1069,13 +1070,26 @@ impl NetworkIptablesManager {
         }
     }
 
-    fn selector_matches(selector: &NetworkPort, action: RuleAction) -> Vec<RuleMatch> {
+    fn selector_matches(
+        selector: &NetworkPort,
+        action: RuleAction,
+    ) -> Result<Vec<RuleMatch>, String> {
+        if selector.protocol == NetworkProtocol::Icmp
+            && (selector.port.is_some() || selector.end_port.is_some())
+        {
+            return Err(
+                "network.egress protocol 'icmp' carries no port. Remove the port, or \
+                 name 'tcp', 'udp', or 'any'."
+                    .to_string(),
+            );
+        }
+
         let ports = selector.port.map(|start| PortRange {
             start,
             end: selector.end_port.unwrap_or(start),
         });
 
-        match selector.protocol {
+        Ok(match selector.protocol {
             NetworkProtocol::Icmp => vec![RuleMatch::Icmp],
             NetworkProtocol::Tcp => vec![RuleMatch::Transport {
                 protocol: TransportProtocol::Tcp,
@@ -1091,7 +1105,7 @@ impl NetworkIptablesManager {
                 .map(|&protocol| RuleMatch::Transport { protocol, ports })
                 .collect(),
             NetworkProtocol::Any => Self::unconstrained_matches(action),
-        }
+        })
     }
 
     // DNS round-robin can answer one name differently on repeated lookups.
@@ -2069,13 +2083,6 @@ mod tests {
                 vec![RuleMatch::Icmp],
             ),
             (
-                NetworkProtocol::Icmp,
-                Some(443),
-                None,
-                RuleAction::Allow,
-                vec![RuleMatch::Icmp],
-            ),
-            (
                 NetworkProtocol::Any,
                 None,
                 None,
@@ -2110,8 +2117,20 @@ mod tests {
 
             assert_eq!(
                 NetworkIptablesManager::selector_matches(&selector, action),
-                expected,
+                Ok(expected),
                 "selector_matches({protocol:?} port={port:?} end_port={end_port:?}, {action:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn selector_matches_refuses_a_port_beside_icmp() {
+        for (port, end_port) in [(Some(443), None), (Some(80), Some(90)), (None, Some(443))] {
+            let selector = port_selector(NetworkProtocol::Icmp, port, end_port);
+
+            assert!(
+                NetworkIptablesManager::selector_matches(&selector, RuleAction::Allow).is_err(),
+                "selector_matches(Icmp port={port:?} end_port={end_port:?}) should refuse"
             );
         }
     }

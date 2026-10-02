@@ -159,18 +159,24 @@ If using the legacy network shape, `enforcementMode` cannot be `capabilities`.
 
 ### Protocols a rule covers
 
-A rule that names no port covers TCP, UDP, SCTP, DCCP, UDP-Lite and ICMP.  A
-rule that names a port covers the first four of those.
+A protocol can be written as `tcp`, `udp`, `icmp`, or `any`.  SCTP and DCCP have
+no spelling of their own and are reached by writing `any`, or by leaving the
+protocol out.
 
-UDP-Lite is the exception, and it is one-sided.  The kernel's filter offers no
-way to read a port out of a UDP-Lite header.  A permit written at a port leaves
-UDP-Lite out, and a UDP-Lite packet to that port is thrown away by the rule at
-the bottom of the chain.  A denial written at a port goes the other way and
-blocks UDP-Lite to that destination on every port, not just the one written.
-Both directions fail safe: less gets through than the rule names, never more.
+A deny and an allow written the same way do not cover the same traffic.  A deny
+that names no port stops every protocol to the destinations it names, including
+ones a rule has no way to name on its own.  An allow that names no port permits
+five: TCP, UDP, SCTP, DCCP, and ICMP.  Each side resolves toward less traffic
+leaving the container.
 
-Only `tcp`, `udp` and `icmp` can be written as a protocol.  The rest are
-reached by writing `any`, or by leaving the protocol out.
+Naming a port narrows either one to the four protocols that carry a port: TCP,
+UDP, SCTP, and DCCP.  A port written beside `icmp` is refused; ICMP carries
+none.
+
+An `egress` section ends in a drop under either default.  Under a default of
+`deny`, traffic leaves only where an allow rule matched it.  Under a default of
+`allow`, the five protocols above reach every destination no deny rule covered,
+and everything else reaches that drop.
 
 ### Proxy
 
@@ -309,11 +315,10 @@ The zone query should answer the zone you assigned.
   `CAP_NET_ADMIN` dropped from its bounding set whenever chains are installed, so
   it cannot. Default-deny closes external reachability for a container that does
   not deliberately tear it down, including services the workload itself starts.
-- **UDP-Lite cannot be permitted at a particular port.** A permit written at a
-  port covers TCP, UDP, SCTP and DCCP; the kernel's filter cannot read a port
-  out of a UDP-Lite header, and that traffic is thrown away by the rule at the
-  bottom of the chain. A workload that needs UDP-Lite out needs a rule that
-  names no port at all.
+- **Only five protocols can leave a filtered container.** TCP, UDP, SCTP, DCCP,
+  and ICMP are the whole of what an egress policy can permit.  GRE, ESP, and
+  anything else a rule has no way to name meet the drop at the bottom of the
+  chain, under a default of `allow` as readily as `deny`.
 - **Raw sockets bypass egress filtering.** `CAP_NET_RAW` is retained so that an
   explicit `protocol: "icmp"` allow works. It also permits `AF_PACKET` sockets,
   which write link-layer frames straight to the interface without traversing the

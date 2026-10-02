@@ -522,7 +522,7 @@ fn any_with_a_port_expands_to_every_protocol_whose_port_can_be_matched() {
 }
 
 #[test]
-fn icmp_ignores_a_written_port() {
+fn a_port_written_beside_icmp_is_refused() {
     let destination = "192.0.2.0/24";
     let policy = directional_policy(
         NetworkAction::Deny,
@@ -532,22 +532,12 @@ fn icmp_ignores_a_written_port() {
         )],
         Vec::new(),
     );
-    let rules = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
-    let emitted_rule = rules.ipv4.iter().find(|rule| {
-        argument_after(rule, "-d") == Some(destination)
-            && argument_after(rule, "-j") == Some("ACCEPT")
-    });
 
-    assert_eq!(
-        emitted_rule.and_then(|rule| argument_after(rule, "-p")),
-        Some("icmp"),
-        "input=default deny, allow=[{{to:{destination}, ports:[icmp/443]}}]; output={:?}",
-        rules.ipv4
-    );
+    let refusal = NetworkIptablesManager::refuse_unprogrammable_egress(&policy, true);
+
     assert!(
-        emitted_rule.is_some_and(|rule| argument_after(rule, "--dport").is_none()),
-        "input=default deny, allow=[{{to:{destination}, ports:[icmp/443]}}]; expected no destination port; output={:?}",
-        rules.ipv4
+        refusal.as_ref().is_err_and(|message| message.contains("icmp")),
+        "input=default deny, allow=[{{to:{destination}, ports:[icmp/443]}}]; expected a refusal naming icmp; output={refusal:?}"
     );
 }
 
