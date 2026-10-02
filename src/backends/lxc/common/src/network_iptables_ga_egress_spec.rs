@@ -1252,6 +1252,24 @@ fn an_ipv4_exclusion_on_an_ipv6_peer_is_refused_in_the_same_way() {
 }
 
 #[test]
+fn a_malformed_allow_rule_is_refused_under_an_allow_default_too() {
+    let policy = directional_policy(
+        NetworkAction::Allow,
+        vec![rule(
+            vec![peer("10.0.0.0/8", &["2001:db8::/32"])],
+            Vec::new(),
+        )],
+        Vec::new(),
+    );
+    let error = lowering_error(&policy);
+
+    assert!(
+        error.contains("other address family"),
+        "input=default allow, allow.to=[{{cidr:10.0.0.0/8, except:[2001:db8::/32]}}]; the allow default programs no allow rules, but one the chain discards is still the operator's to get wrong; got: {error}"
+    );
+}
+
+#[test]
 fn an_ipv6_peer_whose_exclusion_neighbours_the_mapped_range_is_refused() {
     // The exclusion is outside the mapped range, but removing it still splits
     // `::/0` down to a `::ffff:0:0/96` sibling, which renders as `0.0.0.0/0`.

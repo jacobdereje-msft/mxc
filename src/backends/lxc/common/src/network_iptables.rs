@@ -928,8 +928,15 @@ impl NetworkIptablesManager {
     }
 
     fn lower_directional_egress(egress: &NetworkEgressPolicy) -> Result<Vec<EgressEntry>, String> {
+        let chain = directional_egress_chain(egress.default);
+
+        // A rule the chain discards is still the operator's to get wrong.
+        if !chain.contains(&EgressSection::OperatorAllows) {
+            Self::lower_section(&EgressSection::OperatorAllows, egress)?;
+        }
+
         let mut entries = Vec::new();
-        for section in directional_egress_chain(egress.default) {
+        for section in chain {
             entries.extend(Self::lower_section(section, egress)?);
         }
         Ok(entries)
