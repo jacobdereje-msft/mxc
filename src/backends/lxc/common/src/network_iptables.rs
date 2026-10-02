@@ -968,7 +968,7 @@ impl NetworkIptablesManager {
 
     fn lower_rule(rule: &NetworkRule, action: RuleAction) -> Result<Vec<EgressEntry>, String> {
         let matches = if rule.ports.is_empty() {
-            Self::every_protocol_matches(action)
+            Self::unconstrained_matches(action)
         } else {
             rule.ports
                 .iter()
@@ -1054,9 +1054,8 @@ impl NetworkIptablesManager {
         network_blocks::cidr_text(cidr)
     }
 
-    // A deny needs no protocol word: one rule carrying none covers every
-    // protocol.  An allow needs one rule per protocol.
-    fn every_protocol_matches(action: RuleAction) -> Vec<RuleMatch> {
+    // AnyTraffic on an allow would also grant the protocols MXC does not model.
+    fn unconstrained_matches(action: RuleAction) -> Vec<RuleMatch> {
         match action {
             RuleAction::Deny => vec![RuleMatch::AnyTraffic],
             RuleAction::Allow => carried_protocol_matches(),
@@ -1084,7 +1083,7 @@ impl NetworkIptablesManager {
                 .iter()
                 .map(|&protocol| RuleMatch::Transport { protocol, ports })
                 .collect(),
-            NetworkProtocol::Any => Self::every_protocol_matches(action),
+            NetworkProtocol::Any => Self::unconstrained_matches(action),
         }
     }
 
@@ -1976,7 +1975,7 @@ mod tests {
     }
 
     #[test]
-    fn every_protocol_matches_cases() {
+    fn unconstrained_matches_cases() {
         let cases = [
             (RuleAction::Deny, vec![RuleMatch::AnyTraffic]),
             (RuleAction::Allow, carried_protocol_matches()),
@@ -1984,9 +1983,9 @@ mod tests {
 
         for (action, expected) in cases {
             assert_eq!(
-                NetworkIptablesManager::every_protocol_matches(action),
+                NetworkIptablesManager::unconstrained_matches(action),
                 expected,
-                "every_protocol_matches({action:?})"
+                "unconstrained_matches({action:?})"
             );
         }
     }
