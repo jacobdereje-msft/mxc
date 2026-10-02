@@ -424,8 +424,6 @@ ICMP_COMMAND="sh -c 'timeout 8 ping -c 1 -W 5 $PEER_IP >/dev/null 2>&1 && echo M
 SCTP_PROBE='import socket,sys;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_SCTP);s.settimeout(8);s.connect((sys.argv[1],int(sys.argv[2])))'
 SCTP_COMMAND="sh -c 'python3 -c \\\"$SCTP_PROBE\\\" $PEER_IP $PEER_SHARED_PORT >/dev/null 2>&1 && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
 
-# A tcp or udp probe answers the same way whether a rule reaches every
-# port-carrying protocol or only tcp and udp.  SCTP is what separates the two.
 run_case "default allow with a deny rule naming no protocol and no port. Probe sctp" \
     "$(render_case "$ALLOW_PORTLESS_DENY_TEMPLATE" "$SCTP_COMMAND")"
 assert_blocked "Expected sctp blocked."
