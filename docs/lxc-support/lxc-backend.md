@@ -162,17 +162,6 @@ behind, whatever `preservePolicy` says.
 
 If using the legacy network shape, `enforcementMode` cannot be `capabilities`.
 
-### Protocols a rule covers
-
-| Rule | No port named | A port named |
-|------|---------------|--------------|
-| `deny` | every protocol to the destinations it names, including ones a rule has no way to name | TCP, UDP, SCTP, and DCCP |
-| `allow` | TCP, UDP, SCTP, DCCP, and ICMP | TCP, UDP, SCTP, and DCCP |
-
-Where the two differ, each resolves toward less traffic leaving the container.
-
-A port written beside `icmp` is refused; ICMP carries none.
-
 ### Proxy
 
 **LXC does not support proxied egress (`runtimeConfig.networkProxy`) today.**
