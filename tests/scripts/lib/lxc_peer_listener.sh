@@ -84,6 +84,41 @@ sys.exit(1)
 PY
 }
 
+# Poll an SCTP peer until it accepts an association.
+#
+# A refusal here can also mean the host kernel carries no SCTP module, which
+# would otherwise surface later as the firewall blocking every carried-protocol
+# case.
+await_peer_sctp() {
+    python3 - "$1" "$2" "${3:-20}" <<'PY'
+import socket
+import sys
+import time
+
+host, port, timeout = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+start = time.monotonic()
+last = "the peer was never probed"
+while True:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_SCTP)
+    probe.settimeout(5)
+    try:
+        probe.connect((host, port))
+        waited = time.monotonic() - start
+        if waited > 1:
+            print(f"the peer accepted after {waited:.1f}s", file=sys.stderr)
+        sys.exit(0)
+    except OSError as exc:
+        last = str(exc)
+    finally:
+        probe.close()
+    if time.monotonic() - start >= timeout:
+        break
+    time.sleep(0.2)
+print(last)
+sys.exit(1)
+PY
+}
+
 # Report whether a listener started in the background is still running.
 #
 # A zombie answers `kill -0`, so the kernel's process state is the only source

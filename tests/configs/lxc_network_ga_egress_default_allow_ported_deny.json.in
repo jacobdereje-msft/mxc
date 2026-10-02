@@ -10,15 +10,16 @@
     "destroyOnExit": true
   },
   "lxc": {
-    "distribution": "alpine",
-    "release": "3.23"
+    "distribution": "ubuntu",
+    "release": "noble"
   },
   "network": {
     "egress": {
-      "default": "deny",
-      "allow": [
+      "default": "allow",
+      "deny": [
         {
-          "to": [{ "cidr": "{{PEER_CIDR}}" }]
+          "to": [{ "cidr": "203.0.113.0/24" }],
+          "ports": [{ "protocol": "{{PROTOCOL}}", "port": {{PORT}} }]
         }
       ]
     }
