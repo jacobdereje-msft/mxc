@@ -164,10 +164,6 @@ If using the legacy network shape, `enforcementMode` cannot be `capabilities`.
 
 ### Protocols a rule covers
 
-A protocol can be written as `tcp`, `udp`, `icmp`, or `any`.  SCTP and DCCP have
-no spelling of their own and are reached by writing `any`, or by leaving the
-protocol out.
-
 A deny and an allow written the same way do not cover the same traffic.  A deny
 that names no port stops every protocol to the destinations it names, including
 ones a rule has no way to name on its own.  An allow that names no port permits
