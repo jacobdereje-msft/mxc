@@ -183,16 +183,26 @@ PEER_CIDR="203.0.113.0/24"
 PEER_PORT="443"
 PEER_SHARED_PORT="8053"
 
-PEER_LISTENER_PIDS=""
+# One variable per listener.  A single list would leave teardown killing
+# processes a reader cannot name.
+PEER_LISTENER_PID=""
+PEER_UDP_LISTENER_PID=""
+PEER_SCTP_LISTENER_PID=""
 PEER_LISTENER_LOG="$(mktemp)"
 PEER_UDP_LISTENER_LOG="$(mktemp)"
 PEER_SCTP_LISTENER_LOG="$(mktemp)"
 RENDERED_CONFIG="$(mktemp --suffix=.json)"
 IP_FORWARD_WAS=""
 teardown_peer() {
-    for pid in $PEER_LISTENER_PIDS; do
-        kill "$pid" >/dev/null 2>&1 || true
-    done
+    if [ -n "$PEER_LISTENER_PID" ]; then
+        kill "$PEER_LISTENER_PID" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$PEER_UDP_LISTENER_PID" ]; then
+        kill "$PEER_UDP_LISTENER_PID" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$PEER_SCTP_LISTENER_PID" ]; then
+        kill "$PEER_SCTP_LISTENER_PID" >/dev/null 2>&1 || true
+    fi
     ip netns del "$PEER_NETNS" >/dev/null 2>&1 || true
     ip link del "$PEER_HOST_VETH" >/dev/null 2>&1 || true
     if [ -n "$IP_FORWARD_WAS" ]; then
@@ -233,7 +243,7 @@ sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 \
 # is enough.  A reply proves the SYN reached the peer.
 ip netns exec "$PEER_NETNS" python3 -m http.server "$PEER_PORT" --bind "$PEER_IP" \
     >"$PEER_LISTENER_LOG" 2>&1 &
-PEER_LISTENER_PIDS="$PEER_LISTENER_PIDS $!"
+PEER_LISTENER_PID=$!
 
 # Alive is not reachable.  A peer that never bound has to fail here as harness
 # breakage, rather than later as the firewall blocking the allow case.
@@ -252,7 +262,7 @@ while True:
     payload, sender = s.recvfrom(1024)
     s.sendto(payload, sender)
 " >"$PEER_UDP_LISTENER_LOG" 2>&1 &
-PEER_LISTENER_PIDS="$PEER_LISTENER_PIDS $!"
+PEER_UDP_LISTENER_PID=$!
 
 # A silent echo service would make the udp allow case read as a firewall block.
 if ! PEER_PROBE_ERROR="$(await_peer_udp_echo "$PEER_IP" "$PEER_SHARED_PORT")"; then
@@ -272,7 +282,7 @@ while True:
     client, _ = s.accept()
     client.close()
 " >"$PEER_SCTP_LISTENER_LOG" 2>&1 &
-PEER_LISTENER_PIDS="$PEER_LISTENER_PIDS $!"
+PEER_SCTP_LISTENER_PID=$!
 
 # A peer that never bound would read as the firewall refusing the association.
 if ! PEER_PROBE_ERROR="$(await_peer_sctp "$PEER_IP" "$PEER_SHARED_PORT")"; then
