@@ -100,6 +100,9 @@ pub fn spawn_pty_runner(
     crate::run::log_policy_hash(request, logger);
     match &request.containment {
         ContainmentBackend::IsolationSession => spawn_isolation_session_pty(request, logger, size),
+        ContainmentBackend::Bubblewrap => {
+            spawn_bubblewrap_with_stdio(request, logger, StdioMode::Pty(size))
+        }
         other => Err(MxcError::unsupported_containment(format!(
             "the mxc engine does not yet support PTY spawning for the '{}' backend",
             other.wire_name()
@@ -136,10 +139,19 @@ fn spawn_bubblewrap(
     request: &ExecutionRequest,
     logger: &mut Logger,
 ) -> Result<Box<dyn SandboxProcess>, MxcError> {
+    spawn_bubblewrap_with_stdio(request, logger, StdioMode::Pipes)
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_bubblewrap_with_stdio(
+    request: &ExecutionRequest,
+    logger: &mut Logger,
+    stdio: StdioMode,
+) -> Result<Box<dyn SandboxProcess>, MxcError> {
     use wxc_common::sandbox_process::{SandboxBackend, StdioMode};
     let mut runner = bwrap_common::bwrap_runner::BubblewrapScriptRunner::new();
     runner
-        .spawn(request, logger, StdioMode::Pipes)
+        .spawn(request, logger, stdio)
         .map_err(map_spawn_error)
 }
 
@@ -147,6 +159,17 @@ fn spawn_bubblewrap(
 fn spawn_bubblewrap(
     _request: &ExecutionRequest,
     _logger: &mut Logger,
+) -> Result<Box<dyn SandboxProcess>, MxcError> {
+    Err(MxcError::unsupported_containment(
+        "Bubblewrap is only available on Linux",
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_bubblewrap_with_stdio(
+    _request: &ExecutionRequest,
+    _logger: &mut Logger,
+    _stdio: StdioMode,
 ) -> Result<Box<dyn SandboxProcess>, MxcError> {
     Err(MxcError::unsupported_containment(
         "Bubblewrap is only available on Linux",

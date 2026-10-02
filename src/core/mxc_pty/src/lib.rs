@@ -14,6 +14,13 @@ use std::process::Command;
 use std::time::Duration;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::io::{Read, Write};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::Mutex;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use nix::sys::signal::Signal;
 
 /// Placeholder `Signal` on non-unix targets so the public type signature
@@ -80,6 +87,203 @@ pub enum PtyOutcome {
     TimedOut,
 }
 
+/// Dimensions of a pseudo-terminal.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PtySize {
+    /// Terminal rows.
+    pub rows: u16,
+    /// Terminal columns.
+    pub cols: u16,
+    /// Optional pixel width.
+    pub pixel_width: u16,
+    /// Optional pixel height.
+    pub pixel_height: u16,
+}
+
+/// Caller-owned primary side of a Unix pseudo-terminal.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub struct LivePty {
+    primary: std::fs::File,
+    writer: Mutex<Option<std::fs::File>>,
+    size: Mutex<PtySize>,
+    reader_claimed: AtomicBool,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl std::fmt::Debug for LivePty {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LivePty")
+            .field("size", &self.size())
+            .field(
+                "reader_claimed",
+                &self.reader_claimed.load(Ordering::Acquire),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl LivePty {
+    /// Attach `command` to a newly allocated pseudo-terminal.
+    ///
+    /// The caller must spawn the command after this returns and retain the
+    /// returned primary while the child is running.
+    pub fn attach(
+        command: &mut Command,
+        size: PtySize,
+        unblock_signals: &'static [Signal],
+    ) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        use std::process::Stdio;
+
+        use nix::pty::{openpty, Winsize};
+
+        let winsize = (size.rows != 0 && size.cols != 0).then_some(Winsize {
+            ws_row: size.rows,
+            ws_col: size.cols,
+            ws_xpixel: size.pixel_width,
+            ws_ypixel: size.pixel_height,
+        });
+        let pair = openpty(winsize.as_ref(), None).map_err(std::io::Error::from)?;
+
+        use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+        for fd in [pair.master.as_raw_fd(), pair.slave.as_raw_fd()] {
+            let bits = fcntl(fd, FcntlArg::F_GETFD).map_err(std::io::Error::from)?;
+            let flags = FdFlag::from_bits_truncate(bits) | FdFlag::FD_CLOEXEC;
+            fcntl(fd, FcntlArg::F_SETFD(flags)).map_err(std::io::Error::from)?;
+        }
+
+        let secondary_in: Stdio = pair.slave.try_clone()?.into();
+        let secondary_out: Stdio = pair.slave.try_clone()?.into();
+        let secondary_err: Stdio = pair.slave.into();
+        command
+            .stdin(secondary_in)
+            .stdout(secondary_out)
+            .stderr(secondary_err);
+
+        // SAFETY: this runs after fork and uses only async-signal-safe calls.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            command.pre_exec(move || {
+                nix::unistd::setsid().map_err(std::io::Error::from)?;
+                let _ = libc::ioctl(0, libc::TIOCSCTTY as _, 0);
+
+                let mut mask = nix::sys::signal::SigSet::empty();
+                mask.add(nix::sys::signal::Signal::SIGWINCH);
+                for signal in unblock_signals {
+                    mask.add(*signal);
+                }
+                mask.thread_unblock().map_err(std::io::Error::from)
+            });
+        }
+
+        let primary: std::fs::File = pair.master.into();
+        let writer = primary.try_clone()?;
+        Ok(Self {
+            primary,
+            writer: Mutex::new(Some(writer)),
+            size: Mutex::new(size),
+            reader_claimed: AtomicBool::new(false),
+        })
+    }
+
+    /// Clone the merged terminal output reader.
+    pub fn try_clone_reader(&self) -> std::io::Result<Box<dyn Read + Send>> {
+        let reader = self.primary.try_clone()?;
+        self.reader_claimed.store(true, Ordering::Release);
+        Ok(Box::new(PtyReader(reader)))
+    }
+
+    /// Take the terminal input writer. This succeeds only once.
+    pub fn take_writer(&self) -> std::io::Result<Box<dyn Write + Send>> {
+        self.writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|writer| Box::new(writer) as Box<dyn Write + Send>)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "PTY input writer has already been taken",
+                )
+            })
+    }
+
+    /// Drop the writer when it has not been transferred to the caller.
+    pub fn close_writer(&self) {
+        self.writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
+    /// Resize the pseudo-terminal and notify its foreground process group.
+    pub fn resize(&self, size: PtySize) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+
+        if size.rows == 0 || size.cols == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "PTY rows and columns must be non-zero",
+            ));
+        }
+        let winsize = libc::winsize {
+            ws_row: size.rows,
+            ws_col: size.cols,
+            ws_xpixel: size.pixel_width,
+            ws_ypixel: size.pixel_height,
+        };
+        if unsafe { libc::ioctl(self.primary.as_raw_fd(), libc::TIOCSWINSZ, &winsize) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        *self
+            .size
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = size;
+        Ok(())
+    }
+
+    /// Return the last successfully applied terminal dimensions.
+    pub fn size(&self) -> PtySize {
+        *self
+            .size
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Claim a reader for internal draining only when no caller has cloned one.
+    pub fn take_unclaimed_reader(&self) -> std::io::Result<Option<Box<dyn Read + Send>>> {
+        if self
+            .reader_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        match self.primary.try_clone() {
+            Ok(reader) => Ok(Some(Box::new(PtyReader(reader)))),
+            Err(error) => {
+                self.reader_claimed.store(false, Ordering::Release);
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct PtyReader(std::fs::File);
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Read for PtyReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self.0.read(buffer) {
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => Ok(0),
+            result => result,
+        }
+    }
+}
+
 /// Spawn `command` attached to a freshly-allocated pty pair and bridge
 /// it to the host's stdin/stdout/stderr.
 ///
@@ -100,14 +304,10 @@ pub enum PtyOutcome {
 /// responses get echoed instead of forwarded as input).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn run_with_pty(mut command: Command, options: PtyOptions) -> Result<PtyOutcome, String> {
-    use std::io::{Read, Write};
     use std::os::unix::io::AsRawFd;
-    use std::process::Stdio;
     use std::sync::mpsc;
     use std::thread;
     use std::time::Instant;
-
-    use nix::pty::openpty;
 
     // Put our own stdin (the outer pty secondary, if any) into raw mode so
     // input bytes pass through to the inner pty without local echo or
@@ -129,100 +329,14 @@ pub fn run_with_pty(mut command: Command, options: PtyOptions) -> Result<PtyOutc
             None
         }
     };
-    let inner_winsize = outer_winsize.map(|ws| nix::pty::Winsize {
-        ws_row: ws.ws_row,
-        ws_col: ws.ws_col,
-        ws_xpixel: ws.ws_xpixel,
-        ws_ypixel: ws.ws_ypixel,
+    let size = outer_winsize.map_or_else(PtySize::default, |winsize| PtySize {
+        rows: winsize.ws_row,
+        cols: winsize.ws_col,
+        pixel_width: winsize.ws_xpixel,
+        pixel_height: winsize.ws_ypixel,
     });
-
-    let pty_pair =
-        openpty(inner_winsize.as_ref(), None).map_err(|e| format!("openpty failed: {}", e))?;
-
-    // The `nix::pty` crate exposes the POSIX field names `.master` and
-    // `.slave` on `PtyPair`. We refer to those ends as primary and
-    // secondary in our own variables and prose below.
-
-    // Mark both pty fds close-on-exec. macOS' `openpty(3)` leaves them
-    // without `FD_CLOEXEC`, so without this fixup the primary fd would
-    // be inherited by the child across `exec` — the secondary would never
-    // hang up when we die (the child itself keeps a primary ref open),
-    // and the sandboxed shell would become immortal. The dups we make
-    // below via `File::try_clone` already get CLOEXEC for free (Rust
-    // uses `F_DUPFD_CLOEXEC`), so we only have to fix the originals
-    // returned by `openpty`. Best-effort: an `fcntl` failure here just
-    // restores the pre-fix behaviour, no regression.
-    {
-        use nix::fcntl::{fcntl, FcntlArg, FdFlag};
-        for fd in [pty_pair.master.as_raw_fd(), pty_pair.slave.as_raw_fd()] {
-            if let Ok(bits) = fcntl(fd, FcntlArg::F_GETFD) {
-                let flags = FdFlag::from_bits_truncate(bits) | FdFlag::FD_CLOEXEC;
-                let _ = fcntl(fd, FcntlArg::F_SETFD(flags));
-            }
-        }
-    }
-
-    // Three duplicates of the secondary fd so each Stdio takes ownership of
-    // its own handle; otherwise std::process::Stdio::from would consume
-    // the single OwnedFd and the rest of the spawn calls would fail.
-    let secondary_in: Stdio = pty_pair
-        .slave
-        .try_clone()
-        .map_err(|e| format!("dup secondary for stdin: {}", e))?
-        .into();
-    let secondary_out: Stdio = pty_pair
-        .slave
-        .try_clone()
-        .map_err(|e| format!("dup secondary for stdout: {}", e))?
-        .into();
-    let secondary_err: Stdio = pty_pair.slave.into();
-
-    command
-        .stdin(secondary_in)
-        .stdout(secondary_out)
-        .stderr(secondary_err);
-
-    // Drop the inherited controlling terminal in the child and make the
-    // secondary end of our pty its new controlling tty. Without this the
-    // child detects that it has a controlling tty (the outer pty from
-    // node-pty) and forwards the inner pty's I/O to `/dev/tty` directly,
-    // bypassing the secondary fds we wired into stdio. Our primary would
-    // then see no data at all.
-    //
-    // `unblock_signals` reverses any sigmask the parent installed (e.g.
-    // signal_cleanup's sigwait-blocked set) so the child doesn't
-    // silently ignore Ctrl-C / termination. SIGWINCH is unblocked
-    // defensively in case anyone in the parent process had it blocked;
-    // execve(2) resets the handler to default ("ignore" for SIGWINCH on
-    // both Linux and macOS) but preserves the inherited signal mask, so
-    // a child process running e.g. node will install its own SIGWINCH
-    // handler and depend on the signal not being masked.
-    let unblock_signals = options.unblock_signals;
-    // SAFETY: the closure runs after fork, before exec. Only
-    // async-signal-safe operations are used: `setsid`, `ioctl`, and
-    // `pthread_sigmask` (via nix's `SigSet::thread_unblock`). No
-    // allocation or non-reentrant libc calls.
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        command.pre_exec(move || {
-            // Become a new session leader, detaching from the inherited
-            // controlling terminal.
-            nix::unistd::setsid().map_err(std::io::Error::from)?;
-            // ioctl on fd 0 (the secondary we just dup2'd in via stdin) to
-            // make it the new controlling tty. Errors are non-fatal
-            // because setsid above already cleared the ctty state, which
-            // is what actually matters for the child.
-            let _ = libc::ioctl(0, libc::TIOCSCTTY as _, 0);
-
-            let mut mask = nix::sys::signal::SigSet::empty();
-            mask.add(nix::sys::signal::Signal::SIGWINCH);
-            for sig in unblock_signals {
-                mask.add(*sig);
-            }
-            mask.thread_unblock().map_err(std::io::Error::from)?;
-            Ok(())
-        });
-    }
+    let terminal = LivePty::attach(&mut command, size, options.unblock_signals)
+        .map_err(|error| format!("failed to allocate PTY: {error}"))?;
 
     let mut child = command
         .spawn()
@@ -230,14 +344,13 @@ pub fn run_with_pty(mut command: Command, options: PtyOptions) -> Result<PtyOutc
 
     drop(command);
 
-    // The child inherited all three secondary handles and the parent's
-    // copies have been moved into Stdio. The secondary will be fully closed
-    // when the child exits, which makes our primary read return EOF.
-    let primary: std::fs::File = pty_pair.master.into();
-    let mut primary_writer = primary
-        .try_clone()
-        .map_err(|e| format!("dup primary: {}", e))?;
-    let mut primary_reader = primary;
+    let mut primary_writer = terminal
+        .take_writer()
+        .map_err(|error| format!("take PTY writer: {error}"))?;
+    let mut primary_reader = terminal
+        .take_unclaimed_reader()
+        .map_err(|error| format!("clone PTY reader: {error}"))?
+        .ok_or_else(|| "PTY reader was already claimed".to_string())?;
 
     // Resize forwarder: when the host's terminal resizes, the kernel
     // delivers SIGWINCH to us (because our fd 0 is the outer pty
@@ -248,7 +361,8 @@ pub fn run_with_pty(mut command: Command, options: PtyOptions) -> Result<PtyOutc
     // of `primary_writer` (which the input-forwarder thread can drop
     // mid-session); the forwarder leaks its dup for the rest of the
     // process, the same lifetime as the signal handler that targets it.
-    let winch_primary = primary_writer
+    let winch_primary = terminal
+        .primary
         .try_clone()
         .map_err(|e| format!("dup primary for sigwinch forwarder: {}", e))?;
     let _winch_thread = spawn_sigwinch_forwarder(winch_primary);
@@ -524,6 +638,48 @@ mod tests {
     #[test]
     fn poll_interval_is_500ms() {
         assert_eq!(PtyOptions::POLL_INTERVAL, Duration::from_millis(500));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn live_pty_supports_input_output_and_resize() {
+        let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("stty size; read value; printf 'reply:%s\\n' \"$value\"");
+        let terminal = LivePty::attach(
+            &mut command,
+            PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            &[],
+        )
+        .expect("attach PTY");
+        terminal
+            .resize(PtySize {
+                rows: 40,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("resize PTY");
+
+        let mut child = command.spawn().expect("spawn child");
+        let mut reader = terminal.try_clone_reader().expect("clone reader");
+        let mut writer = terminal.take_writer().expect("take writer");
+        writer.write_all(b"hello\r").expect("write input");
+        drop(writer);
+
+        let status = child.wait().expect("wait child");
+        assert!(status.success());
+        let mut output = String::new();
+        reader.read_to_string(&mut output).expect("read output");
+        assert!(output.contains("40 120"), "got: {output:?}");
+        assert!(output.contains("reply:hello"), "got: {output:?}");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
