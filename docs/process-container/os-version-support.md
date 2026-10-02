@@ -158,10 +158,14 @@ available there to block private-network egress.
 
 `ingress.hostLoopback: "allow"` additionally needs PSEC contract 1.1 with
 ingress support, which the `BaseContainer` tier does not imply. An identity-less
-`runtimeConfig.networkProxy` runs on a PSEC 1.0 host by keeping
+`runtimeConfig.networkProxy` can run on a PSEC 1.0 host by keeping
 `hostLoopback: "deny"`: MXC grants the `networkLoopback` capability and the
-`MXC-Loopback` peer for the proxy itself, so only the bidirectional
-host-loopback grant is lost.
+`MXC-Loopback` peer for the proxy itself. Both host-loopback settings serialize
+the same proxy capability and peer and omit native ingress. `"deny"` removes
+the PSEC 1.1 ingress prerequisite, not a separately encoded grant; other
+features, such as enumeration-only filesystem grants, can still require 1.1.
+`"allow"` requests bidirectional access, but the host-to-container limitation
+in the [networking guide](./networking.md#proxy-deployment-choices) still applies.
 
 ## UI restrictions
 

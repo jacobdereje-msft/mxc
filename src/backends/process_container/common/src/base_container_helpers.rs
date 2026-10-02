@@ -160,10 +160,10 @@ pub(super) fn unrestricted_host_loopback_allowed(policy: &ContainerPolicy) -> bo
 /// which host process owns them. Such a request gets the reserved peer and the
 /// loopback capability in place of an identity-scoped peer rule.
 ///
-/// Independent of `ingress.hostLoopback`. That field selects the native ingress
-/// table, which a proxy policy never carries, and requesting `allow` raises the
-/// request to PSEC 1.1. Keying the capability on the proxy identity instead lets
-/// an identity-less proxy run under the PSEC 1.0 capability mapping.
+/// Independent of `ingress.hostLoopback`. A proxy policy never carries the
+/// native ingress table, but requesting `allow` still requires PSEC 1.1 ingress
+/// support. Keying the capability on the proxy identity instead permits PSEC
+/// 1.0 when no other requested feature requires a newer contract.
 fn identity_less_proxy(policy: &ContainerPolicy) -> bool {
     policy.network_proxy.is_enabled() && policy.allowed_proxy_peer.is_none()
 }

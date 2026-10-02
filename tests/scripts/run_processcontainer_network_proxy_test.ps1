@@ -27,8 +27,8 @@ Initialize-WpcContext @PSBoundParameters
 #
 # Per docs/process-container/networking.md: HTTP(S)_PROXY (both cases) point
 # at the loopback endpoint, NO_PROXY must not carry it, direct egress is
-# blocked, egress rules do not apply, identity-less proxy requires
-# hostLoopback allow, and no fallback to an AppContainer tier.
+# blocked, egress rules do not apply, identity-less proxies accept either
+# hostLoopback setting, and no fallback to an AppContainer tier.
 #
 # The workload prints its own environment: an MXC log line saying a proxy was
 # configured does not prove the child received it. A host-side listener stands
@@ -232,4 +232,3 @@ function Invoke-NetworkProxyAssertions {
 
 Invoke-WpcPhase -Key 'NetworkProxy' -Body { Phase-NetworkProxy }
 Complete-WpcChild
-

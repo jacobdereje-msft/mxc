@@ -602,10 +602,9 @@ fn validate_process_container_proxy_policy(
     // host-loopback grant on top of it would widen the policy for nothing.
     //
     // An identity-less proxy accepts either host-loopback setting. `allow` asks
-    // for the bidirectional contract and needs the PSEC 1.1 ingress table.
-    // `deny` keeps the proxy endpoint alone, which the PSEC 1.0 capability
-    // mapping can express, so a host without PSEC 1.1 ingress support still
-    // reaches its proxy.
+    // for the bidirectional contract and requires PSEC 1.1 ingress support.
+    // `deny` removes that prerequisite without changing the proxy capability
+    // or peer. Other requested features can still require PSEC 1.1.
     if policy.allowed_proxy_peer.is_some() && ingress.host_loopback == NetworkAction::Allow {
         return Err(WxcError::ConfigParse(
             "an identity-scoped ProcessContainer proxy requires \
@@ -722,11 +721,9 @@ mod proxy_policy_tests {
         }
     }
 
-    /// `hostLoopback` selects the contract an identity-less ProcessContainer
-    /// proxy runs under, not whether it is allowed to exist. `allow` asks for
-    /// the bidirectional grant and needs the PSEC 1.1 ingress table; `deny`
-    /// keeps the proxy endpoint alone, which the PSEC 1.0 capability mapping
-    /// expresses. Rejecting `deny` left a host without PSEC 1.1 ingress support
+    /// `hostLoopback` controls the PSEC 1.1 ingress prerequisite for an
+    /// identity-less ProcessContainer proxy, not whether it is allowed to
+    /// exist. Rejecting `deny` left a host without PSEC 1.1 ingress support
     /// with no usable proxy at all.
     #[test]
     fn an_identity_less_proxy_accepts_either_host_loopback_setting() {

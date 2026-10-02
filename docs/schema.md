@@ -50,12 +50,15 @@ than inheriting it, so host-loopback access must be requested explicitly.
 A ProcessContainer proxy requires `ingress.default: "allow"`. Identity-scoped
 proxies set a non-blank `allowedProxyPeer` and keep `hostLoopback: "deny"`;
 identity-less host proxies omit `allowedProxyPeer` and choose either
-`hostLoopback` setting. `"allow"` also
-opens both host-loopback directions, which is a weaker development/testing
-compatibility deployment and needs the PSEC 1.1 ingress contract. `"deny"`
-keeps the configured proxy endpoint alone and runs under PSEC 1.0. Neither
-route is the strict proxy-endpoint exception defined by the shared model-2
-policy, because MXC cannot verify which host process owns the endpoint.
+`hostLoopback` setting. `"allow"` requests bidirectional host-loopback access
+and requires the PSEC 1.1 ingress contract. `"deny"` removes that prerequisite,
+so PSEC 1.0 can be used unless another requested feature requires a newer
+contract. Both settings serialize the same proxy capability and peer and omit
+native ingress; neither changes a separately encoded bidirectional grant.
+The [backend guide](process-container/networking.md#proxy-deployment-choices)
+records the current host-to-container limitation. Neither route is the strict
+proxy-endpoint exception defined by the shared model-2 policy, because MXC
+cannot verify which host process owns the endpoint.
 
 ```json
 {

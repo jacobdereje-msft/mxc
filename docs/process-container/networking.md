@@ -102,10 +102,10 @@ client policy and package identity are the same; the enforcement table below sep
 
 `ingress.hostLoopback` is bidirectional. `allowedProxyPeer` authorizes a package family or AppContainer profile without
 opening general host-loopback access, so identity-scoped paths keep `hostLoopback: "deny"`. Only an unpackaged
-non-AppContainer proxy lacks an accepted peer identity. It may keep either host-loopback setting: `"allow"` requests
-the bidirectional contract as well, which is a weaker development/testing compatibility deployment rather than the
-shared policy's strict host-loopback-closure guarantee, while `"deny"` keeps the configured proxy endpoint alone.
-The setting selects which contract the request runs under, not whether the proxy is allowed to exist.
+non-AppContainer proxy lacks an accepted peer identity. It may keep either host-loopback setting. `"allow"` requests
+bidirectional access and retains the PSEC 1.1 ingress prerequisite; `"deny"` removes that prerequisite.
+Neither setting adds proxy identity binding, so this remains a development/testing compatibility deployment rather
+than the shared policy's strict host-loopback-closure guarantee.
 For direct-egress policies, MXC passes `ingress.default` and `ingress.hostLoopback` through the PSEC 1.1 ingress table when
 `IsProcessSecurityEnvironmentVersionSupported` reports contract 1.1 or newer and
 `QueryProcessSecurityEnvironmentSupport` advertises ingress support. Proxy policies omit that native table because
@@ -114,9 +114,13 @@ identity-less proxy selects both the `networkLoopback` capability and the `MXC-L
 identity-scoped proxy peer, whatever its host-loopback setting. The peer alone is insufficient: without the
 capability, the environment can be created but its client cannot reach the host proxy.
 The public ingress policy remains required, and host-loopback allow retains the PSEC 1.1 host requirement.
-Requests that do not allow host loopback use the
-PSEC 1.0 capability mapping; `hostLoopback: "allow"` is rejected when the PSEC 1.1 ingress contract is unavailable.
-An identity-less proxy therefore reaches its endpoint on a PSEC 1.0 host by keeping `hostLoopback: "deny"`.
+Both host-loopback settings serialize the same proxy capability and peer, without a native ingress table.
+`hostLoopback: "deny"` therefore does not remove a separately encoded bidirectional grant.
+It permits the PSEC 1.0 capability mapping when no other requested feature requires a newer contract;
+for example, enumeration-only filesystem grants still require PSEC 1.1.
+`hostLoopback: "allow"` is rejected when the PSEC 1.1 ingress contract is unavailable.
+An identity-less proxy can therefore use a PSEC 1.0 host by keeping `hostLoopback: "deny"` and
+requesting only features supported by that host.
 Requests the PSEC contract cannot preserve continue to an AppContainer tier.
 
 **Unresolved ingress limitation:** on Windows build 26691.1002, this proxy mapping permits unprivileged connections
@@ -161,8 +165,8 @@ installing administrator-owned firewall rules. Independently managed host firewa
 Set `"hostLoopback": "deny"` instead on a host whose PSEC contract is older than 1.1, or whose
 `QueryProcessSecurityEnvironmentSupport` does not advertise ingress support. The request is otherwise identical: MXC
 grants the same `networkLoopback` capability and `MXC-Loopback` peer, and WFP applies the same endpoint scoping, so
-the client reaches the configured proxy. It drops only the bidirectional host-loopback grant, which that host cannot
-express and which the inbound limitation above does not yet deliver in any case.
+the client reaches the configured proxy. This removes the PSEC 1.1 ingress prerequisite, not a separately encoded
+grant. Other requested features may still require PSEC 1.1. The inbound limitation above applies to both settings.
 
 #### HTTP client guidance
 
@@ -176,9 +180,9 @@ the configured loopback proxy address and port and blocks direct public and priv
 
 Model 2 requires `egress.default: "deny"` and `ingress.default: "allow"`. When a non-blank `allowedProxyPeer` names a
 package or AppContainer profile, MXC authorizes only that peer and `ingress.hostLoopback` remains denied. An
-identity-less host proxy omits `allowedProxyPeer`; its `ingress.hostLoopback` selects the contract the request runs
-under rather than its eligibility. Direct egress allow and deny rules do not apply when `runtimeConfig.networkProxy`
-is present.
+identity-less host proxy omits `allowedProxyPeer`; its `ingress.hostLoopback` controls the PSEC 1.1 ingress
+prerequisite rather than its eligibility. Direct egress allow and deny rules do not apply when
+`runtimeConfig.networkProxy` is present.
 
 The proxy endpoint is runtime metadata, not shared network policy. MXC configures the per-container WinHTTP proxy,
 applies WFP endpoint scoping, and grants the private-network capability selected by `ingress.default`.
@@ -186,8 +190,9 @@ applies WFP endpoint scoping, and grants the private-network capability selected
 The identity-scoped and host-loopback paths are mutually exclusive. When `allowedProxyPeer` is present, MXC resolves
 the package family or AppContainer profile and grants the private-network capability selected by `ingress.default`.
 When it is omitted, MXC uses the configured proxy endpoint without peer identity binding. `hostLoopback: "allow"`
-then also requests bidirectional host-loopback access and the PSEC 1.1 ingress contract; `"deny"` keeps the endpoint
-alone and runs under PSEC 1.0. MXC configures the per-container WinHTTP proxy for every path.
+then also requests bidirectional host-loopback access and the PSEC 1.1 ingress contract; `"deny"` removes that
+prerequisite and permits PSEC 1.0 when the rest of the request supports it. MXC configures the per-container
+WinHTTP proxy for every path.
 
 The caller must:
 
