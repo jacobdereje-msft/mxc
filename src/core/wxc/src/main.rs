@@ -122,8 +122,9 @@ struct Cli {
     force: bool,
 
     /// Pre-pull a WSLC container image into the local image cache and exit.
-    /// MXC is an execution layer and does not pull images at run time; this
-    /// flag (or `scripts/setup-wslc.ps1`) is how operators populate the cache.
+    /// A run pulls on a cache miss by itself; this flag (or
+    /// `scripts/setup-wslc.ps1`) moves that download off the critical path, and
+    /// populates a cache for hosts that cannot reach a registry.
     /// Requires `--image` to specify which image to pull.
     #[arg(long = "setup-wslc")]
     setup_wslc: bool,
@@ -1126,26 +1127,12 @@ fn main() {
         } else {
             wxc_common::models::ExecutionRequest::default()
         };
-        let output = process_container_common::probe::run_probe(
-            &request,
-            mxc_engine::guarded_capture_available(),
-        );
-        // process_container_common has no dependency on the isolation-session
-        // backend, so it reports `isolationSessionAvailable` as `false`. When
-        // the backend is compiled in, override it with a read-only activation
-        // probe of the in-proc service.
-        #[cfg(all(target_os = "windows", feature = "isolation_session"))]
-        let output = {
-            let mut output = output;
-            output.probes.isolation_session_available = mxc_engine::isolation_session_available();
-            output
-        };
-        // WHP is delay-loaded; check before setup boots a VM.
-        #[cfg(all(target_os = "windows", feature = "hyperlight", target_arch = "x86_64"))]
-        let output = {
-            let mut output = output;
-            output.probes.hyperlight_available = hyperlight_common::is_whp_available();
-            output
+        let output = match mxc_engine::probe_execution_request(Some(&request)) {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("Error: {}", error.message);
+                process::exit(1);
+            }
         };
         match process_container_common::probe::to_json_pretty(&output) {
             Ok(s) => println!("{s}"),
@@ -1262,7 +1249,7 @@ fn main() {
             // process exit. It owns the COM init contract documented on
             // `init_and_load_sdk`.
             let result = unsafe {
-                wslc_common::wsl_container_runner::WSLContainerRunner::setup_pull_image(
+                wslc_common::image::setup_pull_image(
                     image,
                     cli.storage_path.as_deref(),
                     &mut logger,

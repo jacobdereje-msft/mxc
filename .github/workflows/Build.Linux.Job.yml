@@ -77,6 +77,14 @@ jobs:
           cargo test --locked --release --target "${{ matrix.target }}" \
             --no-default-features "${features[@]}"
 
+      # The step above runs from src/core/lxc and so covers only the lxc
+      # package. The backend's own crate holds the LXC-gated unit tests, which
+      # compile on no other platform and would otherwise never run.
+      - name: Test lxc_common
+        working-directory: src
+        run: cargo test --locked --release --target ${{ matrix.target }}
+             -p lxc_common --lib
+
       # Bubblewrap is required to run the executor characterization tests in
       # wxc_e2e_tests (they skip via has_bwrap() when it is absent). lxc-exec
       # always includes the Bubblewrap backend (bwrap_common is a non-optional
@@ -109,6 +117,36 @@ jobs:
           cargo test --locked --release --target "${{ matrix.target }}" -p wxc_common --doc
           cargo test --locked --release --target "${{ matrix.target }}" -p mxc_engine -p mxc_ffi --lib state_aware
           cargo test --locked --release --target "${{ matrix.target }}" -p mxc-sdk --test state_aware
+
+      # These need no LXC installed: the engine tests inject their probes, and
+      # the dispatch and FFI pins are refused before a container is created.
+      - name: Test LXC dispatch and discovery
+        working-directory: src
+        shell: bash
+        run: |
+          # No `-e`: each run's status is checked below so a failure names it.
+          set -uo pipefail
+          run_pinned() {
+            local label="$1"; shift
+            local log status
+            log="$(mktemp)"
+            cargo test --locked --release --target "${{ matrix.target }}" "$@" 2>&1 | tee "$log"
+
+            # `tee` succeeds even when cargo does not.
+            status=${PIPESTATUS[0]}
+            if [ "$status" -ne 0 ]; then
+              echo "::error::$label failed (cargo exited $status)."
+              exit "$status"
+            fi
+            if ! grep -qE 'test result: ok\. [1-9][0-9]* passed' "$log"; then
+              echo "::error::$label ran no test; the filter no longer matches anything."
+              exit 1
+            fi
+          }
+          run_pinned "LXC discovery matrix" -p mxc_engine --lib linux_support
+          run_pinned "LXC dispatch arm" -p mxc_engine --lib streaming_lxc_reaches_the_backend_on_linux
+          run_pinned "LXC FFI routing" -p mxc_ffi --test ffi extern_spawn_request_reaches_the_lxc_backend
+          run_pinned "SDK platform helpers" -p mxc-sdk --test sdk_helpers
 
       # Runs the Bubblewrap executor characterization tests. lxc-exec was built
       # into src/target/<triple>/release above, where find_binary() locates it.

@@ -9,11 +9,17 @@ use std::ffi::{CStr, CString};
 use std::ptr;
 
 use mxc_ffi::{
-    mxc_available_backends_json, mxc_error_detail_free, mxc_platform_support_json, mxc_run_request,
-    mxc_run_result_free, mxc_sandbox_stderr_closer, mxc_sandbox_stdout_closer,
-    mxc_sandbox_warnings_json, mxc_spawn_request, mxc_stream_closer_close, mxc_stream_closer_free,
-    mxc_string_free, mxc_version, MxcErrorDetail, MxcRunResult, MxcSandbox,
+    mxc_available_backends_json, mxc_platform_support_json, mxc_run_request, mxc_run_result_free,
+    mxc_sandbox_stderr_closer, mxc_sandbox_stdout_closer, mxc_sandbox_warnings_json,
+    mxc_stream_closer_close, mxc_stream_closer_free, mxc_string_free, mxc_version, MxcRunResult,
 };
+#[cfg(target_os = "windows")]
+use mxc_ffi::{
+    mxc_error_detail_free, mxc_probe_request_json, mxc_probe_request_json_with_error,
+    mxc_probe_sandbox_request_json_with_error, MxcErrorDetail,
+};
+#[cfg(target_os = "linux")]
+use mxc_ffi::{mxc_error_detail_free, mxc_spawn_request, MxcErrorDetail, MxcSandbox};
 
 /// An empty, all-null result to hand to `mxc_run_request`.
 fn zeroed_result() -> MxcRunResult {
@@ -95,6 +101,158 @@ fn extern_discovery_returns_owned_json() {
     }
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn extern_request_probe_parses_and_returns_owned_json() {
+    let request = CString::new(
+        r#"{
+            "version": "0.9.0-alpha",
+            "containment": "processcontainer",
+            "process": { "commandLine": "cmd /c exit 0" }
+        }"#,
+    )
+    .unwrap();
+
+    // SAFETY: the request is a valid NUL-terminated UTF-8 string.
+    let output = unsafe { mxc_probe_request_json(request.as_ptr()) };
+    assert!(!output.is_null());
+    // SAFETY: a non-null probe result is an owned NUL-terminated UTF-8 string.
+    let json = unsafe { CStr::from_ptr(output) }.to_str().unwrap();
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert!(value.get("warnings").is_some());
+    assert!(value.get("probes").is_some());
+
+    // SAFETY: `output` is an owned result from the FFI.
+    unsafe { mxc_string_free(output) };
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn extern_request_probe_accepts_null_as_default_request() {
+    // SAFETY: null is the documented default-request input.
+    let output = unsafe { mxc_probe_request_json(ptr::null()) };
+    assert!(!output.is_null());
+    // SAFETY: `output` is an owned result from the FFI.
+    unsafe { mxc_string_free(output) };
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn extern_request_probe_rejects_malformed_and_unsupported_requests() {
+    for (request, expected_status, expected_detail) in [
+        (
+            "not json",
+            mxc_ffi::MXC_STATUS_MALFORMED_REQUEST,
+            "Configuration parse error",
+        ),
+        (
+            r#"{
+            "version": "0.9.0-alpha",
+            "containment": "wslc",
+            "process": { "commandLine": "echo hi" }
+        }"#,
+            mxc_ffi::MXC_STATUS_UNSUPPORTED_CONTAINMENT,
+            "ProcessContainer",
+        ),
+        (
+            r#"{
+            "version": "0.9.0-alpha",
+            "phase": "exec",
+            "sandboxId": "wslc:test",
+            "process": { "commandLine": "echo hi" }
+        }"#,
+            mxc_ffi::MXC_STATUS_MALFORMED_REQUEST,
+            "one-shot",
+        ),
+    ] {
+        let request = CString::new(request).unwrap();
+        let mut output = ptr::null_mut();
+        // SAFETY: this all-null representation is valid for MxcErrorDetail.
+        let mut error: MxcErrorDetail = unsafe { std::mem::zeroed() };
+        // SAFETY: the request is a valid NUL-terminated UTF-8 string.
+        let status =
+            unsafe { mxc_probe_request_json_with_error(request.as_ptr(), &mut output, &mut error) };
+        assert_eq!(status, expected_status);
+        assert!(output.is_null());
+        assert!(!error.message_utf8.is_null());
+        // SAFETY: the detailed probe filled a valid owned C string.
+        let message = unsafe { CStr::from_ptr(error.message_utf8) }.to_string_lossy();
+        assert!(
+            message.contains(expected_detail),
+            "unexpected detail for status {status}: {message}"
+        );
+        // SAFETY: the detailed probe initialized this owned error detail.
+        unsafe { mxc_error_detail_free(&mut error) };
+
+        // The compatibility ABI remains null-only for existing consumers.
+        // SAFETY: the request remains a valid NUL-terminated UTF-8 string.
+        assert!(unsafe { mxc_probe_request_json(request.as_ptr()) }.is_null());
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn extern_binding_request_probe_uses_the_canonical_interchange() {
+    let request = CString::new(
+        r#"{
+            "policy": {},
+            "command": "cmd /c exit 0",
+            "containment": { "type": "processContainer" }
+        }"#,
+    )
+    .unwrap();
+    let mut output = ptr::null_mut();
+    // SAFETY: this all-null representation is valid for MxcErrorDetail.
+    let mut error: MxcErrorDetail = unsafe { std::mem::zeroed() };
+
+    // SAFETY: the request is a valid C string and both out-parameters are writable.
+    let status = unsafe {
+        mxc_probe_sandbox_request_json_with_error(request.as_ptr(), &mut output, &mut error)
+    };
+
+    assert_eq!(status, mxc_ffi::MXC_STATUS_SUCCESS);
+    assert!(!output.is_null());
+    assert!(error.message_utf8.is_null());
+    // SAFETY: both values were initialized by the FFI call.
+    unsafe {
+        mxc_string_free(output);
+        mxc_error_detail_free(&mut error);
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn extern_binding_request_probe_rejects_non_process_container() {
+    let request = CString::new(
+        r#"{
+            "policy": {},
+            "command": "echo hi",
+            "containment": {
+                "type": "wslc",
+                "image": "python:3.12"
+            }
+        }"#,
+    )
+    .unwrap();
+    let mut output = ptr::null_mut();
+    // SAFETY: this all-null representation is valid for MxcErrorDetail.
+    let mut error: MxcErrorDetail = unsafe { std::mem::zeroed() };
+
+    // SAFETY: the request is a valid C string and both out-parameters are writable.
+    let status = unsafe {
+        mxc_probe_sandbox_request_json_with_error(request.as_ptr(), &mut output, &mut error)
+    };
+
+    assert_eq!(status, mxc_ffi::MXC_STATUS_UNSUPPORTED_CONTAINMENT);
+    assert!(output.is_null());
+    assert!(!error.message_utf8.is_null());
+    // SAFETY: the detailed probe filled a valid owned C string.
+    let message = unsafe { CStr::from_ptr(error.message_utf8) }.to_string_lossy();
+    assert!(message.contains("got wslc"), "unexpected detail: {message}");
+    // SAFETY: the FFI call initialized this owned error detail.
+    unsafe { mxc_error_detail_free(&mut error) };
+}
+
 #[test]
 fn extern_streaming_warning_and_closer_preconditions_are_safe() {
     let mut warnings = ptr::dangling_mut();
@@ -117,37 +275,6 @@ fn extern_streaming_warning_and_closer_preconditions_are_safe() {
 }
 
 #[test]
-fn extern_run_request_maps_capture_denials_to_process_container() {
-    let request = CString::new(
-        r#"{
-            "policy": { "version": "0.7.0-alpha" },
-            "command": "echo hi",
-            "containment": {
-                "type": "processContainer",
-                "captureDenials": {}
-            }
-        }"#,
-    )
-    .unwrap();
-    let mut out = zeroed_result();
-    // SAFETY: a valid C string and writable result storage.
-    let status = unsafe { mxc_run_request(request.as_ptr(), &mut out) };
-
-    assert_eq!(status, mxc_ffi::MXC_STATUS_MALFORMED_REQUEST);
-    // SAFETY: the message is a valid C string filled by `mxc_run_request`.
-    let message = unsafe { CStr::from_ptr(out.error.message_utf8) }
-        .to_str()
-        .unwrap();
-    assert!(
-        message.contains("processContainer.captureDenials requires schema version 0.8"),
-        "unexpected message: {message}"
-    );
-
-    // SAFETY: `out` was filled by `mxc_run_request`.
-    unsafe { mxc_run_result_free(&mut out) };
-}
-
-#[test]
 fn extern_run_request_rejects_null_result_before_parsing() {
     // Invalid UTF-8 would win if the request were parsed before the mandatory
     // result pointer was checked.
@@ -156,40 +283,6 @@ fn extern_run_request_rejects_null_result_before_parsing() {
     let status = unsafe { mxc_run_request(invalid_utf8.as_ptr().cast(), ptr::null_mut()) };
 
     assert_eq!(status, mxc_ffi::MXC_STATUS_NULL_ARGUMENT);
-}
-
-#[test]
-fn extern_spawn_request_maps_capture_denials_to_process_container() {
-    let request = CString::new(
-        r#"{
-            "policy": { "version": "0.7.0-alpha" },
-            "command": "echo hi",
-            "containment": {
-                "type": "processContainer",
-                "captureDenials": {}
-            }
-        }"#,
-    )
-    .unwrap();
-    let mut handle: *mut MxcSandbox = ptr::null_mut();
-    // SAFETY: `MxcErrorDetail` contains integers and nullable pointers.
-    let mut error: MxcErrorDetail = unsafe { std::mem::zeroed() };
-    // SAFETY: valid request and writable fresh out-parameters.
-    let status = unsafe { mxc_spawn_request(request.as_ptr(), &mut handle, &mut error) };
-
-    assert_eq!(status, mxc_ffi::MXC_STATUS_MALFORMED_REQUEST);
-    assert!(handle.is_null());
-    // SAFETY: the message is a valid C string filled by `mxc_spawn_request`.
-    let message = unsafe { CStr::from_ptr(error.message_utf8) }
-        .to_str()
-        .unwrap();
-    assert!(
-        message.contains("processContainer.captureDenials requires schema version 0.8"),
-        "unexpected message: {message}"
-    );
-
-    // SAFETY: `error` was filled by `mxc_spawn_request`.
-    unsafe { mxc_error_detail_free(&mut error) };
 }
 
 /// A real run requires a host backend; on Windows that means an elevated,
@@ -201,7 +294,6 @@ fn extern_run_executes_command() {
     let request = CString::new(
         r#"{
             "policy":{
-                "version":"0.7.0-alpha",
                 "filesystem":{"readwritePaths":["C:\\Windows\\Temp"]}
             },
             "command":"cmd /c echo hello-ffi"
@@ -221,4 +313,43 @@ fn extern_run_executes_command() {
 
     // SAFETY: `out` was filled by `mxc_run_request`.
     unsafe { mxc_run_result_free(&mut out) };
+}
+
+/// Pins that `mxc_spawn_request` reaches the LXC backend rather than refusing
+/// the containment.
+///
+/// The empty distribution makes LXC refuse before creating a container, so the
+/// result is the same on every Linux host.
+#[cfg(target_os = "linux")]
+#[test]
+fn extern_spawn_request_reaches_the_lxc_backend() {
+    let request = CString::new(
+        r#"{
+            "policy": {},
+            "command": "echo hello-lxc",
+            "containment": { "type": "lxc", "distribution": "", "release": "" }
+        }"#,
+    )
+    .unwrap();
+    let mut handle: *mut MxcSandbox = ptr::null_mut();
+    // SAFETY: `MxcErrorDetail` contains integers and nullable pointers.
+    let mut error: MxcErrorDetail = unsafe { std::mem::zeroed() };
+    // SAFETY: valid request and writable fresh out-parameters.
+    let status = unsafe { mxc_spawn_request(request.as_ptr(), &mut handle, &mut error) };
+
+    assert_ne!(
+        status,
+        mxc_ffi::MXC_STATUS_UNSUPPORTED_CONTAINMENT,
+        "the engine must route LXC to a real backend arm on Linux"
+    );
+    assert!(handle.is_null());
+    // SAFETY: the message is a valid C string filled by `mxc_spawn_request`.
+    let message = unsafe { CStr::from_ptr(error.message_utf8) }
+        .to_str()
+        .unwrap();
+    // Only the LXC backend produces a message opening with `LXC`.
+    assert!(message.starts_with("LXC"), "unexpected message: {message}");
+
+    // SAFETY: `error` was filled by `mxc_spawn_request`.
+    unsafe { mxc_error_detail_free(&mut error) };
 }

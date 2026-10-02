@@ -7,7 +7,9 @@
 //   - Windows 11 with WSL2 and the WSLC runtime installed
 //   - mxc_ffi.dll built with the wslc feature
 //   - wslcsdk.dll and wxc-wslc-daemon.exe staged with mxc_ffi.dll
-//   - alpine:latest pre-pulled, or MXC_WSLC_TEST_IMAGE set to another image
+//   - alpine:latest already in the daemon session cache, since these provision
+//     with the default isolated posture, which refuses a registry pull
+//     (MXC_WSLC_TEST_IMAGE selects another image)
 //
 // Opt in with MXC_ENABLE_WSLC_TESTS=1.
 
@@ -16,6 +18,8 @@ import os from 'node:os';
 import { describe, it } from 'node:test';
 import {
   MxcError,
+} from '@microsoft/mxc-sdk';
+import {
   deprovisionSandbox,
   execInSandbox,
   execInSandboxAsync,
@@ -24,7 +28,7 @@ import {
   stopSandbox,
   type ExecResult,
   type SandboxId,
-} from '@microsoft/mxc-sdk';
+} from '@microsoft/mxc-sdk/v1';
 import { safeDeprovision } from './test-helpers.js';
 
 const wslcImage = process.env.MXC_WSLC_TEST_IMAGE ?? 'alpine:latest';

@@ -4,13 +4,20 @@
 //! Tests for the ported SDK helpers: policy discovery, platform support, and
 //! the SandboxPolicy -> SandboxRequest builder.
 
-use mxc_sdk::{
-    available_tools_policy, build_request, platform_support, temporary_files_policy,
-    user_profile_policy, SandboxPolicy,
+use mxc_sdk::platform_support;
+use mxc_sdk::v1::{
+    available_tools_policy, build_request, temporary_files_policy, user_profile_policy,
+    SandboxPolicy,
 };
+#[cfg(target_os = "windows")]
+use mxc_sdk::v1::{build_request_with_containment, Containment, WslcSection};
+#[cfg(target_os = "windows")]
+use mxc_sdk::ErrorCode;
 
 #[cfg(target_os = "macos")]
-use mxc_sdk::{spawn_sandbox, WaitOutcome};
+use mxc_sdk::v1::spawn_sandbox;
+#[cfg(target_os = "macos")]
+use mxc_sdk::WaitOutcome;
 
 fn env_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
@@ -119,105 +126,8 @@ fn user_profile_policy_does_not_panic() {
 }
 
 #[test]
-fn build_request_rejects_empty_version() {
-    // Parity with the SDK, which throws "Policy version is required".
-    let policy = SandboxPolicy {
-        version: String::new(),
-        filesystem: None,
-        network: None,
-        ui: None,
-        timeout_ms: None,
-    };
-
-    let err = build_request(&policy, "echo hello", None)
-        .expect_err("an empty policy version must be rejected");
-    assert_eq!(err.code, mxc_sdk::ErrorCode::MalformedRequest);
-}
-
-#[test]
-fn build_request_host_rules_require_outbound() {
-    let mut network = mxc_sdk::policy::NetworkSection::default();
-    network.allowed_hosts = vec!["192.0.2.10".to_string()];
-
-    let policy = SandboxPolicy {
-        version: "0.7.0-alpha".to_string(),
-        filesystem: None,
-        network: Some(network),
-        ui: None,
-        timeout_ms: None,
-    };
-
-    // Unix backends accept host rules without `allowOutbound`; only Windows
-    // ProcessContainer requires it. Either way this must not panic.
-    let result = build_request(&policy, "echo hello", None);
-    if cfg!(any(target_os = "linux", target_os = "macos")) {
-        assert!(
-            result.is_ok(),
-            "Linux/macOS accept host rules without allowOutbound (matching the SDK)"
-        );
-    } else {
-        assert!(
-            result.is_err(),
-            "Windows ProcessContainer requires allowOutbound for host rules"
-        );
-    }
-}
-
-#[test]
-fn build_request_blocklist_only_defers_shared_semantic_validation() {
-    let mut network = mxc_sdk::policy::NetworkSection::default();
-    network.blocked_hosts = vec!["198.51.100.10".to_string()];
-
-    let policy = SandboxPolicy {
-        version: "0.7.0-alpha".to_string(),
-        filesystem: None,
-        network: Some(network),
-        ui: None,
-        timeout_ms: None,
-    };
-
-    let result = build_request(&policy, "echo hello", None);
-    if cfg!(any(target_os = "linux", target_os = "macos")) {
-        assert!(
-            result.is_ok(),
-            "Unix SDK construction must defer host-list semantics to backend validation"
-        );
-    } else {
-        assert!(
-            result
-                .expect_err("Windows ProcessContainer requires allowOutbound for host rules")
-                .message
-                .contains("allowedHosts/blockedHosts require allowOutbound"),
-            "Windows must retain its platform-specific authoring requirement"
-        );
-    }
-}
-
-#[test]
-fn rust_sdk_builds_legacy_networking() {
-    use mxc_sdk::policy::NetworkSection;
-
-    let mut network = NetworkSection::default();
-    network.allow_outbound = true;
-    network.allow_local_network = true;
-    network.allowed_hosts = vec!["192.0.2.10".to_string()];
-    network.blocked_hosts = vec!["198.51.100.10".to_string()];
-
-    let policy = SandboxPolicy {
-        version: "0.7.0-alpha".to_string(),
-        filesystem: None,
-        network: Some(network),
-        ui: None,
-        timeout_ms: None,
-    };
-
-    build_request(&policy, "echo hello", None)
-        .expect("the Rust SDK should build legacy networking");
-}
-
-#[test]
 fn rust_sdk_builds_directional_networking() {
-    use mxc_sdk::policy::{
+    use mxc_sdk::v1::policy::{
         NetworkAction, NetworkEgressSection, NetworkIngressSection, NetworkSection,
     };
 
@@ -230,13 +140,8 @@ fn rust_sdk_builds_directional_networking() {
     network.egress = Some(egress);
     network.ingress = Some(ingress);
 
-    let policy = SandboxPolicy {
-        version: "0.8.0-alpha".to_string(),
-        filesystem: None,
-        network: Some(network),
-        ui: None,
-        timeout_ms: None,
-    };
+    let mut policy = SandboxPolicy::default();
+    policy.network = Some(network);
 
     build_request(&policy, "echo hello", None)
         .expect("the Rust SDK should build directional networking");
@@ -244,12 +149,12 @@ fn rust_sdk_builds_directional_networking() {
 
 #[test]
 fn rust_sdk_builds_directional_process_container_networking_and_capture() {
-    use mxc_sdk::configs::{CaptureDenials, ProcessContainer, ProcessContainerNetwork};
-    use mxc_sdk::policy::{
+    use mxc_sdk::v1::configs::{CaptureDenials, ProcessContainer, ProcessContainerNetwork};
+    use mxc_sdk::v1::policy::{
         NetworkAction, NetworkEgressSection, NetworkIngressSection, NetworkSection,
         RuntimeConfigSection,
     };
-    use mxc_sdk::{build_request_with_containment, Containment};
+    use mxc_sdk::v1::{build_request_with_containment, Containment};
 
     let mut egress = NetworkEgressSection::default();
     egress.default = Some(NetworkAction::Deny);
@@ -263,13 +168,8 @@ fn rust_sdk_builds_directional_process_container_networking_and_capture() {
     network.ingress = Some(ingress);
     network.runtime_config = Some(runtime_config);
 
-    let policy = SandboxPolicy {
-        version: "0.8.0-alpha".to_string(),
-        filesystem: None,
-        network: Some(network),
-        ui: None,
-        timeout_ms: None,
-    };
+    let mut policy = SandboxPolicy::default();
+    policy.network = Some(network);
     let mut process_network = ProcessContainerNetwork::default();
     process_network.allowed_proxy_peer = Some("Contoso.Proxy_123".to_string());
     let mut process_container = ProcessContainer::default();
@@ -288,18 +188,14 @@ fn rust_sdk_builds_directional_process_container_networking_and_capture() {
 #[cfg(target_os = "macos")]
 #[test]
 fn build_request_then_run_seatbelt() {
-    let policy = SandboxPolicy {
-        version: "0.7.0-alpha".to_string(),
-        filesystem: Some(mxc_sdk::policy::FilesystemSection {
-            readwrite_paths: vec!["/tmp".to_string()],
-            readonly_paths: vec![],
-            denied_paths: vec![],
-            clear_policy_on_exit: None,
-        }),
-        network: None,
-        ui: None,
-        timeout_ms: Some(10000),
-    };
+    let mut policy = SandboxPolicy::default();
+    policy.filesystem = Some(mxc_sdk::v1::policy::FilesystemSection {
+        readwrite_paths: vec!["/tmp".to_string()],
+        readonly_paths: vec![],
+        denied_paths: vec![],
+        clear_policy_on_exit: None,
+    });
+    policy.timeout_ms = Some(10000);
 
     let request = build_request(&policy, "echo built-from-policy", None)
         .expect("build_request should succeed");
@@ -316,16 +212,50 @@ fn build_request_then_run_seatbelt() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn platform_support_linux_reports_only_bubblewrap() {
+fn platform_support_linux_reports_the_backends_it_can_launch() {
+    // Asserted as invariants rather than by re-running the probes: an
+    // expectation rebuilt from the same calls `platform_support` makes has no
+    // independent oracle and cannot fail. The LXC-only and both-present
+    // matrices are pinned by the injected-probe tests in `mxc_engine`.
     let support = platform_support();
-    // Bubblewrap is the only SDK-launchable Linux backend; `lxc` is a
-    // host-capability backend reported by `available_backends()`, not here.
-    // Assert the exact set so re-advertising a non-launchable backend fails.
+
+    for method in &support.available_methods {
+        assert!(
+            matches!(method.as_str(), "lxc" | "bubblewrap"),
+            "only the two SDK-launchable Linux backends may be reported, got: {method}"
+        );
+    }
     assert_eq!(
-        support.available_methods,
-        vec!["bubblewrap".to_string()],
-        "Linux platform_support must report exactly bubblewrap (lxc excluded)"
+        support.available_methods.len(),
+        support
+            .available_methods
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        "a backend must not be reported twice: {:?}",
+        support.available_methods
     );
+    assert_eq!(
+        support.is_supported,
+        !support.available_methods.is_empty(),
+        "a host with a launchable backend must report itself supported, and one \
+         without must not: {support:?}"
+    );
+    assert_eq!(
+        support.bubblewrap_network.is_some(),
+        support
+            .available_methods
+            .iter()
+            .any(|method| method == "bubblewrap"),
+        "the bubblewrap network capability is reported exactly when bubblewrap is: {support:?}"
+    );
+    if support.available_methods.len() == 2 {
+        assert_eq!(
+            support.available_methods,
+            ["lxc", "bubblewrap"],
+            "the reported order must match the TypeScript SDK's"
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -365,6 +295,42 @@ fn platform_support_windows_omits_wslc_when_not_compiled_in() {
         "wslc must not be advertised without the feature: {:?}",
         support.available_methods
     );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn request_probe_accepts_default_and_typed_requests() {
+    let _: fn(
+        Option<&mxc_sdk::v1::SandboxRequest>,
+    ) -> Result<mxc_sdk::ProbeOutput, mxc_sdk::Error> = mxc_sdk::v1::probe;
+
+    let policy = SandboxPolicy::default();
+    let request = build_request(&policy, "cmd /c exit 0", None)
+        .expect("default ProcessContainer request should build");
+
+    for request in [None, Some(&request)] {
+        let output = mxc_sdk::v1::probe(request).expect("ProcessContainer request should probe");
+        let _: &mxc_sdk::ProbeFacts = &output.probes;
+        let _: &mxc_sdk::UiCapabilitySupport = &output.probes.ui_capabilities;
+        assert!(!output.warnings.iter().any(String::is_empty));
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn request_probe_rejects_non_process_container_requests() {
+    let policy = SandboxPolicy::default();
+    let request = build_request_with_containment(
+        &policy,
+        &Containment::Wslc(WslcSection::default()),
+        "echo hi",
+        None,
+    )
+    .expect("WSLC request should build");
+
+    let error = mxc_sdk::v1::probe(Some(&request))
+        .expect_err("request probe should reject non-ProcessContainer containment");
+    assert_eq!(error.code, ErrorCode::UnsupportedContainment);
 }
 
 #[test]

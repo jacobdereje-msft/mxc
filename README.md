@@ -185,11 +185,10 @@ npm install @microsoft/mxc-sdk
 ```
 
 ```typescript
+import { getPlatformSupport, spawnSandboxFromConfig } from '@microsoft/mxc-sdk';
 import {
-  spawnSandboxFromConfig, createConfigFromPolicy,
-  getAvailableToolsPolicy, getTemporaryFilesPolicy,
-  getPlatformSupport,
-} from '@microsoft/mxc-sdk';
+  createConfigFromPolicy, getAvailableToolsPolicy, getTemporaryFilesPolicy,
+} from '@microsoft/mxc-sdk/v1';
 
 if (!getPlatformSupport().isSupported) {
   throw new Error('MXC not available on this host');
@@ -199,12 +198,14 @@ const tools = getAvailableToolsPolicy(process.env);
 const temp  = getTemporaryFilesPolicy();
 
 const config = createConfigFromPolicy({
-  version: '0.6.0-alpha',
   filesystem: {
     readonlyPaths:  tools.readonlyPaths,
     readwritePaths: temp.readwritePaths,
   },
-  network: { allowOutbound: false },
+  network: {
+    egress:  { default: 'deny' },
+    ingress: { default: 'deny', hostLoopback: 'deny' },
+  },
   timeoutMs: 30_000,
 });
 config.process!.commandLine = 'python -c "print(\'hello from sandbox\')"';
@@ -220,7 +221,7 @@ The SDK also provides a **state-aware lifecycle** API for long-lived sandboxes:
 import {
   provisionSandbox, startSandbox, execInSandboxAsync,
   stopSandbox, deprovisionSandbox,
-} from '@microsoft/mxc-sdk';
+} from '@microsoft/mxc-sdk/v1';
 ```
 
 See the [SDK README](sdk/node/README.md) for full API documentation.
@@ -242,6 +243,15 @@ wxc-exec.exe --debug config.json
 ```
 
 See [docs/diagnostics.md](docs/diagnostics.md) for full diagnostics reference.
+
+### Request-aware ProcessContainer probe
+
+On Windows, `wxc-exec --probe [config.json]`, Node.js
+`probeSandboxSupport(config?)`, and .NET `MxcSandbox.Probe(request?)` use the
+shared engine probe to report the ProcessContainer tier and host facts for a
+specific request. The SDK calls use the structured `mxc_ffi` C ABI in process;
+they do not create a sandbox, and preserve native, parse, and unsupported
+containment errors.
 
 ### Audit Mode (Permissive Learning Mode)
 

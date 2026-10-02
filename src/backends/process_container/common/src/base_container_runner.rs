@@ -414,16 +414,15 @@ impl BaseContainerRunner {
                 ))
             })?;
         if !version_supported {
-            return Err(ScriptResponse {
-                failure_phase: FailurePhase::Rejected,
-                ..ScriptResponse::error(if !request.policy.enumerate_paths.is_empty() {
+            return Err(ScriptResponse::rejected(
+                if !request.policy.enumerate_paths.is_empty() {
                     PSEC_ENUMERATE_PATHS_UNSUPPORTED_MSG
                 } else if unrestricted_host_loopback_allowed(&request.policy) {
                     PSEC_INGRESS_UNSUPPORTED_MSG
                 } else {
                     "the required Process Security Environment schema version is not supported"
-                })
-            });
+                },
+            ));
         }
 
         // Launch builtin test proxy if requested (before building spec so we have the port).
@@ -1149,12 +1148,12 @@ impl SandboxBackend for BaseContainerRunner {
         validate_required_child_env(request)?;
         validate_network_policy_support(request, self.network_policy_support())?;
         if !request.policy.allowed_hosts.is_empty() || !request.policy.blocked_hosts.is_empty() {
-            return Err(ScriptResponse::error(
+            return Err(ScriptResponse::rejected(
                 wxc_common::error::HOST_LISTS_NOT_SUPPORTED_MSG,
             ));
         }
         if has_conflicting_proxy_identity(&request.policy) {
-            return Err(ScriptResponse::error(
+            return Err(ScriptResponse::rejected(
                 "processContainer.network.allowedProxyPeer grants loopback access only to the \
                  specified peer and cannot be combined with \
                  network.ingress.hostLoopback='allow', which grants unrestricted host-loopback \
@@ -1178,7 +1177,7 @@ impl SandboxBackend for BaseContainerRunner {
             });
         }
         if request.policy.least_privilege_mode {
-            return Err(ScriptResponse::error(
+            return Err(ScriptResponse::rejected(
                 "the process-security-environment path cannot be combined with \
                  processContainer.leastPrivilege because it does not support LPAC tokens",
             ));
@@ -2042,8 +2041,9 @@ mod tests {
     use process_security_environment_spec::process_security_environment_layout as psec_layout;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wxc_common::models::{
-        ContainerPolicy, DefaultEnvCompatibility, NetworkAction, NetworkCidr, NetworkPeer,
-        NetworkPolicy, NetworkPort, NetworkProtocol, NetworkRule, ProxyConfig,
+        BaseProcessUiConfig, ClipboardPolicy, ContainerPolicy, DefaultEnvCompatibility,
+        NetworkAction, NetworkCidr, NetworkPeer, NetworkPolicy, NetworkPort, NetworkProtocol,
+        NetworkRule, ProxyConfig, UiPolicy,
     };
     use wxc_common::ui_policy::EffectiveUiRestrictions;
 
@@ -2736,6 +2736,28 @@ mod tests {
         assert_eq!(egress.default_action(), psec_layout::FilterAction::deny);
         assert!(egress.allow().is_none());
         assert!(egress.deny().is_none());
+    }
+
+    #[test]
+    fn permissive_ui_policy_serializes_no_tier1_ui_restrictions() {
+        let mut request = ExecutionRequest::default();
+        request.policy.ui = UiPolicy {
+            disable: false,
+            clipboard: ClipboardPolicy::All,
+            injection: true,
+        };
+        request.policy.base_process_ui = BaseProcessUiConfig {
+            isolation: "desktop".to_string(),
+            desktop_system_control: true,
+            system_settings: "all".to_string(),
+            ime: true,
+        };
+
+        let bytes = BaseContainerRunner::build_process_security_environment_spec(&request);
+        let spec = psec_layout::root_as_process_security_environment(&bytes).unwrap();
+
+        assert!(!spec.disallow_win32k_system_calls());
+        assert_eq!(spec.ui_restrictions(), 0);
     }
 
     #[test]

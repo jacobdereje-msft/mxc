@@ -65,7 +65,7 @@ public interface ISandboxProcess : IDisposable
 }
 
 /// <summary>
-/// A live sandboxed process spawned by <see cref="MxcSandbox.Spawn(SandboxPolicy, string)"/>.
+/// A live sandboxed process spawned by <see cref="V1.MxcSandbox.Spawn(V1.SandboxPolicy, string)"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -157,7 +157,7 @@ public sealed class MxcSandboxProcess : ISandboxProcess
     /// </summary>
     /// <remarks>
     /// Returns <c>0</c> for a process obtained from
-    /// <see cref="MxcLifecycle.ExecInSandbox"/>: a state-aware exec is driven by
+    /// <see cref="V1.MxcLifecycle.ExecInSandbox"/>: a state-aware exec is driven by
     /// the backend behind its own waiter/terminator and exposes no OS process id.
     /// </remarks>
     public uint Id
@@ -276,7 +276,7 @@ public sealed class MxcSandboxProcess : ISandboxProcess
                         var text = Marshal.PtrToStringUTF8((IntPtr)json);
                         return string.IsNullOrEmpty(text)
                             ? Array.Empty<string>()
-                            : JsonSerializer.Deserialize<string[]>(text) ?? Array.Empty<string>();
+                            : MxcJson.Deserialize<string[]>(text) ?? Array.Empty<string>();
                     }
                     finally
                     {
@@ -317,7 +317,7 @@ public sealed class MxcSandboxProcess : ISandboxProcess
                         var text = Marshal.PtrToStringUTF8((IntPtr)json);
                         return string.IsNullOrEmpty(text)
                             ? null
-                            : JsonSerializer.Deserialize<SandboxOutputMetadata>(text);
+                            : MxcJson.Deserialize<SandboxOutputMetadata>(text);
                     }
                     finally
                     {
@@ -390,8 +390,8 @@ public sealed class MxcSandboxProcess : ISandboxProcess
 
     /// <summary>
     /// Block until the child exits (honouring
-    /// <see cref="SandboxPolicy.TimeoutMs"/> or
-    /// <see cref="StateAwareExecOptions.TimeoutMs"/>), draining any standard
+    /// <see cref="V1.SandboxPolicy.TimeoutMs"/> or
+    /// <see cref="V1.StateAwareExecOptions.TimeoutMs"/>), draining any standard
     /// stream you did not take so the child cannot block on a full pipe.
     /// </summary>
     /// <returns>The exit code, or a timed-out result.</returns>

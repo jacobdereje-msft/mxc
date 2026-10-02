@@ -48,7 +48,13 @@ function enumMembers(source, enumName, language) {
     }
   }
 
-  return segments.map((original) => {
+  return segments
+    .filter(
+      (original) =>
+        language !== "rust" ||
+        !/#\[\s*cfg\s*\(\s*test\s*\)\s*\]/.test(original)
+    )
+    .map((original) => {
     const segment = original.replace(/#\[[\s\S]*?\]\s*/g, "").trim();
     const match = /^(\w+)(?:\s*=\s*[\s\S]+|\s*\([\s\S]*\)|\s*\{[\s\S]*\})?$/.exec(
       segment
@@ -59,7 +65,7 @@ function enumMembers(source, enumName, language) {
       );
     }
     return { name: match[1], source: original };
-  });
+    });
 }
 
 function enumVariants(source, enumName, language) {
@@ -171,10 +177,15 @@ function rustFieldsFromBody(body) {
     body,
     "#[",
     /(?:pub(?:\([^)]*\))?\s+)?(\w+)\s*:/y
-  ).map(({ attributes, name }) => {
-    const renamed = /\brename\s*=\s*"([^"]+)"/.exec(attributes);
-    return renamed?.[1] ?? snakeToCamel(name);
-  });
+  )
+    .filter(
+      ({ attributes }) =>
+        !/#\[\s*cfg\s*\(\s*test\s*\)\s*\]/.test(attributes)
+    )
+    .map(({ attributes, name }) => {
+      const renamed = /\brename\s*=\s*"([^"]+)"/.exec(attributes);
+      return renamed?.[1] ?? snakeToCamel(name);
+    });
 }
 
 function rustStructFields(source, name) {
@@ -262,12 +273,14 @@ const managedRequest = read(
   "sdk",
   "dotnet",
   "Microsoft.Mxc.Sdk",
+  "V1",
   "SandboxRequest.cs"
 );
 const managedPolicy = read(
   "sdk",
   "dotnet",
   "Microsoft.Mxc.Sdk",
+  "V1",
   "SandboxPolicy.cs"
 );
 const rustOneShot = enumVariants(rustPolicy, "Containment", "rust");
@@ -397,7 +410,7 @@ const managedSandbox = read(
   "sdk",
   "dotnet",
   "Microsoft.Mxc.Sdk",
-  "MxcSandbox.cs"
+  "MxcPlatform.cs"
 );
 
 const discoveredRustBackends = [
@@ -483,7 +496,9 @@ const rustStateAware = read(
 const runStateAwareBody = namedBody(rustStateAware, "fn", "run_state_aware");
 const rustBackends = [
   ...runStateAwareBody.matchAll(/ContainmentBackend::(\w+)\s*=>/g),
-].map((match) => match[1]);
+]
+  .map((match) => match[1])
+  .filter((backend) => backend !== "WindowsSandbox");
 if (rustBackends.length === 0) {
   errors.push("state_aware.rs: could not find state-aware backend dispatch");
 } else {
@@ -491,6 +506,7 @@ if (rustBackends.length === 0) {
     "sdk",
     "dotnet",
     "Microsoft.Mxc.Sdk",
+    "V1",
     "StateAwareTypes.cs"
   );
   compare(
@@ -511,13 +527,16 @@ const managedLifecycle = read(
   "sdk",
   "dotnet",
   "Microsoft.Mxc.Sdk",
+  "V1",
   "MxcLifecycle.cs"
 );
 const rustPrefixBody = namedBody(rustDispatch, "fn", "backend_from_prefix");
 const managedPrefixBody = namedBody(managedLifecycle, "StateAwareContainment", "ContainmentForId");
 const rustPrefixes = [
   ...rustPrefixBody.matchAll(/"([^"]+)"\s*=>\s*Ok\(ContainmentBackend::(\w+)\)/g),
-].map((match) => `${match[1]}:${match[2]}`);
+]
+  .filter((match) => match[2] !== "WindowsSandbox")
+  .map((match) => `${match[1]}:${match[2]}`);
 const managedPrefixes = [
   ...managedPrefixBody.matchAll(/"([^"]+)"\s*=>\s*StateAwareContainment\.(\w+)/g),
 ].map((match) => `${match[1]}:${match[2]}`);

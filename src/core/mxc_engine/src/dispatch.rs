@@ -13,13 +13,13 @@
 //! (Windows AppContainer / BaseContainer, with the full three-tier fallback —
 //! BaseContainer, AppContainer + BFS, AppContainer + DACL — shared with the
 //! run-to-completion path via `process_container_common::dispatcher`), Bubblewrap
-//! (Linux), Seatbelt (macOS), WSLC, and IsolationSession (Windows,
+//! and LXC (Linux), Seatbelt (macOS), WSLC, and IsolationSession (Windows,
 //! behind the `wslc` and `isolation_session` features). Every other backend —
 //! including the remaining experimental ones (Windows Sandbox, MicroVM,
-//! Hyperlight) and LXC (no streaming path suitable for the library) — returns
-//! [`MxcError::unsupported_containment`]; callers that need those must drive the
-//! standalone executor binaries (whose run-to-completion path will, in a later
-//! increment, also route through this engine).
+//! Hyperlight) — returns [`MxcError::unsupported_containment`]; callers that
+//! need those must drive the standalone executor binaries (whose
+//! run-to-completion path will, in a later increment, also route through this
+//! engine).
 
 use wxc_common::logger::Logger;
 use wxc_common::models::{ContainmentBackend, ExecutionRequest, ScriptResponse};
@@ -72,6 +72,7 @@ pub fn spawn_runner(
     match &request.containment {
         ContainmentBackend::Seatbelt => spawn_seatbelt(request, logger),
         ContainmentBackend::Bubblewrap => spawn_bubblewrap(request, logger),
+        ContainmentBackend::Lxc => spawn_lxc(request, logger),
         ContainmentBackend::ProcessContainer => spawn_process_container(request, logger),
         ContainmentBackend::Wslc => spawn_wslc(request, logger),
         ContainmentBackend::IsolationSession => spawn_isolation_session(request, logger),
@@ -125,6 +126,34 @@ fn spawn_bubblewrap(
 ) -> Result<Box<dyn SandboxProcess>, MxcError> {
     Err(MxcError::unsupported_containment(
         "Bubblewrap is only available on Linux",
+    ))
+}
+
+/// Serves piped stdio. `lxc-exec` keeps the pty path, which cannot hand back a
+/// handle, so the two never share a launch.
+#[cfg(target_os = "linux")]
+fn spawn_lxc(
+    request: &ExecutionRequest,
+    logger: &mut Logger,
+) -> Result<Box<dyn SandboxProcess>, MxcError> {
+    use wxc_common::sandbox_process::{SandboxBackend, StdioMode};
+    let mut runner = lxc_common::lxc_runner::LxcScriptRunner::new(
+        &request.lxc_config,
+        &request.container_id,
+        &request.lifecycle,
+    );
+    runner
+        .spawn(request, logger, StdioMode::Pipes)
+        .map_err(map_spawn_error)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_lxc(
+    _request: &ExecutionRequest,
+    _logger: &mut Logger,
+) -> Result<Box<dyn SandboxProcess>, MxcError> {
+    Err(MxcError::unsupported_containment(
+        "LXC is only available on Linux",
     ))
 }
 
@@ -306,13 +335,7 @@ mod tests {
     use wxc_common::mxc_error::MxcErrorCode;
 
     fn minimal_policy() -> SandboxPolicy {
-        SandboxPolicy {
-            version: "0.7.0-alpha".to_string(),
-            filesystem: None,
-            network: None,
-            ui: None,
-            timeout_ms: None,
-        }
+        SandboxPolicy::default()
     }
 
     fn spawn_failure(
@@ -372,20 +395,19 @@ mod tests {
 
     #[test]
     fn streaming_rejects_unsupported_containment() {
-        // LXC has no streaming path in the library; selecting it must surface a
-        // clear `UnsupportedContainment` rather than spawning. The public
-        // `SandboxRequest` can't choose a backend, so drive dispatch with the
-        // internal model.
+        // `Vm` has no streaming arm on any host, so it stands in for every
+        // backend the catch-all must refuse. The public `SandboxRequest` can't
+        // choose a backend, so drive dispatch with the internal model.
         let mut request =
             build_request(&minimal_policy(), "echo hello", None).expect("build_request");
-        request.inner.containment = ContainmentBackend::Lxc;
+        request.inner.containment = ContainmentBackend::Vm;
         let mut logger = Logger::new(Mode::Buffer);
         let err = match spawn_runner(&request.inner, &mut logger) {
-            Ok(_) => panic!("LXC must be rejected"),
+            Ok(_) => panic!("Vm must be rejected"),
             Err(e) => e,
         };
         assert_eq!(err.code, MxcErrorCode::UnsupportedContainment);
-        assert!(err.message.contains("lxc"), "got: {}", err.message);
+        assert!(err.message.contains("vm"), "got: {}", err.message);
     }
 
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -403,7 +425,6 @@ mod tests {
         // A windowed (guiAccess) app needs inherited stdio, so it can't stream
         // over pipes — the backend must reject it rather than drop the GUI cap.
         let policy = SandboxPolicy {
-            version: "0.7.0-alpha".to_string(),
             filesystem: Some(crate::policy::FilesystemSection {
                 readwrite_paths: vec!["/tmp".to_string()],
                 readonly_paths: vec![],
@@ -446,13 +467,53 @@ mod tests {
         assert!(err.message.contains("Windows"), "got: {}", err.message);
     }
 
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn streaming_rejects_lxc_off_linux() {
+        // LXC is a Linux-host backend; selecting it anywhere else must be a
+        // clear `UnsupportedContainment` rather than a confusing spawn failure.
+        let mut request =
+            build_request(&minimal_policy(), "echo hello", None).expect("build_request");
+        request.inner.containment = ContainmentBackend::Lxc;
+        let mut logger = Logger::new(Mode::Buffer);
+        let err = match spawn_runner(&request.inner, &mut logger) {
+            Ok(_) => panic!("LXC must be rejected off Linux"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, MxcErrorCode::UnsupportedContainment);
+        assert!(err.message.contains("Linux"), "got: {}", err.message);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn streaming_lxc_reaches_the_backend_on_linux() {
+        // Locks the dispatch arm itself on the one host where it exists. The
+        // empty distribution is a backstop: whichever of LXC's own refusals
+        // fires first, all of them are reached only through this arm, and all
+        // of them come before a container name is claimed or a container
+        // created — so this needs neither LXC nor root.
+        let mut request =
+            build_request(&minimal_policy(), "echo hello", None).expect("build_request");
+        request.inner.containment = ContainmentBackend::Lxc;
+        request.inner.lxc_config.distribution = String::new();
+        request.inner.lxc_config.release = String::new();
+        let mut logger = Logger::new(Mode::Buffer);
+        let err = match spawn_runner(&request.inner, &mut logger) {
+            Ok(_) => panic!("an LXC request the backend refuses must not spawn"),
+            Err(e) => e,
+        };
+        assert_ne!(err.code, MxcErrorCode::UnsupportedContainment);
+        // Only `lxc_common` produces a message opening with `LXC`, so this is
+        // the request having reached the backend rather than the catch-all.
+        assert!(err.message.starts_with("LXC"), "got: {}", err.message);
+    }
+
     #[cfg(all(target_os = "windows", feature = "wslc"))]
     #[test]
     fn streaming_wslc_without_optin_reaches_policy_validation() {
         use crate::policy::{Containment, UiSection, WslcSection};
 
         let policy = SandboxPolicy {
-            version: "0.9.0-alpha".to_string(),
             ui: Some(UiSection::default()),
             ..minimal_policy()
         };

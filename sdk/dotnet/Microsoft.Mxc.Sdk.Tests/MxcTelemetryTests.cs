@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Mxc.Sdk;
+using Microsoft.Mxc.Sdk.V1;
 using Xunit;
 
 namespace Microsoft.Mxc.Sdk.Tests;
@@ -93,7 +94,6 @@ public sealed class MxcTelemetryTests : IDisposable
     {
         var policy = new SandboxPolicy
         {
-            Version = SchemaVersions.MaximumSupported,
             Telemetry = new TelemetrySettings { Enabled = true },
         };
 
