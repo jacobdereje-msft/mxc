@@ -47,10 +47,10 @@ Direct egress rules and `runtimeConfig.networkProxy` select different
 connectivity models and cannot be combined. Both ingress controls deny when
 omitted, and `hostLoopback` resolves independently of `ingress.default` rather
 than inheriting it, so host-loopback access must be requested explicitly.
-A ProcessContainer proxy requires
-`ingress.default: "allow"`. Identity-scoped proxies set `allowedProxyPeer` and
-keep `hostLoopback: "deny"`; identity-less host proxies omit
-`allowedProxyPeer` and choose either `hostLoopback` setting. `"allow"` also
+A ProcessContainer proxy requires `ingress.default: "allow"`. Identity-scoped
+proxies set a non-blank `allowedProxyPeer` and keep `hostLoopback: "deny"`;
+identity-less host proxies omit `allowedProxyPeer` and choose either
+`hostLoopback` setting. `"allow"` also
 opens both host-loopback directions, which is a weaker development/testing
 compatibility deployment and needs the PSEC 1.1 ingress contract. `"deny"`
 keeps the configured proxy endpoint alone and runs under PSEC 1.0. Neither

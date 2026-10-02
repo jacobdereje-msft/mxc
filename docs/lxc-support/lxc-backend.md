@@ -204,7 +204,8 @@ A request that permits nothing and names no proxy keeps its own loopback and rea
 ### SDK
 
 ```typescript
-import { spawnSandbox, SandboxPolicy } from '@microsoft/mxc-sdk';
+import { spawnSandboxFromConfig } from '@microsoft/mxc-sdk';
+import { createConfigFromPolicy, SandboxPolicy } from '@microsoft/mxc-sdk/v1';
 
 const policy: SandboxPolicy = {
     filesystem: {
@@ -212,15 +213,47 @@ const policy: SandboxPolicy = {
         readonlyPaths: ['/opt/tools'],
     },
     network: {
-        allowOutbound: false,
+        egress:  { default: 'deny' },
+        ingress: { default: 'deny', hostLoopback: 'deny' },
     },
 };
 
-// On Linux, this automatically uses lxc-exec
-const pty = spawnSandbox('echo hello', policy);
+// Select LXC explicitly: the default `process` intent resolves to Bubblewrap
+// on Linux. The resulting config runs through lxc-exec.
+const config = createConfigFromPolicy(policy, 'lxc');
+config.process!.commandLine = 'echo hello';
+
+const pty = spawnSandboxFromConfig(config);
 pty.onData((data) => console.log(data));
 pty.onExit((e) => console.log('Exit:', e.exitCode));
 ```
+
+## Streaming
+
+LXC implements `SandboxBackend`, so `mxc_sdk::v1::spawn_sandbox`, `mxc_sdk::v1::run`,
+and every SDK built on `mxc_spawn_request` / `mxc_run_request` reach it
+in-process. The handle serves live stdin, stdout, and stderr, plus `wait` and
+`kill`.
+
+**Pipes, not a pty.** `isatty()` is false inside the container, and
+`StdioMode::Inherit` is refused. Run `lxc-exec` for a terminal.
+
+**`kill()` stops the container,** not just the workload: the workload runs under
+container init, where nothing aimed at the host `lxc-attach` process reaches it.
+
+**One live sandbox per container name, per process.** A second sandbox naming a
+`containerId` this process already holds is refused rather than queued, because
+LXC reads a run's network section only when the container starts. Omit
+`containerId` for a generated name. The claim is released when the handle drops.
+
+**Teardown is owed on every terminal path,** including a drop without `wait`:
+the proxy pin and the network chains come down, and the container is released.
+A teardown failure is reported through `Sandbox::warnings`, which a bare drop
+leaves no handle to read.
+
+**The container stays up for as long as the handle lives.** `lxc-exec` is
+short-lived by comparison. Weigh that against the threat model before embedding
+streaming in a long-lived service.
 
 ## Building
 
@@ -322,6 +355,5 @@ The zone query should answer the zone you assigned.
   state-aware request is rejected.
 - **Streaming gives pipes, not a terminal.** The `SandboxBackend` path wires
   stdin, stdout, and stderr to pipes and refuses `StdioMode::Inherit`, so the
-  workload sees `isatty() == false`; the `lxc-exec` binary keeps its pty. The
-  engine does not route to this path yet, so the in-process SDK APIs still
-  report `UnsupportedContainment` for LXC.
+  workload sees `isatty() == false`; the `lxc-exec` binary keeps its pty. See
+  [Streaming](#streaming).

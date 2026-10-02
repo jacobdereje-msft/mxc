@@ -12,7 +12,8 @@
 
 #![cfg(target_os = "linux")]
 
-use mxc_sdk::{build_request, spawn_sandbox, SandboxPolicy, SandboxRequest, WaitOutcome};
+use mxc_sdk::v1::{build_request, spawn_sandbox, SandboxPolicy, SandboxRequest};
+use mxc_sdk::WaitOutcome;
 
 /// Whether `bwrap` is usable. Reuses the backend's own probe so this gate
 /// cannot drift from the real version check.
@@ -29,22 +30,14 @@ fn bwrap_available() -> bool {
 /// A Bubblewrap streaming request (`/tmp` read-write) with the given command
 /// and timeout (ms; `0` == run until exit).
 fn bwrap_request(command: &str, timeout_ms: u32) -> SandboxRequest {
-    let policy = SandboxPolicy {
-        version: "0.7.0-alpha".to_string(),
-        filesystem: Some(mxc_sdk::policy::FilesystemSection {
-            readwrite_paths: vec!["/tmp".to_string()],
-            readonly_paths: vec![],
-            denied_paths: vec![],
-            clear_policy_on_exit: None,
-        }),
-        network: None,
-        ui: None,
-        timeout_ms: if timeout_ms == 0 {
-            None
-        } else {
-            Some(timeout_ms)
-        },
-    };
+    let mut policy = SandboxPolicy::default();
+    policy.filesystem = Some(mxc_sdk::v1::policy::FilesystemSection {
+        readwrite_paths: vec!["/tmp".to_string()],
+        readonly_paths: vec![],
+        denied_paths: vec![],
+        clear_policy_on_exit: None,
+    });
+    policy.timeout_ms = (timeout_ms != 0).then_some(timeout_ms);
     build_request(&policy, command, None).expect("build_request should succeed")
 }
 

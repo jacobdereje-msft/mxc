@@ -298,15 +298,16 @@ consume this bound type. Optional provision configuration and optional fields
 remain intact through validation, with defaults still owned by the backend.
 
 High-level Rust callers use operation-specific functions under
-`mxc_sdk::sandbox`. They pass an opaque `SandboxId` separately from
-`ProvisionRequest`, `LifecycleRequest`, or `ExecRequest`, while authorization
-and telemetry preferences remain in `OperationOptions`. Those values adapt
-directly into `CommonRequestIR + StateAwareOperation` and share normalization
-with the exact-contract lane; they are not serialized to JSON. Provision,
-lifecycle, and validation calls return distinct typed results without
-constructing a JSON response envelope. `run_state_aware_json`,
-`exec_sandbox_json`, and `exec_attached_json` remain for intentional raw
-exact-contract use.
+`mxc_sdk::v1::container`. They pass an opaque `SandboxId` separately from
+`ProvisionRequest` or `ExecRequest`; start, stop, and deprovision need no policy
+request beyond that identity. Authorization and telemetry preferences remain in
+`OperationOptions`. Those values target the v1 SDK's package-owned exact
+`1.0.0` semantics, adapt directly into `CommonRequestIR +
+StateAwareOperation`, and share normalization with the exact-contract lane;
+they are not serialized to JSON. Provision, lifecycle, and validation calls
+return distinct typed results without constructing a JSON response envelope.
+`run_state_aware_json`, `exec_sandbox_json`, and `exec_attached_json` remain for
+intentional raw exact-contract use.
 
 ## Worked example: IsolationSession
 
@@ -434,8 +435,9 @@ Reference §11 has the full guide. Operational checklist:
 1. Pick a participation mode (ephemeral-only, state-aware-only, both).
 2. Implement the trait. Define associated types for each phase's config and metadata;
    use `()` for any phase that doesn't need them.
-3. Define typed per-(backend, phase) `*Config` interfaces in `@microsoft/mxc-sdk` and
-   add an arm to `ConfigsForBackend<C>` mapping the backend to its five phase Configs.
+3. Define typed per-(backend, phase) `*Config` interfaces in
+   `@microsoft/mxc-sdk/v1` and add an arm to `ConfigsForBackend<C>` mapping
+   the backend to its five phase Configs.
    If newly SDK-exposed, extend `ContainmentBackend` and `StateAwareContainmentBackend`.
 4. Register a variant in the `ContainmentBackend` enum and declare two consts on the
    trait impl: `ID_PREFIX` (the sandbox-id tag, dispatcher's routing key for

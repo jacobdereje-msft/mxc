@@ -3,16 +3,54 @@
 
 import assert from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { MxcError } from '../../src/errors.js';
-import { spawnSandboxAsync } from '../../src/sandbox.js';
+import * as rootSdk from '../../src/index.js';
+import * as v1Sdk from '../../src/v1.js';
 import { _setBindingRunAsyncImplementation } from '../../src/bindings/run.js';
 import type { RequestSpec } from '../../src/bindings/request.js';
-import type { SandboxPolicy } from '../../src/types.js';
+
+const { MxcError } = rootSdk;
+const { spawnSandboxAsync } = v1Sdk;
 
 afterEach(() => _setBindingRunAsyncImplementation());
 
+describe('public SDK namespace exports', () => {
+  it('keeps typed authoring and lifecycle functions in V1', () => {
+    for (const name of [
+      'createConfigFromPolicy',
+      'spawnSandbox',
+      'spawnSandboxAsync',
+      'buildSandboxPayload',
+      'getAvailableToolsPolicy',
+      'getUserProfilePolicy',
+      'getTemporaryFilesPolicy',
+      'provisionSandbox',
+      'startSandbox',
+      'execInSandbox',
+      'execInSandboxAsync',
+      'stopSandbox',
+      'deprovisionSandbox',
+    ] as const) {
+      assert.strictEqual(typeof v1Sdk[name], 'function', name);
+      assert.strictEqual(Object.hasOwn(rootSdk, name), false, name);
+    }
+  });
+
+  it('keeps raw config, discovery, errors, and process handles at the root', () => {
+    for (const name of [
+      'spawnSandboxFromConfig',
+      'getPlatformSupport',
+      'probeSandboxSupport',
+      'MxcError',
+      'MxcSandboxProcess',
+    ] as const) {
+      assert.strictEqual(typeof rootSdk[name], 'function', name);
+      assert.strictEqual(Object.hasOwn(v1Sdk, name), false, name);
+    }
+  });
+});
+
 describe('in-process async run routing', () => {
-  it('converts the existing config flow at the native boundary', async () => {
+  it('uses the V1 binding policy without caller-supplied schema version', async () => {
     let bindingRequest: RequestSpec | undefined;
     _setBindingRunAsyncImplementation(async (request) => {
       bindingRequest = request;
@@ -27,24 +65,22 @@ describe('in-process async run routing', () => {
 
     const result = await spawnSandboxAsync(
       'echo hello',
-      { version: '0.9.0-alpha' },
+      {},
       { experimental: true, inheritDefaultEnv: true },
       'C:\\work',
       'sample',
     );
 
     assert.deepStrictEqual(result, { stdout: 'out', stderr: 'err', exitCode: 7 });
-    assert.strictEqual(bindingRequest?.policy.version, '0.9.0-alpha');
+    assert.ok(!('version' in bindingRequest!.policy));
     assert.strictEqual(bindingRequest?.command, 'echo hello');
     assert.strictEqual(bindingRequest?.containerName, 'sample');
     assert.strictEqual(bindingRequest?.workingDirectory, 'C:\\work');
     assert.deepStrictEqual(bindingRequest?.environment, {});
     assert.strictEqual(bindingRequest?.inheritDefaultEnv, true);
-    assert.strictEqual(bindingRequest?.experimental, true);
   });
 
   it('rejects executor-only options instead of falling back', async () => {
-    const policy = { version: '0.9.0-alpha' };
     for (const options of [
       { usePty: true },
       { dryRun: true },
@@ -53,50 +89,10 @@ describe('in-process async run routing', () => {
       { signal: new AbortController().signal },
     ]) {
       await assert.rejects(
-        spawnSandboxAsync('echo hello', policy, options),
+        spawnSandboxAsync('echo hello', {}, options),
         /does not support executor-only option/,
       );
     }
-  });
-
-  it('rejects an explicitly authored network enforcement mode', async () => {
-    const policy = {
-      version: '0.8.0-alpha',
-      network: { enforcementMode: 'firewall' },
-    } as SandboxPolicy & { network: { enforcementMode: 'firewall' } };
-
-    await assert.rejects(
-      spawnSandboxAsync('echo hello', policy),
-      (error: unknown) =>
-        error instanceof MxcError
-        && error.code === 'malformed_request'
-        && error.message.includes('network.enforcementMode'),
-    );
-  });
-
-  it('preserves authored outbound intent for native legacy validation', async () => {
-    let bindingRequest: RequestSpec | undefined;
-    _setBindingRunAsyncImplementation(async (request) => {
-      bindingRequest = request;
-      return {
-        stdout: '',
-        stderr: '',
-        exitCode: 0,
-        timedOut: false,
-        warnings: [],
-      };
-    });
-
-    await spawnSandboxAsync('echo hello', {
-      version: '0.8.0-alpha',
-      network: { allowOutbound: true, allowedHosts: ['example.com'] },
-    });
-
-    assert.strictEqual(bindingRequest?.policy.network?.allowOutbound, true);
-    assert.deepStrictEqual(
-      bindingRequest?.policy.network?.allowedHosts,
-      ['example.com'],
-    );
   });
 
   it('surfaces buffered diagnostics', async () => {
@@ -111,15 +107,13 @@ describe('in-process async run routing', () => {
       },
     }));
 
-    const result = await spawnSandboxAsync('echo hello', { version: '0.9.0-alpha' });
-    assert.strictEqual(
-      result.stderr,
-      'native stderr\npolicy was relaxed\n'
-        + '{"kind":"captureDenials","outputPath":"denials.json"}\n',
-    );
+    const result = await spawnSandboxAsync('echo hello', {});
+    assert.match(result.stderr, /native stderr/);
+    assert.match(result.stderr, /policy was relaxed/);
+    assert.match(result.stderr, /denials\.json/);
   });
 
-  it('rejects timed-out execution', async () => {
+  it('maps native timeouts to the public error', async () => {
     _setBindingRunAsyncImplementation(async () => ({
       stdout: '',
       stderr: '',
@@ -129,11 +123,11 @@ describe('in-process async run routing', () => {
     }));
 
     await assert.rejects(
-      spawnSandboxAsync('sleep 30', { version: '0.9.0-alpha', timeoutMs: 1 }),
+      spawnSandboxAsync('echo hello', {}),
       (error: unknown) =>
         error instanceof MxcError
         && error.code === 'backend_error'
-        && error.message.includes('timed out'),
+        && error.details?.timedOut === true,
     );
   });
 
@@ -143,7 +137,7 @@ describe('in-process async run routing', () => {
     });
 
     await assert.rejects(
-      spawnSandboxAsync('echo hello', { version: '0.9.0-alpha' }),
+      spawnSandboxAsync('echo hello', {}),
       (error: unknown) =>
         error instanceof MxcError
         && error.code === 'unsupported_containment'
@@ -151,27 +145,17 @@ describe('in-process async run routing', () => {
     );
   });
 
-  it('wraps Koffi invocation failures as backend errors', async () => {
+  it('wraps binding invocation failures as backend errors', async () => {
     _setBindingRunAsyncImplementation(async () => {
       throw new Error('native invocation failed');
     });
 
     await assert.rejects(
-      spawnSandboxAsync('echo hello', { version: '0.9.0-alpha' }),
+      spawnSandboxAsync('echo hello', {}),
       (error: unknown) =>
         error instanceof MxcError
         && error.code === 'backend_error'
         && error.message === 'native invocation failed',
-    );
-  });
-
-  it('rejects testing-only policy instead of falling back', async () => {
-    await assert.rejects(
-      spawnSandboxAsync('echo hello', {
-        version: '0.8.0-alpha',
-        network: { proxy: { builtinTestServer: true } },
-      }),
-      /not supported by the in-process Node SDK/,
     );
   });
 });

@@ -6,35 +6,52 @@
 
 The policy (filesystem, network) expresses **what** the user wants — "block network, allow these paths." It does not specify how the OS enforces it, nor which container type to use.
 
-### Policy Version = Config Schema Version
+### High-level policy and raw configuration
 
-The `version` field in SandboxPolicy must match the MXC config
-JSON version: they are the same version, tied 1:1.
+Rust, .NET, and Node high-level one-shot policy and typed lifecycle APIs do not
+take a caller-supplied schema version. Each v1 SDK targets the published exact
+`1.0.0` contract internally.
 
-When a consumer specifies a SandboxPolicy version (e.g.,
-`0.6.0-alpha`), MXC creates the corresponding configuration using the
-`0.6.0-alpha` schema.
+Raw configuration APIs require the caller to declare a registered `version`
+to select an immutable historical or mutable development contract.
 
 ```typescript
 // sdk/node/src/types.ts
 const policy: SandboxPolicy = {
-  version: "0.6.0-alpha",
   filesystem: { ... },
   network: { ... },
   timeoutMs: 30000,
 };
 ```
 
-The config JSON carries this same version:
+The exact JSON emitted internally by a high-level v1 API carries the SDK-owned
+version:
 
 ```json
 {
-  "version": "0.6.0-alpha",
+  "version": "1.0.0",
   "process": { ... },
   "filesystem": { ... },
   "network": { ... }
 }
 ```
+
+### SDK major-version namespaces
+
+Contract-mapped SDK types live in a namespace for their schema-contract major:
+`Microsoft.Mxc.Sdk.V1`, `mxc_sdk::v1`, and `@microsoft/mxc-sdk/v1`.
+The V1 namespace contains `SandboxPolicy`, its policy sections, containment
+selection and backend settings, policy-to-request builders, and typed
+state-aware lifecycle request/result/option types and entry points. These APIs
+evolve additively as published 1.x contracts grow; the SDK owns the exact
+contract target (currently `1.0.0`) and callers do not supply a schema version.
+A future breaking schema line adds a side-by-side V2 namespace rather than
+replacing V1.
+
+Version-independent APIs stay at the package root: errors and error codes,
+running-sandbox handles and output/wait types, platform/backend discovery,
+telemetry consent, schema-version constants, raw exact-JSON APIs that take
+caller-declared versions, and executor-backed raw config APIs.
 
 ### Versioning follows Semver
 
@@ -51,7 +68,7 @@ reasons:
 
 | Axis | What it describes | Where it lives | Who decides it |
 |---|---|---|---|
-| **Schema (config) version** | The *shape* of the config JSON — which fields exist and what values they accept. | The `version` field in the config / `SandboxPolicy`. | The config author. |
+| **Schema (config) version** | The *shape* of the config JSON — which fields exist and what values they accept. | The `version` field in raw configuration; high-level SDK policy omits it. | The raw-config author or, for high-level APIs, the SDK package. |
 | **Product version** | The MXC *binaries and npm package* that do the work. | Rust workspace version (`src/Cargo.toml`) + `sdk/package.json`. | The release. |
 | **Host capability** | What the *running OS* can actually enforce (e.g. whether the BaseContainer sandbox API is usable, velocity keys, Hyper-V). | Negotiated at runtime — **never a string in the config**. | The host, probed at execution time. |
 
@@ -60,9 +77,9 @@ reasons:
   `1.0.0`, or `1.1.0-alpha`.
   Patch and prerelease spelling are significant; `0.6.1-alpha` and `0.8.0-dev`
   are not registered and are rejected. A missing declaration is rejected too.
-  The SDK enforces the same exact set. IsolationSession and WSLC state-aware
-  requests use `0.9.0-alpha`; Windows Sandbox state-aware requests use
-  `1.1.0-alpha`. The compatibility constants in
+  Raw SDK entry points enforce the same exact set. High-level v1 one-shot and
+  state-aware APIs select stable `1.0.0` internally and expose only the
+  backends supported by that contract. The compatibility constants in
   `schemas/schema-version.json` do not authorize other versions within their
   minimum/maximum range.
 - **Product version** tracks the shipped artifacts and moves independently of the
@@ -102,9 +119,11 @@ The development artifact is generated from the exact
   state-aware roots, including recursively closed experimental structures, and
   is the authoritative contract for declared `1.1.0-alpha` requests.
 
-The runtime parser and Rust SDK policy builders dispatch through the exact
-contract registered for the declared version. Corpus validation selects the
-exact registered schema from each document's `version`.
+Raw JSON is parsed with the exact registered contract named by its `version`
+field. High-level Rust, .NET, and Node v1 builders do not accept a caller-supplied
+schema version: they construct requests for exact `1.0.0` and reject fields or
+backends outside that contract. Repository config validation selects the schema
+matching each raw document's declared version.
 
 Only the v1.1 prerelease file under `schemas/dev/` is a generated development
 artifact. Published v0.9 and v1.0 are represented by exact Rust contracts and
@@ -295,7 +314,8 @@ regardless of the flag; parsing is flag-independent. The `--experimental` flag o
   parsed features that still require authorization — no error, those features
   are just not applied
 
-**2. SDK (`@microsoft/mxc-sdk`):**
+**2. SDK:** policy APIs come from `@microsoft/mxc-sdk/v1`; raw config
+spawning comes from `@microsoft/mxc-sdk`.
 ```typescript
 // With policy:
 const pty = spawnSandbox("python app.py", policy, {
@@ -390,15 +410,13 @@ location. Existing containment/section consistency rules continue unchanged.
 ## Data Flow
 
 ```
-User writes SandboxPolicy (policy + environment, versioned)
+Caller supplies SandboxPolicy (no schema-version field)
         │
         ▼
-Config JSON (version: "0.6.0-alpha")
+v1 SDK builds a request for its exact `1.0.0` target
         │
         ▼
-MXC parses → Stage 1: select and validate the exact registered contract
-        │       → published contracts exclude experimental fields
-        │       → development defines them; execution still requires --experimental
+MXC validates the request against the selected contract and policy
         │
         ▼
 Stage 2: resolve `containment` intent → concrete backend

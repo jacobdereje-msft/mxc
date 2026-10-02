@@ -4,16 +4,16 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using Microsoft.Mxc.Sdk;
 using Microsoft.Mxc.Sdk.Native;
 using NativeSandbox = Microsoft.Mxc.Sdk.Native.MxcSandbox;
 
-namespace Microsoft.Mxc.Sdk;
+namespace Microsoft.Mxc.Sdk.V1;
 
 /// <summary>
-/// Entry point for running MXC sandboxes from C#. Wraps the native
-/// <c>mxc_ffi</c> library, selecting the right containment backend for the host
-/// and running or spawning a complete <see cref="SandboxRequest"/>.
+/// V1 entry point for running MXC sandboxes from C#. Wraps the native
+/// <c>mxc_ffi</c> library and runs or spawns a complete
+/// <see cref="SandboxRequest"/>.
 /// </summary>
 public static class MxcSandbox
 {
@@ -24,104 +24,8 @@ public static class MxcSandbox
         NativeLibraryResolver.Initialize();
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Converters =
-        {
-            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase),
-            new NetworkProxyPolicyJsonConverter(),
-        },
-    };
-
-    private static readonly JsonSerializerOptions ProbeJsonOptions = new(JsonOptions)
-    {
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-    };
-
     internal static IRequestProbeInterop RequestProbeInterop { get; set; } =
         PInvokeRequestProbeInterop.Instance;
-
-    private static readonly JsonSerializerOptions PublishedPolicyJsonOptions = new(JsonOptions)
-    {
-        Converters = { new NetworkPolicyJsonConverter(includeLegacyDefaults: true) },
-    };
-
-    private static JsonSerializerOptions PolicyJsonOptions(string version) =>
-        SchemaVersions.UsesLegacyNetworkDefaults(version)
-            ? PublishedPolicyJsonOptions
-            : JsonOptions;
-
-    /// <summary>
-    /// The version of the native <c>mxc_ffi</c> library.
-    /// </summary>
-    public static string NativeVersion
-    {
-        get
-        {
-            unsafe
-            {
-                var p = NativeMethods.mxc_version();
-                return p is null ? string.Empty : Marshal.PtrToStringUTF8((IntPtr)p) ?? string.Empty;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Probe every containment backend the current host can run.
-    /// </summary>
-    /// <remarks>
-    /// This includes host-capability backends the public SDK cannot necessarily
-    /// launch. Cross-check <see cref="GetPlatformSupport"/> before using a
-    /// backend with <see cref="Run(SandboxRequest)"/> or
-    /// <see cref="Spawn(SandboxRequest)"/>.
-    /// </remarks>
-    public static IReadOnlyList<AvailableBackend> GetAvailableBackends()
-    {
-        unsafe
-        {
-            var json = ReadOwnedJson(
-                NativeMethods.mxc_available_backends_json(),
-                "probing available backends");
-            return ParseAvailableBackends(json);
-        }
-    }
-
-    /// <summary>
-    /// Map the native backend-discovery array onto the public model.
-    /// </summary>
-    /// <remarks>
-    /// Split from <see cref="GetAvailableBackends"/> so the projection is
-    /// testable against a fixed native payload.
-    /// </remarks>
-    internal static IReadOnlyList<AvailableBackend> ParseAvailableBackends(string json)
-    {
-        var backends = JsonSerializer.Deserialize<NativeAvailableBackend[]>(json, JsonOptions)
-            ?? throw new JsonException("Native backend discovery returned null JSON.");
-        return backends.Select(MapAvailableBackend).ToArray();
-    }
-
-    /// <summary>
-    /// Probe whether the public SDK can launch sandboxes on this host and which
-    /// backends it can launch.
-    /// </summary>
-    public static PlatformSupport GetPlatformSupport()
-    {
-        unsafe
-        {
-            var json = ReadOwnedJson(
-                NativeMethods.mxc_platform_support_json(),
-                "probing platform support");
-            var support = JsonSerializer.Deserialize<NativePlatformSupport>(json, JsonOptions)
-                ?? throw new JsonException("Native platform support returned null JSON.");
-            return new PlatformSupport
-            {
-                IsSupported = support.IsSupported,
-                Reason = support.Reason,
-                AvailableMethods = support.AvailableMethods.Select(ParseBackend).ToArray(),
-            };
-        }
-    }
 
     /// <summary>
     /// Probe which Windows ProcessContainer tier can serve a request.
@@ -202,7 +106,7 @@ public static class MxcSandbox
 
     internal static ProbeOutput ParseProbeOutput(string json)
     {
-        var output = JsonSerializer.Deserialize<NativeProbeOutput>(json, ProbeJsonOptions)
+        var output = MxcJson.Deserialize<NativeProbeOutput>(json, MxcJson.ProbeOptions)
             ?? throw new JsonException("native request probe returned null JSON.");
         var warnings = output.Warnings
             ?? throw new JsonException("native request probe returned null warnings.");
@@ -299,7 +203,7 @@ public static class MxcSandbox
     /// Run <paramref name="command"/> in a sandbox described by
     /// <paramref name="policy"/>, to completion, capturing its output.
     /// </summary>
-    /// <param name="policy">What to restrict. Its <see cref="SandboxPolicy.Version"/> must be set.</param>
+    /// <param name="policy">What to restrict.</param>
     /// <param name="command">The command line to run (the <c>process.commandLine</c> equivalent).</param>
     /// <returns>The captured stdout/stderr and exit outcome.</returns>
     /// <exception cref="ArgumentNullException">A required argument was null.</exception>
@@ -376,7 +280,7 @@ public static class MxcSandbox
     /// <paramref name="policy"/> and return a live <see cref="MxcSandboxProcess"/>
     /// you can stream stdio through, wait on, and kill while it runs.
     /// </summary>
-    /// <param name="policy">What to restrict. Its <see cref="SandboxPolicy.Version"/> must be set.</param>
+    /// <param name="policy">What to restrict.</param>
     /// <param name="command">The command line to run (the <c>process.commandLine</c> equivalent).</param>
     /// <returns>A live process handle. Dispose it to release native resources (killing the child if still running).</returns>
     /// <exception cref="ArgumentNullException">A required argument was null.</exception>
@@ -441,42 +345,13 @@ public static class MxcSandbox
     internal static string SerializePolicy(SandboxPolicy policy)
     {
         ArgumentNullException.ThrowIfNull(policy);
-        ValidateNetworkVersion(policy);
-        return JsonSerializer.Serialize(policy, PolicyJsonOptions(policy.Version));
+        return MxcJson.Serialize(policy, MxcJson.Options);
     }
 
     internal static string SerializeRequest(SandboxRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ValidateNetworkVersion(request.Policy);
-        return JsonSerializer.Serialize(PrepareRequest(request), PolicyJsonOptions(request.Policy.Version));
-    }
-
-    private static void ValidateNetworkVersion(SandboxPolicy policy)
-    {
-        if (policy.Network?.LegacyFieldSpecified is not { } field)
-        {
-            return;
-        }
-
-        if (!SchemaVersions.IsSupported(policy.Version))
-        {
-            throw new ArgumentException(
-                $"Schema version '{policy.Version}' is not supported. "
-                    + $"Use a version from {SchemaVersions.Minimum} through "
-                    + $"{SchemaVersions.MaximumSupported}.",
-                nameof(policy));
-        }
-
-        if (!SchemaVersions.UsesLegacyNetworkDefaults(policy.Version))
-        {
-            throw new ArgumentException(
-                $"Schema {policy.Version} no longer supports authored network.{field}, including null. Legacy network authoring "
-                    + "(AllowOutbound, AllowLocalNetwork, AllowedHosts, BlockedHosts, Proxy). "
-                    + "Use Network.Egress/Ingress and Network.RuntimeConfig.NetworkProxy explicitly, "
-                    + "or retain schema 0.8.0-alpha. Hostnames are not converted to CIDRs.",
-                nameof(policy));
-        }
+        return MxcJson.Serialize(PrepareRequest(request), MxcJson.Options);
     }
 
     private static SandboxRequest PrepareRequest(SandboxRequest request)
@@ -557,38 +432,6 @@ public static class MxcSandbox
             && string.Equals(left.OutputPath, right.OutputPath, StringComparison.Ordinal)
             && left.RetainEtl == right.RetainEtl;
 
-    private static AvailableBackend MapAvailableBackend(NativeAvailableBackend backend) =>
-        new()
-        {
-            Backend = ParseBackend(backend.Backend),
-            Tier = backend.Tier is null ? null : ParseIsolationTier(backend.Tier),
-            Capabilities = backend.Capabilities.Select(ParseBackendCapability).ToArray(),
-            Warnings = backend.Warnings.ToArray(),
-        };
-
-    internal static ContainmentBackend ParseBackend(string value) =>
-        value switch
-        {
-            "processcontainer" => ContainmentBackend.ProcessContainer,
-            "windows_sandbox" => ContainmentBackend.WindowsSandbox,
-            "lxc" => ContainmentBackend.Lxc,
-            "wslc" => ContainmentBackend.Wslc,
-            "seatbelt" => ContainmentBackend.Seatbelt,
-            "isolation_session" => ContainmentBackend.IsolationSession,
-            "bubblewrap" => ContainmentBackend.Bubblewrap,
-            "hyperlight" => ContainmentBackend.Hyperlight,
-            _ => ContainmentBackend.Unknown,
-        };
-
-    internal static IsolationTier ParseIsolationTier(string value) =>
-        value switch
-        {
-            "base-container" => IsolationTier.BaseContainer,
-            "appcontainer-bfs" => IsolationTier.AppContainerBfs,
-            "appcontainer-dacl" => IsolationTier.AppContainerDacl,
-            _ => IsolationTier.Unknown,
-        };
-
     private static IsolationTier ParseProbeIsolationTier(string value) =>
         value switch
         {
@@ -599,45 +442,16 @@ public static class MxcSandbox
                 $"native request probe returned unknown tier '{value}'."),
         };
 
-    internal static BackendCapability ParseBackendCapability(string value) =>
-        value switch
-        {
-            "captureDenials" => BackendCapability.CaptureDenials,
-            "filesystemDeniedPaths" => BackendCapability.FilesystemDeniedPaths,
-            "filesystemEnumeratePaths" => BackendCapability.FilesystemEnumeratePaths,
-            "ingressHostLoopbackAllow" => BackendCapability.IngressHostLoopbackAllow,
-            "proxyEnforcement" => BackendCapability.ProxyEnforcement,
-            _ => BackendCapability.Unknown,
-        };
-
-    private static unsafe string ReadOwnedJson(byte* value, string operation)
-    {
-        if (value is null)
-        {
-            throw new MxcException(ErrorCode.BackendError, $"{operation} failed");
-        }
-
-        try
-        {
-            return Marshal.PtrToStringUTF8((IntPtr)value)
-                ?? throw new MxcException(ErrorCode.BackendError, $"{operation} returned invalid JSON");
-        }
-        finally
-        {
-            NativeMethods.mxc_string_free(value);
-        }
-    }
-
     private static unsafe string? PtrToString(byte* p) =>
         p is null ? null : Marshal.PtrToStringUTF8((IntPtr)p);
 
     private static SandboxOutputMetadata? DeserializeOutputMetadata(string? json) =>
         string.IsNullOrEmpty(json)
             ? null
-            : JsonSerializer.Deserialize<SandboxOutputMetadata>(json);
+            : MxcJson.Deserialize<SandboxOutputMetadata>(json);
 
     private static IReadOnlyList<string> DeserializeWarnings(string? json) =>
         string.IsNullOrEmpty(json)
             ? Array.Empty<string>()
-            : JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
+            : MxcJson.Deserialize<string[]>(json) ?? Array.Empty<string>();
 }

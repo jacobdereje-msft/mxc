@@ -9,6 +9,13 @@ it fans out to the reusable `Build.Windows.Job.yml`, `Build.Linux.Job.yml`, and
 x64/arm64, Linux x64/arm64, and macOS arm64 hosts, then runs the lint,
 versioning, and SDK jobs.
 
+### LXC (`lxc-e2e.yml`)
+
+A separate workflow, because the primary Linux lane does not install LXC and
+does not run as root. It triggers on PRs targeting `main`, so a PR stacked on
+another branch gets no LXC gating until it is retargeted — dispatch it manually
+for a stacked head.
+
 ## Azure Pipelines (optional on PRs, required on `main`)
 
 The ADO pipeline (`MXC-PR-Build`) is the Azure version of the PR pipeline. The official

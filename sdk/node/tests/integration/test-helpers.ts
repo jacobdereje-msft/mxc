@@ -10,13 +10,16 @@ import os from 'os';
 import semver from 'semver';
 import { createRequire } from 'node:module';
 import * as sdkNamespace from '@microsoft/mxc-sdk';
+import * as sdkV1Namespace from '@microsoft/mxc-sdk/v1';
 import {
   MxcError,
+} from '@microsoft/mxc-sdk';
+import {
   deprovisionSandbox,
   provisionSandbox,
   type SandboxId,
   type StateAwareContainmentBackend,
-} from '@microsoft/mxc-sdk';
+} from '@microsoft/mxc-sdk/v1';
 
 export const isolationSessionNetwork = {
   egress: { default: 'allow' },
@@ -24,14 +27,12 @@ export const isolationSessionNetwork = {
 } as const;
 
 const require = createRequire(import.meta.url);
-export const sdk = sdkNamespace;
+export const sdk = { ...sdkNamespace, ...sdkV1Namespace };
 
 // Schema versions
 
 export const supportedVersions = [
-  new semver.SemVer('0.6.0-alpha'),
-  new semver.SemVer('0.7.0-alpha'),
-  new semver.SemVer('0.8.0-alpha'),
+  new semver.SemVer('1.0.0'),
 ];
 
 // SDK package location
@@ -277,12 +278,6 @@ export async function probeStateAwareRuntime<C extends StateAwareContainmentBack
             { network: isolationSessionNetwork },
             { experimental: true },
           );
-          return result.sandboxId;
-        }
-        case 'windows_sandbox': {
-          const result = await provisionSandbox('windows_sandbox', undefined, {
-            experimental: true,
-          });
           return result.sandboxId;
         }
         case 'wslc': {

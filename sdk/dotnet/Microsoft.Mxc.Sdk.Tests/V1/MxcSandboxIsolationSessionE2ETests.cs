@@ -4,9 +4,11 @@
 using System.Security.Principal;
 using System.Text;
 using Microsoft.Mxc.Sdk;
+using Microsoft.Mxc.Sdk.V1;
+using Microsoft.Mxc.Sdk.Tests;
 using Xunit;
 
-namespace Microsoft.Mxc.Sdk.Tests;
+namespace Microsoft.Mxc.Sdk.Tests.V1;
 
 /// <summary>
 /// Runs one-shot isolation sessions against a live host through this binding.
@@ -29,7 +31,6 @@ public class MxcSandboxIsolationSessionE2ETests
                 // The backend cannot restrict the container's network, so it
                 // requires the explicit directional all-allow posture and refuses
                 // an absent policy, whose default is a deny it could not enforce.
-                Version = "0.9.0-alpha",
                 Network = new NetworkPolicy
                 {
                     Egress = new NetworkEgressPolicy { Default = NetworkAction.Allow },

@@ -62,9 +62,10 @@ use std::panic::catch_unwind;
 use std::ptr;
 use std::sync::OnceLock;
 
-use mxc_sdk::{available_backends, platform_support, run, ErrorCode, SandboxRequest, WaitOutcome};
+use mxc_sdk::v1::{run, SandboxRequest};
+use mxc_sdk::{available_backends, platform_support, ErrorCode, WaitOutcome};
 #[cfg(target_os = "windows")]
-use mxc_sdk::{probe, Error, ProbeOutput};
+use mxc_sdk::{v1::probe, Error, ProbeOutput};
 
 mod error_detail;
 mod request;
@@ -1124,16 +1125,13 @@ mod tests {
     #[test]
     fn shared_request_builder_propagates_telemetry_enablement() {
         for (request_json, expected) in [
+            (r#"{"policy":{},"command":"echo hi"}"#, None),
             (
-                r#"{"policy":{"version":"0.8.0-alpha"},"command":"echo hi"}"#,
-                None,
-            ),
-            (
-                r#"{"policy":{"version":"0.9.0-alpha","telemetry":{"enabled":true}},"command":"echo hi"}"#,
+                r#"{"policy":{"telemetry":{"enabled":true}},"command":"echo hi"}"#,
                 Some(true),
             ),
             (
-                r#"{"policy":{"version":"0.9.0-alpha","telemetry":{"enabled":false}},"command":"echo hi"}"#,
+                r#"{"policy":{"telemetry":{"enabled":false}},"command":"echo hi"}"#,
                 Some(false),
             ),
         ] {
@@ -1159,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn v09_legacy_network_authoring_reports_migration_without_running() {
+    fn legacy_network_authoring_is_rejected_without_running() {
         for field in [
             r#""defaultPolicy":"allow""#,
             r#""enforcementMode":"capabilities""#,
@@ -1171,9 +1169,8 @@ mod tests {
             r#""proxy":null"#,
             r#""proxy":{"url":"http://localhost:8080"}"#,
         ] {
-            let request = format!(
-                r#"{{"policy":{{"version":"0.9.0-alpha","network":{{{field}}}}},"command":"must-not-execute"}}"#
-            );
+            let request =
+                format!(r#"{{"policy":{{"network":{{{field}}}}},"command":"must-not-execute"}}"#);
             let mut out = run_with(&request);
             assert_eq!(out.status, MXC_STATUS_MALFORMED_REQUEST, "{field}");
             assert!(out.stdout_utf8.is_null());
@@ -1182,10 +1179,7 @@ mod tests {
             let message = unsafe { CStr::from_ptr(out.error.message_utf8) }
                 .to_str()
                 .unwrap();
-            assert!(
-                message.contains("schema 0.9.0-alpha no longer accepts legacy"),
-                "{message}"
-            );
+            assert!(message.contains("unknown field"), "{message}");
             // SAFETY: out was initialized by mxc_run_request and has not been freed.
             unsafe { mxc_run_result_free(&mut out) };
         }
@@ -1199,23 +1193,21 @@ mod tests {
             "allowedHosts",
             "blockedHosts",
         ] {
-            for version in ["0.8.0-alpha", "0.9.0-alpha"] {
-                let request = format!(
-                    r#"{{"policy":{{"version":"{version}","network":{{"{field}":null}}}},"command":"must-not-execute"}}"#
-                );
-                let mut out = run_with(&request);
-                assert_eq!(out.status, MXC_STATUS_MALFORMED_REQUEST, "{request}");
-                assert!(out.stdout_utf8.is_null());
-                assert!(out.stderr_utf8.is_null());
-                // SAFETY: out was initialized by mxc_run_request and has not been freed.
-                unsafe { mxc_run_result_free(&mut out) };
-            }
+            let request = format!(
+                r#"{{"policy":{{"network":{{"{field}":null}}}},"command":"must-not-execute"}}"#
+            );
+            let mut out = run_with(&request);
+            assert_eq!(out.status, MXC_STATUS_MALFORMED_REQUEST, "{request}");
+            assert!(out.stdout_utf8.is_null());
+            assert!(out.stderr_utf8.is_null());
+            // SAFETY: out was initialized by mxc_run_request and has not been freed.
+            unsafe { mxc_run_result_free(&mut out) };
         }
     }
 
     #[test]
     fn empty_command_reports_malformed_request() {
-        let mut out = run_with(r#"{"policy":{"version":"0.7.0-alpha"},"command":""}"#);
+        let mut out = run_with(r#"{"policy":{},"command":""}"#);
         assert_eq!(out.status, MXC_STATUS_MALFORMED_REQUEST);
         assert!(!out.error.message_utf8.is_null());
         assert!(out.stdout_utf8.is_null());
@@ -1233,8 +1225,7 @@ mod tests {
 
     #[test]
     fn null_out_pointer_reports_null_argument_without_leaking() {
-        let request =
-            CString::new(r#"{"policy":{"version":"0.7.0-alpha"},"command":"echo hi"}"#).unwrap();
+        let request = CString::new(r#"{"policy":{},"command":"echo hi"}"#).unwrap();
         // SAFETY: valid string, deliberately-null out pointer.
         let status = unsafe { mxc_run_request(request.as_ptr(), ptr::null_mut()) };
         assert_eq!(status, MXC_STATUS_NULL_ARGUMENT);
@@ -1345,18 +1336,18 @@ mod tests {
         result.free_strings();
     }
 
-    /// A structurally valid binding document with no command reaches the SDK
-    /// error path rather than failing in the FFI string boundary.
+    /// A structurally valid binding document with an unknown policy field
+    /// reaches the SDK error path rather than failing at the FFI string boundary.
     #[test]
     fn a_failing_build_request_reports_the_sdk_error() {
-        let mut out = run_with(r#"{"policy":{"version":""},"command":"echo hi"}"#);
+        let mut out = run_with(r#"{"policy":{"unexpected":true},"command":"echo hi"}"#);
         assert_eq!(out.status, MXC_STATUS_MALFORMED_REQUEST);
         // SAFETY: `out` was filled by `mxc_run_request`.
         let message = unsafe { CStr::from_ptr(out.error.message_utf8) }
             .to_str()
             .unwrap()
             .to_string();
-        assert_eq!(message, "Policy version is required");
+        assert!(message.contains("unknown field `unexpected`"), "{message}");
         // SAFETY: `out` was filled by `mxc_run_request`.
         unsafe { mxc_run_result_free(&mut out) };
     }

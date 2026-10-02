@@ -9,25 +9,21 @@
 
 #![cfg(target_os = "windows")]
 
-use mxc_sdk::{build_request, spawn_sandbox, SandboxPolicy, WaitOutcome};
+use mxc_sdk::v1::{build_request, spawn_sandbox, SandboxPolicy};
+use mxc_sdk::WaitOutcome;
 
 #[test]
 #[ignore = "requires an elevated, host-prepped Windows host (see docs/host-prep.md)"]
 fn streaming_processcontainer_bidirectional_stdio() {
     use std::io::{Read, Write};
 
-    let policy = SandboxPolicy {
-        version: "0.7.0-alpha".to_string(),
-        filesystem: Some(mxc_sdk::policy::FilesystemSection {
-            readwrite_paths: vec!["C:\\Windows\\Temp".to_string()],
-            readonly_paths: vec![],
-            denied_paths: vec![],
-            clear_policy_on_exit: None,
-        }),
-        network: None,
-        ui: None,
-        timeout_ms: None,
-    };
+    let mut policy = SandboxPolicy::default();
+    policy.filesystem = Some(mxc_sdk::v1::policy::FilesystemSection {
+        readwrite_paths: vec!["C:\\Windows\\Temp".to_string()],
+        readonly_paths: vec![],
+        denied_paths: vec![],
+        clear_policy_on_exit: None,
+    });
     // `cmd /c more` echoes stdin to stdout until EOF, then exits.
     let request = build_request(&policy, "cmd /c more", None).expect("build_request");
     let mut proc = spawn_sandbox(request).expect("spawn");

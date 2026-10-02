@@ -2,7 +2,7 @@
 
 A .NET binding for [MXC](../../README.md) (Microsoft eXecution Container),
 implemented in C#. It runs a command inside a sandbox described by a
-`SandboxPolicy`, capturing the output — by P/Invoking the native `mxc_ffi`
+`Microsoft.Mxc.Sdk.V1.SandboxPolicy`, capturing the output — by P/Invoking the native `mxc_ffi`
 library, which wraps the Rust engine.
 
 Breaking changes and migration notes are recorded in
@@ -28,10 +28,11 @@ C# (Microsoft.Mxc.Sdk)
 
 ```csharp
 using Microsoft.Mxc.Sdk;
+using Microsoft.Mxc.Sdk.V1;
+using MxcSandbox = Microsoft.Mxc.Sdk.V1.MxcSandbox;
 
 var policy = new SandboxPolicy
 {
-    Version = "0.7.0-alpha",
     Filesystem = new FilesystemPolicy { ReadwritePaths = { @"C:\Windows\Temp" } },
     TimeoutMs = 30_000,
 };
@@ -65,14 +66,17 @@ catch (MxcException ex)
 }
 ```
 
-For legacy `NetworkPolicy`, a non-empty `AllowedHosts` list selects a block
-default even when `AllowOutbound` is true, so the allowlist narrows outbound
-access. With no allowlist, `AllowOutbound = true` selects an allow default and
-`BlockedHosts` expresses allow-all-except-these. A blocklist without either an
-allowlist or `AllowOutbound` is rejected by the native SDK.
+The high-level `NetworkPolicy` exposes only directional egress, ingress, and
+runtime configuration. Legacy network members remain available only through
+raw configuration targeting an immutable historical contract.
 
-`MxcSandbox.RunAsync(policy, command)` offloads the blocking native call to the
-thread pool. `MxcSandbox.NativeVersion` returns the loaded `mxc_ffi` version.
+When deserializing `NetworkPolicy` or `StateAwareNetworkPolicy` from JSON,
+`egress` and `ingress` may be omitted but cannot be explicitly `null`.
+Setting their C# properties to `null` still omits them from SDK requests.
+
+`Microsoft.Mxc.Sdk.V1.MxcSandbox.RunAsync(policy, command)` offloads the blocking
+native call to the thread pool. `Microsoft.Mxc.Sdk.MxcPlatform.NativeVersion`
+returns the loaded `mxc_ffi` version.
 Optional feature outputs are returned through `RunResult.OutputMetadata`; for
 `captureDenials`, `OutputMetadata.CaptureDenials.OutputPath` identifies the
 generated JSON document and carries its summary. When ETL retention is enabled,
@@ -120,7 +124,7 @@ interface without loading the native MXC library. Streaming adapter methods
 return `ISandboxProcess`, which can also be implemented with in-memory streams
 and deterministic wait results. Fake processes can return an
 `ISandboxStreamCloser` to model cancellation of a blocking output read. The
-existing `MxcSandbox` and `MxcLifecycle` static methods retain their concrete
+existing V1 `MxcSandbox` and `MxcLifecycle` static methods retain their concrete
 `MxcSandboxProcess` convenience APIs.
 
 ### Discovering host backends
@@ -128,13 +132,13 @@ existing `MxcSandbox` and `MxcLifecycle` static methods retain their concrete
 Two read-only probes answer different availability questions:
 
 ```csharp
-PlatformSupport support = MxcSandbox.GetPlatformSupport();
+PlatformSupport support = MxcPlatform.GetPlatformSupport();
 if (!support.IsSupported)
 {
     Console.Error.WriteLine(support.Reason);
 }
 
-foreach (AvailableBackend backend in MxcSandbox.GetAvailableBackends())
+foreach (AvailableBackend backend in MxcPlatform.GetAvailableBackends())
 {
     Console.WriteLine($"{backend.Backend}: tier={backend.Tier}");
     bool canUseDeniedPaths = backend.Capabilities.Contains(
@@ -146,8 +150,8 @@ foreach (AvailableBackend backend in MxcSandbox.GetAvailableBackends())
 }
 ```
 
-`GetPlatformSupport()` reports whether this public SDK can launch a sandbox and
-the backends it can launch. `GetAvailableBackends()` is broader: it reports
+`MxcPlatform.GetPlatformSupport()` reports whether this public SDK can launch a sandbox and
+the backends it can launch. `MxcPlatform.GetAvailableBackends()` is broader: it reports
 every backend the host can run, including lifecycle-only backends such as
 Windows Sandbox and IsolationSession. Its ProcessContainer `Tier` is the
 strongest tier the host can reach; policy can still select a weaker tier.
@@ -162,8 +166,8 @@ for every absent one: only checks that produce a reason contribute. Bubblewrap's
 warning. Missing capabilities otherwise are unavailable or could not be detected.
 
 Discovery is advisory. Availability can change before launch, and a backend in
-`GetAvailableBackends()` is not necessarily one the one-shot SDK can launch.
-Cross-check `GetPlatformSupport()` and continue handling
+`MxcPlatform.GetAvailableBackends()` is not necessarily one the one-shot SDK can launch.
+Cross-check `MxcPlatform.GetPlatformSupport()` and continue handling
 `ErrorCode.BackendUnavailable`.
 
 For request-specific Windows ProcessContainer diagnostics, call the static
@@ -189,7 +193,7 @@ enforce it as the `ProxyEnforcement` capability, and names what is missing in
 as a `bubblewrapNetwork` field; the C# SDK reports it through the backend array:
 
 ```csharp
-AvailableBackend? bubblewrap = MxcSandbox.GetAvailableBackends()
+AvailableBackend? bubblewrap = MxcPlatform.GetAvailableBackends()
     .FirstOrDefault(backend => backend.Backend == ContainmentBackend.Bubblewrap);
 
 if (bubblewrap is null)
@@ -228,7 +232,6 @@ opt-in:
 var request = new SandboxRequest(
     new SandboxPolicy
     {
-        Version = "0.8.0-alpha",
         Filesystem = new FilesystemPolicy
         {
             ReadonlyPaths = { @"C:\tools" },
@@ -328,6 +331,10 @@ request.Containment = new ProcessContainerContainment
 };
 ```
 
+The V1 `SandboxPolicy` in `Microsoft.Mxc.Sdk.V1` is contract-mapped. The package owns the v1 contract target and
+currently emits exact `1.0.0`; raw exact-version configuration remains a
+separate executor-facing API.
+
 With schema `0.9.0-alpha`,
 `ProcessContainerContainment.Filesystem.EnumeratePaths` requests directory-query
 and listing access without granting file-content reads. This is supported only
@@ -373,10 +380,6 @@ request.Containment = new LxcContainment
 };
 ```
 
-The managed SDK can represent LXC settings, but its in-process `Run`,
-`RunAsync`, and `Spawn` surfaces reject LXC because the backend does not expose
-captured pipe-based execution. Use the standalone `lxc-exec` binary for LXC.
-
 #### WSL Container options
 
 `WslcContainment` selects the WSLC backend and carries its image,
@@ -386,7 +389,6 @@ resource, storage, GPU, and host-to-container TCP port settings:
 var request = new SandboxRequest(
     new SandboxPolicy
     {
-        Version = "0.9.0-alpha",
         Network = new NetworkPolicy
         {
             Egress = new NetworkEgressPolicy { Default = NetworkAction.Allow },
@@ -415,8 +417,11 @@ var request = new SandboxRequest(
 };
 ```
 
-The image must already be cached unless `ImageTarPath` is supplied. The image
-store wins over the tar when both identify an already-cached image. The native
+The image store is consulted first; a miss pulls `Image` from its registry
+unless `ImageTarPath` supplies it instead, or the request declares no egress,
+which refuses the pull rather than fetching outside the declared policy. The
+store wins over the tar when
+both identify an already-cached image. The native
 unit must be built with WSLC support or execution returns
 `UnsupportedContainment`.
 
@@ -430,7 +435,6 @@ configuration of its own:
 var request = new SandboxRequest(
     new SandboxPolicy
     {
-        Version = "0.9.0-alpha",
         Network = new NetworkPolicy
         {
             Egress = new NetworkEgressPolicy { Default = NetworkAction.Allow },
@@ -461,27 +465,10 @@ The native unit must be built with isolation-session support or execution return
 
 ### Network proxy
 
-Set `NetworkPolicy.Proxy` to route HTTP/HTTPS traffic through a loopback proxy
-or an explicit proxy URL:
-
-```csharp
-var policy = new SandboxPolicy
-{
-    Version = "0.8.0-alpha",
-    Network = new NetworkPolicy
-    {
-        Proxy = new LocalhostNetworkProxyPolicy(8080),
-        // Or: Proxy = new UrlNetworkProxyPolicy("http://proxy.example:3128"),
-    },
-};
-```
-
-Backend validation determines which form and combinations are enforceable.
-On backends that implement proxies cooperatively, well-behaved HTTP clients
-honor the injected proxy environment variables, but raw-socket clients can
-bypass them. The native `builtinTestServer` proxy is intentionally not exposed
-by this SDK: it is testing-only and the .NET FFI contract has no
-testing-feature opt-in.
+The V1 `SandboxPolicy` in `Microsoft.Mxc.Sdk.V1` does not expose legacy one-shot proxy
+settings. Consumers that need an older exact proxy contract must use the raw
+executor configuration path. WSLC state-aware exec exposes its supported
+proxy-only runtime override through `WslcExecOptions.RuntimeConfig`.
 
 ### Directional networking (schema 0.8)
 
@@ -491,7 +478,6 @@ protocol, and port rules, plus a runtime proxy value:
 ```csharp
 var policy = new SandboxPolicy
 {
-    Version = "0.8.0-alpha",
     Network = new NetworkPolicy
     {
         Egress = new NetworkEgressPolicy
@@ -526,10 +512,11 @@ var policy = new SandboxPolicy
 };
 ```
 
-Do not combine the directional fields with legacy `AllowOutbound`,
-`AllowLocalNetwork`, `AllowedHosts`, `BlockedHosts`, or `Proxy`; the native
-builder rejects mixed formats. Backend capability validation can reject a
-directional posture that the selected host/backend cannot enforce.
+The high-level policy does not expose the historical `AllowOutbound`,
+`AllowLocalNetwork`, `AllowedHosts`, `BlockedHosts`, or `Proxy` members.
+Callers replaying those fields must use a raw historical contract. Backend
+capability validation can reject a directional posture that the selected
+host/backend cannot enforce.
 
 ### Filesystem policy discovery
 
@@ -543,7 +530,6 @@ var temporaryFiles = SandboxPolicyDiscovery.GetTemporaryFilesPolicy();
 
 var policy = new SandboxPolicy
 {
-    Version = "0.8.0-alpha",
     Filesystem = new FilesystemPolicy
     {
         ReadonlyPaths =
@@ -576,7 +562,6 @@ does not grant:
 var request = new SandboxRequest(
     new SandboxPolicy
     {
-        Version = "0.8.0-alpha",
     },
     "cmd /c type C:\\blocked.txt")
 {
@@ -687,7 +672,6 @@ and its
 Per-invocation opt-in:
 - One-shot (`Run`/`Spawn`): set
   `SandboxPolicy.Telemetry = new TelemetrySettings { Enabled = true }`.
-  An explicit policy version must be `0.9.0-alpha` or later.
 - State-aware phases: set each phase's
   `Telemetry = new TelemetrySettings { Enabled = true }` independently.
   `ProvisionResult` contains the sandbox identity used by later phases; no
@@ -756,9 +740,13 @@ exception messages and stack traces. See
   interactive terminal inside an isolation session. Terminal behaviour has no
   automated oracle, so its `interactive`, `streaming` and `resize` scenarios are
   judged by whoever runs them; each states what to look for.
+- **`Microsoft.Mxc.Sdk.AotSmokeTest`** — a console project that proves the JSON
+  layer is Native AOT and trimming safe. It exercises the serialize/
+  deserialize paths with the `System.Text.Json` reflection fallback disabled and
+  is meant to be published with `-p:PublishAot=true`.
 - **`Microsoft.Mxc.Sdk.Tests`** — xUnit v3 tests. The streaming end-to-end tests
   need a capable host and skip, with a reason, unless `MXC_E2E_HOST_PREPPED=1`.
-  The isolation-session end-to-end tests skip unless `GetAvailableBackends()`
+  The isolation-session end-to-end tests skip unless `MxcPlatform.GetAvailableBackends()`
   reports that backend, which needs both a build with
   `-p:MxcWithIsolationSession=true` and a host running the OS-side service. Set
   `MXC_ISO_TESTS_REQUIRED=1` (or `true`) to turn those skips into failures.
@@ -787,24 +775,44 @@ Windows RID. The official package includes `mxc_ffi` for `win-x64`,
 `Microsoft.Mxc.Sdk.dll` is AnyCPU so the same assembly loads with each
 RID-specific native asset.
 
+## Native AOT compatibility
+
+The library is **Native AOT and trimming compatible**: it builds with
+`<IsAotCompatible>true</IsAotCompatible>`, so the .NET Native AOT, trimming, and
+single-file analyzers run under `TreatWarningsAsErrors`. This means that any
+`System.Text.Json` (de)serialization must be done via source-generation rather than
+reflection (the default mode).
+
+The **`Microsoft.Mxc.Sdk.AotSmokeTest`** console project proves this end to end:
+it disables `System.Text.Json` reflection fallback
+(`JsonSerializerIsReflectionEnabledByDefault=false`) and exercises the
+serialize/deserialize paths in isolation. Publish and run it with:
+
+```
+dotnet publish sdk/dotnet/Microsoft.Mxc.Sdk.AotSmokeTest -c Release -r win-x64
+```
+
+A clean publish (no `warning IL*`) plus a passing run is the AOT gate. The
+Native AOT link step needs the platform C toolchain (on Windows, the MSVC linker
+from a Visual Studio / Build Tools install, run from a developer command prompt).
+
 ## Supported surface
 
 Exposes **run-to-completion** (`Run` / `RunAsync`), **streaming**
 (`Spawn` → `MxcSandboxProcess`), and the **state-aware lifecycle**
 (`MxcLifecycle`) over the backends the public Rust SDK supports (Windows
 ProcessContainer, Linux Bubblewrap, macOS Seatbelt, and Windows
-IsolationSession and WSLC for run/stream; the state-aware lifecycle supports
-IsolationSession, Windows Sandbox, and WSLC on Windows. Windows Sandbox
-requires experimental opt-in; IsolationSession and WSLC do not).
+IsolationSession and WSLC for run/stream). The typed state-aware lifecycle
+supports IsolationSession and WSLC on Windows.
 
-`SchemaVersions` exposes the minimum and maximum accepted schema versions, the
-latest stable schema, and the backend-specific state-aware defaults. These
-constants are checked in CI against `schemas/schema-version.json`, alongside
-the Rust parser and TypeScript SDK constants.
+`SchemaVersions` exposes `Minimum`, `MaximumSupported`, and `LatestStable`.
+These public constants are checked in CI against
+`schemas/schema-version.json`, alongside the Rust parser and TypeScript SDK
+constants.
 
 ### State-aware lifecycle
 
-`MxcLifecycle` drives a sandbox through provision → start → exec → stop →
+`Microsoft.Mxc.Sdk.V1.MxcLifecycle` drives a sandbox through provision → start → exec → stop →
 deprovision. The backend is chosen explicitly at provision; the later phases
 identify the sandbox by the opaque `SandboxId` provision returns.
 
@@ -869,15 +877,6 @@ finally
 Provision options are backend-specific:
 
 ```csharp
-var windowsSandbox = new WindowsSandboxProvisionOptions
-{
-    Filesystem = new StateAwareFilesystemPolicy
-    {
-        ReadonlyPaths = { @"C:\input" },
-        ReadwritePaths = { @"C:\output" },
-    },
-};
-
 var wslc = new WslcProvisionOptions
 {
     Image = "alpine:latest",
@@ -894,14 +893,14 @@ var wslc = new WslcProvisionOptions
 };
 ```
 
-IsolationSession and WSLC state-aware calls use published schema
-`0.9.0-alpha`. Windows Sandbox state-aware calls use development schema
-`1.1.0-alpha`.
-`Version` may be omitted or explicitly set to that registered value; the SDK
-rejects other values rather than emitting an envelope for an unregistered
-state-aware contract. State-aware exec options expose working directory,
-`KEY=VALUE` environment entries, `InheritDefaultEnvironment`, and timeout.
-WSLC also accepts a proxy-only per-exec override:
+The v1 SDK owns exact contract `1.0.0` for typed IsolationSession and WSLC
+state-aware calls; callers do not select a schema version. Windows Sandbox
+lifecycle remains available only through the raw exact `1.1.0-alpha` contract,
+not through the typed v1 SDK surface.
+
+State-aware exec options expose working directory, `KEY=VALUE` environment
+entries, `InheritDefaultEnvironment`, and timeout. WSLC also accepts a
+proxy-only per-exec runtime override:
 
 ```csharp
 var options = new WslcExecOptions
@@ -909,9 +908,9 @@ var options = new WslcExecOptions
     WorkingDirectory = "/work",
     Environment = new List<string> { "MODE=test" },
     TimeoutMs = 30_000,
-    Network = new WslcExecNetworkPolicy
+    RuntimeConfig = new NetworkRuntimeConfig
     {
-        Proxy = new UrlNetworkProxyPolicy("http://proxy.example:8080"),
+        NetworkProxy = "http://proxy.example:8080",
     },
 };
 SandboxWaitResult outcome =
@@ -923,16 +922,15 @@ leave this process's console untouched. On backends that support streaming
 state-aware exec (currently IsolationSession and WSLC), their wait results report
 `StateAwareExecOptions.TimeoutMs` expirations through `TimedOut`, matching
 one-shot execution. WSLC exposes stdout and stderr but no stdin because the
-WSLC SDK provides no process-input API. Windows Sandbox does not support these
-streaming forms.
+WSLC SDK provides no process-input API.
 
 `ExecInSandboxAttached` relays the workload onto this process's stdio instead,
 returning no handle or captured output. For IsolationSession it allocates a
 pseudo-console and forwards stdin, so an interactive shell renders and resizes
 normally; the workload owns the console for the call's duration, including
 `Ctrl-C`, and stderr is merged into the pseudo-console's single output stream.
-Windows Sandbox and WSLC relay output but do not provide interactive stdin on
-this path. The API refuses with `ErrorCode.MalformedRequest` when this process's
+WSLC relays output but does not provide interactive stdin on this path. The API
+refuses with `ErrorCode.MalformedRequest` when this process's
 stdout and stdin are not both terminals, and when another attached exec is
 already running — one runs at a time per process. Any console state changed for
 IsolationSession is restored on return.
@@ -943,9 +941,8 @@ available as `ProvisionResult.IsolationSessionMetadata`.
 
 Every phase has a `DryRun...` counterpart that parses and validates the request
 without creating, starting, executing in, stopping, or destroying a sandbox.
-Windows Sandbox supports attached exec and exec dry-run, but not the streaming
-`ExecInSandbox` / `ExecInSandboxAsync` forms. WSLC supports both attached and
-streaming exec.
+WSLC supports both attached and streaming exec. Windows Sandbox lifecycle
+requests must use the raw exact `1.1.0-alpha` executor contract.
 
 Cross-cutting policy (`Network`, `Filesystem`) is sent as supplied. A backend
 that cannot honour a value rejects it with `ErrorCode.PolicyValidation` rather
