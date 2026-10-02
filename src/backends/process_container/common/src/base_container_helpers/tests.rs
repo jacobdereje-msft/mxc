@@ -127,8 +127,8 @@ fn identity_scoped_proxy_does_not_grant_host_loopback() {
 ///
 /// This is the posture a host without PSEC 1.1 ingress support must use. The
 /// policy is otherwise identical to the `"allow"` one, so the two tests
-/// together pin that `hostLoopback` selects the contract version and nothing
-/// else.
+/// together pin that `hostLoopback` changes the ingress prerequisite, not
+/// the proxy capability or peer.
 #[test]
 fn identity_less_proxy_keeps_peer_and_capability_under_psec_1_0() {
     let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -285,7 +285,7 @@ fn runtime_proxy_allows_only_its_ipv4_loopback_endpoint() {
         eprintln!("SKIPPED: native proxy networking requires usable PSEC 1.1 ingress support");
         return;
     }
-    assert_proxy_endpoint_only("127.0.0.1");
+    assert_proxy_endpoint_only("127.0.0.1", NetworkAction::Allow);
 }
 
 #[test]
@@ -294,10 +294,24 @@ fn runtime_proxy_blocks_ipv6_loopback_bypass() {
         eprintln!("SKIPPED: native proxy networking requires usable PSEC 1.1 ingress support");
         return;
     }
-    assert_proxy_endpoint_only("::1");
+    assert_proxy_endpoint_only("::1", NetworkAction::Allow);
 }
 
-fn assert_proxy_endpoint_only(other_host: &str) {
+#[test]
+fn runtime_proxy_with_denied_host_loopback_confines_ipv4_and_ipv6() {
+    if !BaseContainerRunner::is_base_container_api_present()
+        || !crate::secenv::supports_version(SecurityEnvironmentVersion::V1_0)
+            .expect("PSEC 1.0 support query failed")
+    {
+        eprintln!("SKIPPED: native proxy networking requires usable PSEC 1.0 support");
+        return;
+    }
+    for other_host in ["127.0.0.1", "::1"] {
+        assert_proxy_endpoint_only(other_host, NetworkAction::Deny);
+    }
+}
+
+fn assert_proxy_endpoint_only(other_host: &str, host_loopback: NetworkAction) {
     let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let other = TcpListener::bind((other_host, 0)).unwrap();
     drop(TcpStream::connect(proxy.local_addr().unwrap()).unwrap());
@@ -339,6 +353,12 @@ fn assert_proxy_endpoint_only(other_host: &str) {
     let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
         .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
     let mut request = runtime_proxy_request(&proxy);
+    request
+        .policy
+        .network_ingress
+        .as_mut()
+        .unwrap()
+        .host_loopback = host_loopback;
     request.script_code = format!(
         "\"{}\" -NoLogo -NoProfile -NonInteractive -Command \"{}\"",
         powershell.display(),
@@ -347,7 +367,8 @@ fn assert_proxy_endpoint_only(other_host: &str) {
     let output = run_proxy_command(request);
     assert_eq!(
         output.lines().map(str::trim).collect::<Vec<_>>(),
-        ["proxy-connected", "other-port-denied"]
+        ["proxy-connected", "other-port-denied"],
+        "hostLoopback={host_loopback:?}, other_host={other_host}"
     );
 }
 
