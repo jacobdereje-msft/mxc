@@ -145,6 +145,12 @@ not reachable through `process.env`.
 
 ## Network Policy
 
+How a `default` combines with the `allow` and `deny` rules beside it is stated
+in [the shared networking policy](../sandbox-policy/0.8.0/networking/networking.md).
+LXC keeps that promise as written.  It also reads every rule whether or not the
+rule changes anything, and a malformed rule fails the run even where it would
+have had no effect.
+
 A legacy deny-default policy that names `allowedHosts` opens port 53
 unconditionally and cannot block DNS.  The directional `network.egress`
 rules carry no such exemption and govern port 53 like any other destination.
@@ -171,23 +177,6 @@ leaving the container.
 Naming a port narrows either one to the four protocols that carry a port: TCP,
 UDP, SCTP, and DCCP.  A port written beside `icmp` is refused; ICMP carries
 none.
-
-### What each kind of rule does
-
-An `egress` rule is the only thing that lets traffic out, and it can only
-permit the five protocols above.
-
-| The rule | Under `default: deny` | Under `default: allow` |
-|----------|-----------------------|------------------------|
-| `allow` | The only way out.  Permits the destinations it names. | Nothing.  An `allow` never adds reach under this default. |
-| `deny` | Narrows an `allow` rule wherever the two overlap. | The only thing that blocks.  Refuses the destinations it names. |
-
-A `deny` beats an `allow` under either default.  Under `default: deny` a `deny`
-narrows the reach an `allow` opened.  Under `default: allow` an `allow` cannot
-reopen a destination a `deny` has closed.
-
-Both kinds of rule are read whether or not they change anything.  A malformed
-rule fails the run even where it would have had no effect.
 
 ### Proxy
 
