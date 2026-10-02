@@ -660,9 +660,25 @@ creates the terminal inside MXC, and returns an `MxcPtyProcess` with merged outp
 resize, timeout-aware waiting, and process-tree kill semantics:
 
 ```csharp
+var request = new SandboxRequest(
+    new SandboxPolicy
+    {
+        Network = new NetworkPolicy
+        {
+            Egress = new NetworkEgressPolicy { Default = NetworkAction.Allow },
+            Ingress = new NetworkIngressPolicy
+            {
+                Default = NetworkAction.Allow,
+                HostLoopback = NetworkAction.Allow,
+            },
+        },
+    },
+    "cmd.exe")
+{
+    Containment = new IsolationSessionContainment(),
+};
 using var terminal = MxcSandbox.SpawnWithPty(
-    policy,
-    "cmd.exe",
+    request,
     new MxcPtySize(Rows: 30, Columns: 100));
 
 using var writer = new StreamWriter(terminal.Input) { AutoFlush = true };
