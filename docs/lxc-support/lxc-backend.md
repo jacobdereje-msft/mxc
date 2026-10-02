@@ -331,11 +331,13 @@ The zone query should answer the zone you assigned.
   whenever a policy is installed.  Default-deny closes the container to the
   outside world as long as nothing inside deliberately opens it, including
   services the workload itself starts.
-- **Only five protocols can leave a filtered container.** TCP, UDP, SCTP, DCCP,
-  and ICMP are the whole of what an `egress` rule can permit.  GRE, ESP, and
-  anything else an `egress` rule has no way to name never leave, under a default
-  of `allow` as readily as `deny`.  A legacy `allowedHosts` entry is not a
-  protocol rule: it opens the destination it names to every protocol.
+- **Writing a `port` narrows a rule to TCP, UDP, and ICMP.** Those three are the
+  whole of what a rule carrying a port can act on.  GRE, ESP, SCTP, and every
+  other protocol reach the destination untouched, under a default of `allow` as
+  readily as `deny`.  Drop the port and `protocol: "any"` covers every protocol
+  instead.  ICMP carries no port of its own, and a rule that names a port covers
+  ICMP in full rather than on the port written.  A legacy `allowedHosts` entry
+  is not a protocol rule: it opens the destination it names to every protocol.
 - **A workload can send around the policy.** The container keeps the permission
   an explicit `protocol: "icmp"` allow needs to work.  That same permission lets
   a program assemble its own packets and put them on the wire directly, where no

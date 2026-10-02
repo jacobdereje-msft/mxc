@@ -481,7 +481,7 @@ fn explicit_any_without_a_port_matches_every_protocol_and_port() {
 }
 
 #[test]
-fn any_with_a_port_expands_to_every_protocol_whose_port_can_be_matched() {
+fn any_with_a_port_expands_to_the_protocol_floor() {
     let destination = "192.0.2.0/24";
     let policy = directional_policy(
         NetworkAction::Deny,
@@ -510,16 +510,14 @@ fn any_with_a_port_expands_to_every_protocol_whose_port_can_be_matched() {
     assert_eq!(
         selectors,
         vec![
-            (Some("dccp"), Some("1000:2000")),
-            (Some("dccp"), Some("443")),
-            (Some("sctp"), Some("1000:2000")),
-            (Some("sctp"), Some("443")),
+            (Some("icmp"), None),
+            (Some("icmp"), None),
             (Some("tcp"), Some("1000:2000")),
             (Some("tcp"), Some("443")),
             (Some("udp"), Some("1000:2000")),
             (Some("udp"), Some("443")),
         ],
-        "input=default deny, allow=[{{to:{destination}, ports:[any/443,any/1000-2000]}}]; expected every port-carrying protocol once per selector; output={:?}",
+        "input=default deny, allow=[{{to:{destination}, ports:[any/443,any/1000-2000]}}]; expected the TCP/UDP/ICMP floor, port-scoped where the protocol carries a port; output={:?}",
         rules.ipv4
     );
 
@@ -538,9 +536,53 @@ fn any_with_a_port_expands_to_every_protocol_whose_port_can_be_matched() {
             rules.ipv4
         );
     }
-    assert!(
-        matching_emitted_rule(&rules.ipv4, address, "icmp", Some(443)).is_none(),
-        "input=default deny, allow=[{{to:{destination}, ports:[any/443]}}], packet=192.0.2.25/icmp; expected no emitted rule match; output={:?}",
+    assert_eq!(
+        new_connection_action(&rules.ipv4, address, "icmp", None),
+        "ACCEPT",
+        "input=default deny, allow=[{{to:{destination}, ports:[any/443]}}], packet=192.0.2.25/icmp; output={:?}",
+        rules.ipv4
+    );
+}
+
+#[test]
+fn a_denied_any_with_a_port_blocks_the_whole_floor() {
+    let destination = "192.0.2.0/24";
+    let policy = directional_policy(
+        NetworkAction::Allow,
+        Vec::new(),
+        vec![rule(
+            vec![peer(destination, &[])],
+            vec![port(NetworkProtocol::Any, Some(443), None)],
+        )],
+    );
+    let rules = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
+    let address = packet_address("192.0.2.25");
+
+    for (protocol, packet_port) in [("tcp", Some(443)), ("udp", Some(443)), ("icmp", None)] {
+        assert_eq!(
+            chain_verdict(
+                &rules.ipv4,
+                NetworkAction::Allow,
+                address,
+                protocol,
+                packet_port
+            ),
+            "DROP",
+            "input=default allow, deny=[{{to:{destination}, ports:[any/443]}}], packet=192.0.2.25/{protocol}/{packet_port:?}; output={:?}",
+            rules.ipv4
+        );
+    }
+
+    assert_eq!(
+        chain_verdict(
+            &rules.ipv4,
+            NetworkAction::Allow,
+            address,
+            "tcp",
+            Some(80)
+        ),
+        "ACCEPT",
+        "input=default allow, deny=[{{to:{destination}, ports:[any/443]}}], packet=192.0.2.25/tcp/80; output={:?}",
         rules.ipv4
     );
 }

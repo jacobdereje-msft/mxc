@@ -127,8 +127,6 @@ enum RuleMatch {
 enum TransportProtocol {
     Tcp,
     Udp,
-    Sctp,
-    Dccp,
 }
 
 impl TransportProtocol {
@@ -136,18 +134,9 @@ impl TransportProtocol {
         match self {
             Self::Tcp => "tcp",
             Self::Udp => "udp",
-            Self::Sctp => "sctp",
-            Self::Dccp => "dccp",
         }
     }
 }
-
-const TRANSPORT_PROTOCOLS: [TransportProtocol; 4] = [
-    TransportProtocol::Tcp,
-    TransportProtocol::Udp,
-    TransportProtocol::Sctp,
-    TransportProtocol::Dccp,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EgressSection {
@@ -919,7 +908,11 @@ impl NetworkIptablesManager {
         // A rule the chain discards is still the operator's to get wrong.
         if !chain.contains(&EgressSection::OperatorAllows) {
             let mut discarded_budget = MAX_EGRESS_ENTRIES;
-            Self::lower_section(&EgressSection::OperatorAllows, egress, &mut discarded_budget)?;
+            Self::lower_section(
+                &EgressSection::OperatorAllows,
+                egress,
+                &mut discarded_budget,
+            )?;
         }
 
         let mut remaining = MAX_EGRESS_ENTRIES;
@@ -1089,10 +1082,20 @@ impl NetworkIptablesManager {
                 ports,
             }],
 
-            NetworkProtocol::Any if ports.is_some() => TRANSPORT_PROTOCOLS
-                .iter()
-                .map(|&protocol| RuleMatch::Transport { protocol, ports })
-                .collect(),
+            // `any` is the floor the policy contract names: TCP, UDP, and
+            // ICMPv4/6.  ICMP carries no port.  A port-scoped selector matches
+            // it in full rather than dropping it from the set.
+            NetworkProtocol::Any if ports.is_some() => vec![
+                RuleMatch::Transport {
+                    protocol: TransportProtocol::Tcp,
+                    ports,
+                },
+                RuleMatch::Transport {
+                    protocol: TransportProtocol::Udp,
+                    ports,
+                },
+                RuleMatch::Icmp,
+            ],
             NetworkProtocol::Any => vec![RuleMatch::AnyTraffic],
         })
     }
@@ -1973,10 +1976,7 @@ mod tests {
     #[test]
     fn directional_egress_chain_cases() {
         let cases = [
-            (
-                NetworkAction::Allow,
-                vec![EgressSection::OperatorDenies],
-            ),
+            (NetworkAction::Allow, vec![EgressSection::OperatorDenies]),
             (
                 NetworkAction::Deny,
                 vec![EgressSection::OperatorDenies, EgressSection::OperatorAllows],
@@ -1995,11 +1995,10 @@ mod tests {
     #[test]
     fn selector_matches_cases() {
         let at_443 = |protocol| transport(protocol, Some((443, 443)));
-        let every_transport_at_443 = vec![
+        let the_floor_at_443 = vec![
             at_443(TransportProtocol::Tcp),
             at_443(TransportProtocol::Udp),
-            at_443(TransportProtocol::Sctp),
-            at_443(TransportProtocol::Dccp),
+            RuleMatch::Icmp,
         ];
 
         let cases = [
@@ -2034,12 +2033,7 @@ mod tests {
                 None,
                 vec![RuleMatch::AnyTraffic],
             ),
-            (
-                NetworkProtocol::Any,
-                Some(443),
-                None,
-                every_transport_at_443,
-            ),
+            (NetworkProtocol::Any, Some(443), None, the_floor_at_443),
         ];
 
         for (protocol, port, end_port, expected) in cases {

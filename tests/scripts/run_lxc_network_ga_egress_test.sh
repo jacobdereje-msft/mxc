@@ -32,8 +32,9 @@ command -v ip6tables >/dev/null 2>&1 || skip "ip6tables is not installed."
 command -v lxc-create >/dev/null 2>&1 || skip "LXC (lxc-create) is not installed."
 command -v ip >/dev/null 2>&1 || skip "iproute2 (ip) is not installed."
 command -v python3 >/dev/null 2>&1 || skip "python3 is not installed; the egress peer needs it to host a listener."
-# SCTP is one carried protocol among several, so a kernel without it costs the
-# sctp cases rather than the suite.
+# SCTP sits outside the protocols the rules name, and the sctp cases prove the
+# rules leave it alone.  A kernel without SCTP costs those cases rather than the
+# suite.
 HOST_HAS_SCTP=0
 if python3 -c "import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_SCTP).close()" >/dev/null 2>&1; then
     HOST_HAS_SCTP=1
@@ -491,7 +492,7 @@ assert_blocked "Expected tcp/443 blocked."
 if [ "$HOST_HAS_SCTP" -eq 1 ]; then
     run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe sctp" \
         "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$SCTP_COMMAND" any "$PEER_SHARED_PORT")"
-    assert_blocked "Expected sctp blocked."
+    assert_allowed "Expected sctp allowed. A deny naming protocol any and a port reached a protocol outside tcp, udp, and icmp."
 else
     echo "SKIP CASE: default allow, deny any:$PEER_SHARED_PORT, probe sctp. The host kernel has no SCTP support."
 fi
@@ -506,7 +507,7 @@ assert_allowed "Expected tcp/443 allowed."
 
 run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe icmp" \
     "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$ICMP_COMMAND" any "$PEER_SHARED_PORT")"
-assert_allowed "Expected icmp allowed."
+assert_blocked "Expected icmp blocked. A deny naming protocol any and a port left icmp reachable."
 
 if [ "$HOST_HAS_SCTP" -eq 1 ]; then
     run_case "default deny with an allow rule naming no protocol and no port. Probe sctp" \
@@ -531,10 +532,14 @@ assert_allowed "Expected icmp allowed."
 if [ "$HOST_HAS_SCTP" -eq 1 ]; then
     run_case "default deny with an allow rule naming protocol any and port $PEER_SHARED_PORT. Probe sctp" \
         "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$SCTP_COMMAND" any "$PEER_SHARED_PORT")"
-    assert_allowed "Expected sctp allowed."
+    assert_blocked "Expected sctp blocked. An allow naming protocol any and a port reached a protocol outside tcp, udp, and icmp."
 else
     echo "SKIP CASE: default deny, allow any:$PEER_SHARED_PORT, probe sctp. The host kernel has no SCTP support."
 fi
+
+run_case "default deny with an allow rule naming protocol any and port $PEER_SHARED_PORT. Probe icmp" \
+    "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$ICMP_COMMAND" any "$PEER_SHARED_PORT")"
+assert_allowed "Expected icmp allowed. An allow naming protocol any and a port did not reach icmp."
 
 run_case "default deny with an allow rule naming protocol any and port $PEER_SHARED_PORT. Probe tcp/443" \
     "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$TCP_COMMAND" any "$PEER_SHARED_PORT")"
