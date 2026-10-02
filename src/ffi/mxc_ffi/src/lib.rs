@@ -687,7 +687,7 @@ fn probe_request_json_inner(
         }
         (ProbeInputFormat::ExactConfig, Some(request_json)) => {
             parse_exact_probe_request(request_json)
-                .and_then(|request| mxc_engine::probe_execution_request(Some(&request)))
+                .and_then(|request| mxc_sdk::mxc_engine::probe_execution_request(Some(&request)))
         }
     }
     .map_err(probe_error)?;
@@ -698,12 +698,13 @@ fn probe_request_json_inner(
 #[cfg(target_os = "windows")]
 fn parse_exact_probe_request(
     request_json: &str,
-) -> Result<wxc_common::models::ExecutionRequest, Error> {
-    use wxc_common::logger::{Logger, Mode};
-    use wxc_common::state_aware_request::MxcRequest;
+) -> Result<mxc_sdk::wxc_common::models::ExecutionRequest, Error> {
+    use mxc_sdk::wxc_common::logger::{Logger, Mode};
+    use mxc_sdk::wxc_common::state_aware_request::MxcRequest;
 
     let mut logger = Logger::new(Mode::Buffer);
-    match wxc_common::config_parser::load_mxc_request_from_json(request_json, &mut logger) {
+    match mxc_sdk::wxc_common::config_parser::load_mxc_request_from_json(request_json, &mut logger)
+    {
         Ok(MxcRequest::OneShot(request)) => Ok(request),
         Ok(MxcRequest::StateAware(_)) => Err(Error::new(
             ErrorCode::MalformedRequest,
@@ -714,9 +715,9 @@ fn parse_exact_probe_request(
 }
 
 #[cfg(target_os = "windows")]
-fn probe_parse_error(error: wxc_common::config_parser::ParseError) -> Error {
-    use wxc_common::config_parser::ParseError;
-    use wxc_common::mxc_error::MxcError;
+fn probe_parse_error(error: mxc_sdk::wxc_common::config_parser::ParseError) -> Error {
+    use mxc_sdk::wxc_common::config_parser::ParseError;
+    use mxc_sdk::wxc_common::mxc_error::MxcError;
 
     match error {
         ParseError::StateAware(error) => Error::from(error),
@@ -1362,14 +1363,15 @@ mod tests {
     #[cfg(debug_assertions)]
     struct TelemetryTestEnv {
         _dir: tempfile::TempDir,
-        _env: wxc_common::telemetry::test_support::TelemetryTestEnv,
+        _env: mxc_sdk::wxc_common::telemetry::test_support::TelemetryTestEnv,
     }
 
     #[cfg(debug_assertions)]
     impl TelemetryTestEnv {
         fn new(_label: &str) -> Self {
             let dir = tempfile::tempdir().expect("create temp dir");
-            let env = wxc_common::telemetry::test_support::TelemetryTestEnv::new(dir.path());
+            let env =
+                mxc_sdk::wxc_common::telemetry::test_support::TelemetryTestEnv::new(dir.path());
             Self {
                 _dir: dir,
                 _env: env,
@@ -1418,7 +1420,8 @@ mod tests {
                 .to_str()
                 .unwrap();
             let prompt: serde_json::Value = serde_json::from_str(prompt).unwrap();
-            let canonical = wxc_common::telemetry::consent_prompt::prompt_for_locale(Some("en-US"));
+            let canonical =
+                mxc_sdk::wxc_common::telemetry::consent_prompt::prompt_for_locale(Some("en-US"));
             assert_eq!(prompt["resourceVersion"], canonical.resource_version);
             assert_eq!(prompt["locale"], canonical.locale);
             assert_eq!(prompt["title"]["id"], canonical.title.id);
@@ -1586,8 +1589,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bogus_localappdata = dir.path().join("localappdata-file");
         std::fs::write(&bogus_localappdata, b"not a directory").unwrap();
-        let _guard =
-            wxc_common::telemetry::test_support::TelemetryTestEnv::new(&bogus_localappdata);
+        let _guard = mxc_sdk::wxc_common::telemetry::test_support::TelemetryTestEnv::new(
+            &bogus_localappdata,
+        );
 
         let mut out: *mut c_char = ptr::null_mut();
         // SAFETY: `out` is a valid writable pointer to a local variable.
@@ -1597,7 +1601,7 @@ mod tests {
     }
 
     /// Verifies the export marshals a valid state string that the caller can
-    /// free. Policy semantics are tested in `wxc_common::telemetry::policy`.
+    /// free. Policy semantics are tested in `mxc_sdk::wxc_common::telemetry::policy`.
     #[test]
     fn get_policy_returns_a_valid_state_string() {
         let s = read_policy_string();
@@ -1629,7 +1633,7 @@ mod tests {
     #[cfg(all(target_os = "windows", debug_assertions))]
     #[test]
     fn get_policy_marshals_the_exact_state_for_each_registry_value() {
-        use wxc_common::telemetry::policy::test_support::PolicyKeyGuard;
+        use mxc_sdk::wxc_common::telemetry::policy::test_support::PolicyKeyGuard;
 
         let guard = PolicyKeyGuard::new();
         // No value set: an unmanaged machine.
