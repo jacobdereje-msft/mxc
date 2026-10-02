@@ -10,7 +10,7 @@ use wxc_common::models::{
     ContainerPolicy, NetworkAction, NetworkCidr, NetworkEgressPolicy, NetworkPeer, NetworkPolicy,
     NetworkPort, NetworkProtocol, NetworkRule, ProxyAddress, ProxyHostPin,
 };
-use wxc_common::network_blocks::{self, AddressBlock, IpFamily};
+use wxc_common::network_blocks::{self, AddressBlock, IpFamily, MAX_EGRESS_ENTRIES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NetworkPlan {
@@ -149,31 +149,17 @@ const TRANSPORT_PROTOCOLS: [TransportProtocol; 4] = [
     TransportProtocol::Dccp,
 ];
 
-fn carried_protocol_matches() -> Vec<RuleMatch> {
-    let mut matches: Vec<RuleMatch> = TRANSPORT_PROTOCOLS
-        .iter()
-        .map(|&protocol| RuleMatch::Transport {
-            protocol,
-            ports: None,
-        })
-        .collect();
-    matches.push(RuleMatch::Icmp);
-    matches
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EgressSection {
     OperatorDenies,
     OperatorAllows,
-    CarriedProtocolFloor,
 }
 
+// Under an accepting default the chain closes on ACCEPT, which already grants
+// every allow rule.  Only the denies have to be programmed.
 fn directional_egress_chain(default: NetworkAction) -> &'static [EgressSection] {
     match default {
-        NetworkAction::Allow => &[
-            EgressSection::OperatorDenies,
-            EgressSection::CarriedProtocolFloor,
-        ],
+        NetworkAction::Allow => &[EgressSection::OperatorDenies],
 
         NetworkAction::Deny => &[EgressSection::OperatorDenies, EgressSection::OperatorAllows],
     }
@@ -888,13 +874,6 @@ impl NetworkIptablesManager {
         }
     }
 
-    fn closing_policy(policy: &ContainerPolicy, uses_directional_keys: bool) -> NetworkPolicy {
-        match Self::stated_egress(policy, uses_directional_keys) {
-            Some(_) => NetworkPolicy::Block,
-            None => Self::effective_default_policy(policy, uses_directional_keys),
-        }
-    }
-
     /// Refuse a policy that cannot be programmed, discarding the rules it would build.
     pub(crate) fn refuse_unprogrammable_egress(
         policy: &ContainerPolicy,
@@ -939,12 +918,14 @@ impl NetworkIptablesManager {
 
         // A rule the chain discards is still the operator's to get wrong.
         if !chain.contains(&EgressSection::OperatorAllows) {
-            Self::lower_section(&EgressSection::OperatorAllows, egress)?;
+            let mut discarded_budget = MAX_EGRESS_ENTRIES;
+            Self::lower_section(&EgressSection::OperatorAllows, egress, &mut discarded_budget)?;
         }
 
+        let mut remaining = MAX_EGRESS_ENTRIES;
         let mut entries = Vec::new();
         for section in chain {
-            entries.extend(Self::lower_section(section, egress)?);
+            entries.extend(Self::lower_section(section, egress, &mut remaining)?);
         }
         Ok(entries)
     }
@@ -952,47 +933,59 @@ impl NetworkIptablesManager {
     fn lower_section(
         section: &EgressSection,
         egress: &NetworkEgressPolicy,
+        remaining: &mut usize,
     ) -> Result<Vec<EgressEntry>, String> {
         let (rules, action) = match section {
             EgressSection::OperatorDenies => (&egress.deny, RuleAction::Deny),
             EgressSection::OperatorAllows => (&egress.allow, RuleAction::Allow),
-            EgressSection::CarriedProtocolFloor => return Self::lower_carried_protocols(),
         };
 
         let mut entries = Vec::new();
         for rule in rules {
-            entries.extend(Self::lower_rule(rule, action)?);
+            entries.extend(Self::lower_rule(rule, action, remaining)?);
         }
         Ok(entries)
     }
 
-    fn lower_carried_protocols() -> Result<Vec<EgressEntry>, String> {
-        let mut entries = Vec::new();
-        for destination in Self::peer_list_destinations(&Self::every_destination_peers())? {
-            for matching in carried_protocol_matches() {
-                entries.push(EgressEntry {
-                    destination: destination.clone(),
-                    action: RuleAction::Allow,
-                    matching,
-                });
-            }
+    // One rule costs its destinations times its matches.  Charging that product
+    // before building it keeps an oversized policy from being allocated at all.
+    fn take_rule_budget(
+        remaining: &mut usize,
+        destinations: usize,
+        matches: usize,
+    ) -> Result<(), String> {
+        let needed = destinations.saturating_mul(matches);
+        if needed > *remaining {
+            return Err(format!(
+                "network.egress expands into more than {MAX_EGRESS_ENTRIES} firewall rules. A \
+                 rule becomes every destination block it resolves to in every port it names, so \
+                 narrow the peers, the exclusions, or the ports."
+            ));
         }
-        Ok(entries)
+        *remaining -= needed;
+        Ok(())
     }
 
-    fn lower_rule(rule: &NetworkRule, action: RuleAction) -> Result<Vec<EgressEntry>, String> {
+    fn lower_rule(
+        rule: &NetworkRule,
+        action: RuleAction,
+        remaining: &mut usize,
+    ) -> Result<Vec<EgressEntry>, String> {
         let matches = if rule.ports.is_empty() {
-            Self::unconstrained_matches(action)
+            vec![RuleMatch::AnyTraffic]
         } else {
             let mut selected = Vec::new();
             for selector in &rule.ports {
-                selected.extend(Self::selector_matches(selector, action)?);
+                selected.extend(Self::selector_matches(selector)?);
             }
             selected
         };
 
+        let destinations = Self::rule_destinations(rule)?;
+        Self::take_rule_budget(remaining, destinations.len(), matches.len())?;
+
         let mut entries = Vec::new();
-        for destination in Self::rule_destinations(rule)? {
+        for destination in destinations {
             for matching in &matches {
                 entries.push(EgressEntry {
                     destination: destination.clone(),
@@ -1069,18 +1062,7 @@ impl NetworkIptablesManager {
         network_blocks::cidr_text(cidr)
     }
 
-    // AnyTraffic on an allow would also grant the protocols MXC does not model.
-    fn unconstrained_matches(action: RuleAction) -> Vec<RuleMatch> {
-        match action {
-            RuleAction::Deny => vec![RuleMatch::AnyTraffic],
-            RuleAction::Allow => carried_protocol_matches(),
-        }
-    }
-
-    fn selector_matches(
-        selector: &NetworkPort,
-        action: RuleAction,
-    ) -> Result<Vec<RuleMatch>, String> {
+    fn selector_matches(selector: &NetworkPort) -> Result<Vec<RuleMatch>, String> {
         if selector.protocol == NetworkProtocol::Icmp
             && (selector.port.is_some() || selector.end_port.is_some())
         {
@@ -1111,7 +1093,7 @@ impl NetworkIptablesManager {
                 .iter()
                 .map(|&protocol| RuleMatch::Transport { protocol, ports })
                 .collect(),
-            NetworkProtocol::Any => Self::unconstrained_matches(action),
+            NetworkProtocol::Any => vec![RuleMatch::AnyTraffic],
         })
     }
 
@@ -1685,7 +1667,7 @@ impl NetworkIptablesManager {
 
         let default_rule = Self::build_default_policy_rule_arg(
             &self.chain_name,
-            Self::closing_policy(policy, uses_directional_keys),
+            Self::effective_default_policy(policy, uses_directional_keys),
             proxy_mode,
         );
         let default_args: Vec<&str> = default_rule.iter().map(String::as_str).collect();
@@ -1989,44 +1971,11 @@ mod tests {
     }
 
     #[test]
-    fn carried_protocol_matches_cases() {
-        assert_eq!(
-            carried_protocol_matches(),
-            vec![
-                transport(TransportProtocol::Tcp, None),
-                transport(TransportProtocol::Udp, None),
-                transport(TransportProtocol::Sctp, None),
-                transport(TransportProtocol::Dccp, None),
-                RuleMatch::Icmp,
-            ]
-        );
-    }
-
-    #[test]
-    fn unconstrained_matches_cases() {
-        let cases = [
-            (RuleAction::Deny, vec![RuleMatch::AnyTraffic]),
-            (RuleAction::Allow, carried_protocol_matches()),
-        ];
-
-        for (action, expected) in cases {
-            assert_eq!(
-                NetworkIptablesManager::unconstrained_matches(action),
-                expected,
-                "unconstrained_matches({action:?})"
-            );
-        }
-    }
-
-    #[test]
     fn directional_egress_chain_cases() {
         let cases = [
             (
                 NetworkAction::Allow,
-                vec![
-                    EgressSection::OperatorDenies,
-                    EgressSection::CarriedProtocolFloor,
-                ],
+                vec![EgressSection::OperatorDenies],
             ),
             (
                 NetworkAction::Deny,
@@ -2058,74 +2007,48 @@ mod tests {
                 NetworkProtocol::Tcp,
                 None,
                 None,
-                RuleAction::Allow,
                 vec![transport(TransportProtocol::Tcp, None)],
             ),
             (
                 NetworkProtocol::Tcp,
                 Some(443),
                 None,
-                RuleAction::Allow,
                 vec![at_443(TransportProtocol::Tcp)],
             ),
             (
                 NetworkProtocol::Tcp,
                 Some(80),
                 Some(90),
-                RuleAction::Allow,
                 vec![transport(TransportProtocol::Tcp, Some((80, 90)))],
             ),
             (
                 NetworkProtocol::Udp,
                 Some(53),
                 None,
-                RuleAction::Deny,
                 vec![transport(TransportProtocol::Udp, Some((53, 53)))],
             ),
-            (
-                NetworkProtocol::Icmp,
-                None,
-                None,
-                RuleAction::Allow,
-                vec![RuleMatch::Icmp],
-            ),
+            (NetworkProtocol::Icmp, None, None, vec![RuleMatch::Icmp]),
             (
                 NetworkProtocol::Any,
                 None,
                 None,
-                RuleAction::Allow,
-                carried_protocol_matches(),
-            ),
-            (
-                NetworkProtocol::Any,
-                None,
-                None,
-                RuleAction::Deny,
                 vec![RuleMatch::AnyTraffic],
             ),
             (
                 NetworkProtocol::Any,
                 Some(443),
                 None,
-                RuleAction::Allow,
-                every_transport_at_443.clone(),
-            ),
-            (
-                NetworkProtocol::Any,
-                Some(443),
-                None,
-                RuleAction::Deny,
                 every_transport_at_443,
             ),
         ];
 
-        for (protocol, port, end_port, action, expected) in cases {
+        for (protocol, port, end_port, expected) in cases {
             let selector = port_selector(protocol, port, end_port);
 
             assert_eq!(
-                NetworkIptablesManager::selector_matches(&selector, action),
+                NetworkIptablesManager::selector_matches(&selector),
                 Ok(expected),
-                "selector_matches({protocol:?} port={port:?} end_port={end_port:?}, {action:?})"
+                "selector_matches({protocol:?} port={port:?} end_port={end_port:?})"
             );
         }
     }
@@ -2136,26 +2059,26 @@ mod tests {
             let selector = port_selector(NetworkProtocol::Icmp, port, end_port);
 
             assert!(
-                NetworkIptablesManager::selector_matches(&selector, RuleAction::Allow).is_err(),
+                NetworkIptablesManager::selector_matches(&selector).is_err(),
                 "selector_matches(Icmp port={port:?} end_port={end_port:?}) should refuse"
             );
         }
     }
 
     #[test]
-    fn closing_policy_cases() {
+    fn effective_default_policy_cases() {
         let cases = [
             (
                 Some(NetworkAction::Allow),
                 NetworkPolicy::Allow,
                 true,
-                NetworkPolicy::Block,
+                NetworkPolicy::Allow,
             ),
             (
                 Some(NetworkAction::Allow),
                 NetworkPolicy::Block,
                 true,
-                NetworkPolicy::Block,
+                NetworkPolicy::Allow,
             ),
             (
                 Some(NetworkAction::Deny),
@@ -2191,9 +2114,9 @@ mod tests {
             };
 
             assert_eq!(
-                NetworkIptablesManager::closing_policy(&policy, uses_directional_keys),
+                NetworkIptablesManager::effective_default_policy(&policy, uses_directional_keys),
                 expected,
-                "closing_policy(egress={egress_default:?} stated={stated:?}, {uses_directional_keys})"
+                "effective_default_policy(egress={egress_default:?} stated={stated:?}, {uses_directional_keys})"
             );
         }
     }

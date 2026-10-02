@@ -186,15 +186,39 @@ fn explicit_deny_precedes_an_overlapping_allow_in_both_families() {
 
     assert_eq!(
         destination_actions(&rules.ipv4, ipv4),
-        vec!["DROP", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT"],
+        vec!["DROP", "ACCEPT"],
         "input=allow+deny to {ipv4}, family=IPv4; output={:?}",
         rules.ipv4
     );
     assert_eq!(
         destination_actions(&rules.ipv6, ipv6),
-        vec!["DROP", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT"],
+        vec!["DROP", "ACCEPT"],
         "input=allow+deny to {ipv6}, family=IPv6; output={:?}",
         rules.ipv6
+    );
+}
+
+#[test]
+fn an_allow_default_closes_the_chain_on_accept() {
+    let policy = directional_policy(
+        NetworkAction::Allow,
+        Vec::new(),
+        vec![rule(
+            vec![peer("198.51.100.0/24", &[])],
+            vec![port(NetworkProtocol::Any, Some(443), None)],
+        )],
+    );
+
+    let closing = NetworkIptablesManager::build_default_policy_rule_arg(
+        "MXC-test",
+        NetworkIptablesManager::effective_default_policy(&policy, true),
+        false,
+    );
+
+    assert_eq!(
+        closing.last().map(String::as_str),
+        Some("ACCEPT"),
+        "input=default allow, deny.to=[198.51.100.0/24:443]; an allow default leaves everything no deny rule names reachable, including a protocol the schema cannot spell; output={closing:?}"
     );
 }
 
@@ -347,7 +371,7 @@ fn each_cidr_is_emitted_only_in_its_matching_address_family() {
 
     assert_eq!(
         destination_actions(&rules.ipv4, ipv4),
-        vec!["ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT"],
+        vec!["ACCEPT"],
         "input=allow.to=[{ipv4},{ipv6}], expected {ipv4} in IPv4 only; output={:?}",
         rules.ipv4
     );
@@ -358,7 +382,7 @@ fn each_cidr_is_emitted_only_in_its_matching_address_family() {
     );
     assert_eq!(
         destination_actions(&rules.ipv6, ipv6),
-        vec!["ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT", "ACCEPT"],
+        vec!["ACCEPT"],
         "input=allow.to=[{ipv4},{ipv6}], expected {ipv6} in IPv6 only; output={:?}",
         rules.ipv6
     );

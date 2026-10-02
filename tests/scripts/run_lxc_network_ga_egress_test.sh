@@ -32,8 +32,12 @@ command -v ip6tables >/dev/null 2>&1 || skip "ip6tables is not installed."
 command -v lxc-create >/dev/null 2>&1 || skip "LXC (lxc-create) is not installed."
 command -v ip >/dev/null 2>&1 || skip "iproute2 (ip) is not installed."
 command -v python3 >/dev/null 2>&1 || skip "python3 is not installed; the egress peer needs it to host a listener."
-python3 -c "import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_SCTP).close()" >/dev/null 2>&1 \
-    || skip "the host kernel has no SCTP support; the carried-protocol cases cannot be probed."
+# SCTP is one carried protocol among several, so a kernel without it costs the
+# sctp cases rather than the suite.
+HOST_HAS_SCTP=0
+if python3 -c "import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_SCTP).close()" >/dev/null 2>&1; then
+    HOST_HAS_SCTP=1
+fi
 [ -f "$LXC_EXEC" ] || skip "lxc-exec binary not built; run build.sh first."
 
 DENY_CONFIG="$REPO_DIR/tests/configs/lxc_network_ga_egress_deny.json"
@@ -286,7 +290,8 @@ fi
 
 # SCTP and UDP are separate protocols to the kernel, and a listener on each can
 # hold the same port number.
-ip netns exec "$PEER_NETNS" python3 -c "
+if [ "$HOST_HAS_SCTP" -eq 1 ]; then
+    ip netns exec "$PEER_NETNS" python3 -c "
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_SCTP)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -296,12 +301,13 @@ while True:
     client, _ = s.accept()
     client.close()
 " >"$PEER_SCTP_LISTENER_LOG" 2>&1 &
-PEER_SCTP_LISTENER_PID=$!
+    PEER_SCTP_LISTENER_PID=$!
 
-# A peer that never bound would read as the firewall refusing the association.
-if ! PEER_PROBE_ERROR="$(await_peer_sctp "$PEER_IP" "$PEER_SHARED_PORT")"; then
-    fail_unreachable_peer "the egress peer SCTP service" \
-        "$PEER_IP:$PEER_SHARED_PORT" "$PEER_PROBE_ERROR" "$PEER_SCTP_LISTENER_LOG"
+    # A peer that never bound would read as the firewall refusing the association.
+    if ! PEER_PROBE_ERROR="$(await_peer_sctp "$PEER_IP" "$PEER_SHARED_PORT")"; then
+        fail_unreachable_peer "the egress peer SCTP service" \
+            "$PEER_IP:$PEER_SHARED_PORT" "$PEER_PROBE_ERROR" "$PEER_SCTP_LISTENER_LOG"
+    fi
 fi
 
 # The udp/53 cases assert what the chain does with a DNS query, so the resolver
@@ -450,9 +456,14 @@ assert_blocked "udp/$PEER_SHARED_PORT succeeded while protocol any allowed only 
 
 render_case() {
     local template="$1" command_line="$2" protocol="${3:-}" port="${4:-}"
-    local rendered
+    local rendered command_json
+
+    # The probe commands carry quotes and backslashes.  python3 renders the
+    # command as a JSON string, and the slice drops the quotes it adds around
+    # it, since the template already supplies its own.
+    command_json="$(python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.argv[1]))' "$command_line")"
     rendered="$(<"$template")"
-    rendered="${rendered//'{{COMMAND}}'/"$command_line"}"
+    rendered="${rendered//'{{COMMAND}}'/"${command_json:1:-1}"}"
     rendered="${rendered//'{{PROTOCOL}}'/"$protocol"}"
     rendered="${rendered//'{{PORT}}'/"$port"}"
     printf '%s\n' "$rendered" >"$RENDERED_CONFIG"
@@ -463,19 +474,27 @@ TCP_COMMAND="sh -c 'curl -s --max-time 8 -o /dev/null http://$PEER_IP:443/ && ec
 UDP_COMMAND="sh -c 'echo probe | timeout 8 nc -u -w 3 $PEER_IP $PEER_SHARED_PORT 2>/dev/null | grep -q probe && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
 ICMP_COMMAND="sh -c 'timeout 8 ping -c 1 -W 5 $PEER_IP >/dev/null 2>&1 && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
 SCTP_PROBE='import socket,sys;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_SCTP);s.settimeout(8);s.connect((sys.argv[1],int(sys.argv[2])))'
-SCTP_COMMAND="sh -c 'python3 -c \\\"$SCTP_PROBE\\\" $PEER_IP $PEER_SHARED_PORT >/dev/null 2>&1 && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
+SCTP_COMMAND="sh -c 'python3 -c \"$SCTP_PROBE\" $PEER_IP $PEER_SHARED_PORT >/dev/null 2>&1 && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
 
-run_case "default allow with a deny rule naming no protocol and no port. Probe sctp" \
-    "$(render_case "$ALLOW_PORTLESS_DENY_TEMPLATE" "$SCTP_COMMAND")"
-assert_blocked "Expected sctp blocked."
+if [ "$HOST_HAS_SCTP" -eq 1 ]; then
+    run_case "default allow with a deny rule naming no protocol and no port. Probe sctp" \
+        "$(render_case "$ALLOW_PORTLESS_DENY_TEMPLATE" "$SCTP_COMMAND")"
+    assert_blocked "Expected sctp blocked."
+else
+    echo "SKIP CASE: default allow, portless deny, probe sctp. The host kernel has no SCTP support."
+fi
 
 run_case "default allow with a deny rule naming no protocol and no port. Probe tcp/443" \
     "$(render_case "$ALLOW_PORTLESS_DENY_TEMPLATE" "$TCP_COMMAND")"
 assert_blocked "Expected tcp/443 blocked."
 
-run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe sctp" \
-    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$SCTP_COMMAND" any "$PEER_SHARED_PORT")"
-assert_blocked "Expected sctp blocked."
+if [ "$HOST_HAS_SCTP" -eq 1 ]; then
+    run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe sctp" \
+        "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$SCTP_COMMAND" any "$PEER_SHARED_PORT")"
+    assert_blocked "Expected sctp blocked."
+else
+    echo "SKIP CASE: default allow, deny any:$PEER_SHARED_PORT, probe sctp. The host kernel has no SCTP support."
+fi
 
 run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe udp" \
     "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$UDP_COMMAND" any "$PEER_SHARED_PORT")"
@@ -489,9 +508,13 @@ run_case "default allow with a deny rule naming protocol any and port $PEER_SHAR
     "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$ICMP_COMMAND" any "$PEER_SHARED_PORT")"
 assert_allowed "Expected icmp allowed."
 
-run_case "default deny with an allow rule naming no protocol and no port. Probe sctp" \
-    "$(render_case "$DENY_PORTLESS_ALLOW_TEMPLATE" "$SCTP_COMMAND")"
-assert_allowed "Expected sctp allowed."
+if [ "$HOST_HAS_SCTP" -eq 1 ]; then
+    run_case "default deny with an allow rule naming no protocol and no port. Probe sctp" \
+        "$(render_case "$DENY_PORTLESS_ALLOW_TEMPLATE" "$SCTP_COMMAND")"
+    assert_allowed "Expected sctp allowed."
+else
+    echo "SKIP CASE: default deny, portless allow, probe sctp. The host kernel has no SCTP support."
+fi
 
 run_case "default deny with an allow rule naming no protocol and no port. Probe tcp/443" \
     "$(render_case "$DENY_PORTLESS_ALLOW_TEMPLATE" "$TCP_COMMAND")"
@@ -505,9 +528,13 @@ run_case "default deny with an allow rule naming no protocol and no port. Probe 
     "$(render_case "$DENY_PORTLESS_ALLOW_TEMPLATE" "$ICMP_COMMAND")"
 assert_allowed "Expected icmp allowed."
 
-run_case "default deny with an allow rule naming protocol any and port $PEER_SHARED_PORT. Probe sctp" \
-    "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$SCTP_COMMAND" any "$PEER_SHARED_PORT")"
-assert_allowed "Expected sctp allowed."
+if [ "$HOST_HAS_SCTP" -eq 1 ]; then
+    run_case "default deny with an allow rule naming protocol any and port $PEER_SHARED_PORT. Probe sctp" \
+        "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$SCTP_COMMAND" any "$PEER_SHARED_PORT")"
+    assert_allowed "Expected sctp allowed."
+else
+    echo "SKIP CASE: default deny, allow any:$PEER_SHARED_PORT, probe sctp. The host kernel has no SCTP support."
+fi
 
 run_case "default deny with an allow rule naming protocol any and port $PEER_SHARED_PORT. Probe tcp/443" \
     "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$TCP_COMMAND" any "$PEER_SHARED_PORT")"
