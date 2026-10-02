@@ -3,7 +3,7 @@
 The LXC backend provides Linux container isolation using [LXC (Linux Containers)](https://linuxcontainers.org/lxc/).
 
 For exact `0.9.0-alpha`, networking is directional-only: use `network.egress`
-and `network.ingress`. LXC rejects `runtimeConfig.networkProxy`, so a v0.9 LXC
+and `network.ingress`. LXC rejects `runtimeConfig.networkProxy`; a v0.9 LXC
 request has no proxy surface at all — see [Proxy](#proxy) below.
 Legacy host lists and enforcement-mode fields in older examples are not
 accepted in v0.9. Preserve their original published contract when reproducing
@@ -16,15 +16,14 @@ Creates an LXC container to provide:
 
 - **Process isolation** via Linux namespaces (PID, mount, network, user)
 - **Filesystem isolation** via bind mounts with read-only/read-write/denied enforcement
-- **Network isolation** via iptables rules inside the container's own network namespace
+- **Network isolation** via a policy enforced inside the container
 
 ## Prerequisites
 
 - Linux kernel >= 2.6.32, or >= 3.12 to run unprivileged
 - LXC >= 5.0 installed (`liblxc-dev` for building, `lxc-utils` for runtime)
 - Root privileges, or unprivileged LXC for a policy that asks for no network.
-  Filtering egress or ingress installs iptables rules in the container's
-  network namespace, which requires root.
+  Filtering egress or ingress requires root.
 
 ### Installation
 
@@ -49,11 +48,11 @@ sudo pacman -S lxc
 ### Container networking
 
 A policy that permits any network needs `lxcbr0` to hand the container an IPv4
-lease, so the bridge has to be up before a run: `sudo systemctl start lxc-net`.
+lease.  The bridge has to be up before a run: `sudo systemctl start lxc-net`.
 
 On a host running firewalld, which is the default on Fedora and RHEL, the bridge
 also has to sit in a zone that permits the traffic. The default zone rejects
-IPv4 DHCP while permitting router advertisement, so the container configures
+IPv4 DHCP while permitting router advertisement.  The container configures
 itself an IPv6 address, never receives a lease, and the run fails:
 
 ```bash
@@ -141,19 +140,19 @@ in `process.env` replaces it.
 Below 0.9 only `process.env` is passed through and `inheritDefaultEnv` is
 rejected.
 
-Shells like bash also have a fallback `PATH`, so a truly empty environment is
+Shells like bash also have a fallback `PATH`; a truly empty environment is
 not reachable through `process.env`.
 
 ## Network Policy
 
 A legacy deny-default policy that names `allowedHosts` opens port 53
-unconditionally, so it cannot block DNS.  The directional `network.egress`
+unconditionally and cannot block DNS.  The directional `network.egress`
 rules carry no such exemption and govern port 53 like any other destination.
 
-`preservePolicy` leaves the inbound and outbound chains in place after the run.
-The chains live in the container's network namespace, so they last only as long
-as the container keeps running; stopping or destroying it takes them with it.  A
-partially installed chain from a failed run is torn down regardless.
+`preservePolicy` leaves the policy in force after the run.  It lives inside the
+container and lasts only as long as the container keeps running; stopping or
+destroying the container takes it away.  A run that fails partway leaves nothing
+behind, whatever `preservePolicy` says.
 
 If using the legacy network shape, `enforcementMode` cannot be `capabilities`.
 
@@ -173,22 +172,34 @@ Naming a port narrows either one to the four protocols that carry a port: TCP,
 UDP, SCTP, and DCCP.  A port written beside `icmp` is refused; ICMP carries
 none.
 
-An `egress` section ends in a drop under either default.  Under a default of
-`deny`, traffic leaves only where an allow rule matched it.  Under a default of
-`allow`, the five protocols above reach every destination no deny rule covered,
-and everything else reaches that drop.
+### What each kind of rule does
+
+Nothing leaves the container unless something permits it, and only the five
+protocols above can ever be permitted.
+
+| The rule | Under `default: deny` | Under `default: allow` |
+|----------|-----------------------|------------------------|
+| `allow` | The only way out.  Permits the destinations it names. | Nothing.  Those destinations are reachable already. |
+| `deny` | Narrows an `allow` rule wherever the two overlap. | The only thing that blocks.  Refuses the destinations it names. |
+
+A `deny` beats an `allow` under either default.  That is the narrowing under
+`default: deny`, and under `default: allow` it means an `allow` cannot reopen a
+destination a `deny` has closed.
+
+Both kinds of rule are read whether or not they change anything.  A malformed
+rule fails the run even where it would have had no effect.
 
 ### Proxy
 
 **LXC does not support proxied egress (`runtimeConfig.networkProxy`) today.**
 A request carrying that field is rejected at validation, before any container is
 created, with an error naming the field and the backend. The field exists only
-in schema 0.8 and later; on 0.6 and 0.7 it is not part of the contract, so a
+in schema 0.8 and later; on 0.6 and 0.7 it is not part of the contract, and a
 request carrying it is rejected earlier as an unknown field.
 
-The field must name a loopback endpoint, and an LXC container has its own
-network namespace, so `127.0.0.1` there is the container rather than the host.
-MXC ships no component that relays a host loopback proxy into that namespace.
+The field must name a loopback endpoint.  Inside an LXC container, `127.0.0.1`
+is the container itself rather than the host, and MXC ships nothing that relays
+a proxy on the host's loopback through to the container.
 
 On schemas 0.6 through 0.8, LXC accepts the legacy `network.proxy.url` form
 pointed at an address routable from inside the container, such as the bridge
@@ -291,7 +302,7 @@ pty.onExit((e) => console.log('Exit:', e.exitCode));
    sudo firewall-cmd --zone=<ZONE> --change-interface=lxcbr0
    ```
 
-   `<ZONE>` has to admit DHCP and DNS from the bridge, since dnsmasq answers
+   `<ZONE>` has to admit DHCP and DNS from the bridge, where dnsmasq answers
    both on the bridge address.
 
    Add `--permanent` and reload to keep the assignment across reboots. 
@@ -308,39 +319,40 @@ The zone query should answer the zone you assigned.
 
 ## Limitations
 
-- **Default-deny is not a containment boundary against the workload.** Both the
-  inbound and outbound chains live in the container's own network namespace, and
-  container init keeps `CAP_NET_ADMIN` there, so a process running as root inside
-  the container can flush or delete them. The command MXC runs is attached with
-  `CAP_NET_ADMIN` dropped from its bounding set whenever chains are installed, so
-  it cannot. Default-deny closes external reachability for a container that does
-  not deliberately tear it down, including services the workload itself starts.
+- **Default-deny is not a containment boundary against the workload.** The
+  policy lives inside the container, where a process running as root can switch
+  it off.  The command MXC runs cannot: that permission is taken away from it
+  whenever a policy is installed.  Default-deny closes the container to the
+  outside world as long as nothing inside deliberately opens it, including
+  services the workload itself starts.
 - **Only five protocols can leave a filtered container.** TCP, UDP, SCTP, DCCP,
   and ICMP are the whole of what an egress policy can permit.  GRE, ESP, and
-  anything else a rule has no way to name meet the drop at the bottom of the
-  chain, under a default of `allow` as readily as `deny`.
-- **Raw sockets bypass egress filtering.** `CAP_NET_RAW` is retained so that an
-  explicit `protocol: "icmp"` allow works. It also permits `AF_PACKET` sockets,
-  which write link-layer frames straight to the interface without traversing the
-  filter chain.
-- **Policy is not in force while the container starts.** The chains are installed
-  after the container has started and its address has settled, so container init
-  and anything it starts run unfiltered in both directions for that interval. The
-  requested command is attached afterwards. A connection opened during that window
-  keeps working once the rules land, because the chains accept established flows.
-- **A filtered container cannot renew a DHCP lease.** The chains permit loopback,
-  established flows, and DNS, with no carve-out for DHCP. A container that
-  outlives its lease loses its address; one that finishes within the lease period
-  is unaffected.
+  anything else a rule has no way to name never leave, under a default of
+  `allow` as readily as `deny`.
+- **A workload can send around the policy.** The container keeps the permission
+  an explicit `protocol: "icmp"` allow needs to work.  That same permission lets
+  a program assemble its own packets and put them on the wire directly, where no
+  egress rule is consulted.
+- **Policy is not in force while the container starts.** It is installed once
+  the container is up and has settled on an address.  Container startup and
+  anything it launches run unfiltered for that interval; the command you asked
+  for is attached afterwards and never runs unfiltered.  A connection opened
+  during that interval keeps working after the policy lands — the policy stops
+  new connections, not ones already open.
+- **A filtered container cannot renew a DHCP lease.** A container under policy
+  can still reach itself, resolve names, and finish connections already open.
+  Nothing is opened for DHCP.  A container that runs past the end of its lease
+  loses its address; one that finishes within the lease period is unaffected.
 - **A container that needs a network waits for an IPv4 address.** A dual-stack
-  `lxcbr0` answers router solicitation seconds before its DHCP lease arrives, and
-  the bridge NATs IPv4 only, so an IPv6 address alone does not mean the container
-  can reach the destinations its policy names. A bridge that never provides an
-  IPv4 address fails the run rather than starting a workload that reaches nothing.
+  `lxcbr0` hands out an IPv6 address seconds before its IPv4 lease arrives, and
+  only IPv4 reaches off the host.  An IPv6 address alone does not mean the
+  container can reach the destinations its policy names.  A bridge that never
+  provides an IPv4 address fails the run rather than starting a workload that
+  reaches nothing.
 - **IPv6 egress is not supported.** An `egress` rule naming an IPv6 destination
   installs and reports success, but no IPv6 traffic reaches that destination.
-  Stock `lxcbr0` gives the container no IPv6 address, so this surfaces only on a
-  host that provides one.
+  Stock `lxcbr0` gives the container no IPv6 address at all; this surfaces only
+  on a host that provides one.
 - **No proxied egress.** See [Proxy](#proxy).
 - **No state-aware lifecycle.** LXC implements `ScriptRunner` only (one-shot),
   not `StatefulSandboxBackend`. A state-aware request is rejected.
