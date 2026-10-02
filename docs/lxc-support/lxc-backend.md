@@ -157,6 +157,31 @@ partially installed chain from a failed run is torn down regardless.
 
 If using the legacy network shape, `enforcementMode` cannot be `capabilities`.
 
+### Protocols
+
+`ports[].protocol` accepts `tcp`, `udp`, `icmp`, and `any`.
+
+| Selector | Rules emitted | Notes |
+|---|---|---|
+| `tcp` | `-p tcp` | |
+| `udp` | `-p udp` | |
+| `icmp` | `-p icmp` (IPv4) / `-p icmpv6` (IPv6) | Expands by destination address family, per the 0.8 contract. |
+| `any`, no `port` | no `-p` match at all | One rule covering the whole floor: TCP, UDP, and ICMPv4/6. |
+| `any` with a `port` | `-p tcp` and `-p udp` | ICMP is omitted: it carries no port number for a port-scoped rule to name, and `-p all` accepts no `--dport`. |
+
+This meets the 0.8 floor — `any` covers at minimum TCP, UDP, and ICMPv4/6, and
+pairing it with a `port` narrows the match to the protocols that carry ports.
+Both address families render the same selectors; whether IPv6 traffic reaches
+anything is a separate question, covered under [Limitations](#limitations).
+
+**`any` names the protocols this backend filters, not every protocol that
+exists.**  A filtered container keeps a real network namespace on a bridge.  A
+protocol outside the table above — SCTP, DCCP, GRE — has a path out whether or
+not a rule names it.  A port-scoped `deny` stops TCP and UDP on that port and
+leaves SCTP free.  A port-scoped `allow` under `default: deny` admits TCP and
+UDP on that port, and the closing default still blocks SCTP.  Read
+`protocol: "any"` as a floor, not a seal.
+
 ### Proxy
 
 **LXC does not support proxied egress (`runtimeConfig.networkProxy`) today.**

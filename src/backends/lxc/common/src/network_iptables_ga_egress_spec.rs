@@ -517,6 +517,158 @@ fn any_with_a_port_expands_to_tcp_and_udp_rules() {
     );
 }
 
+/// `any` names the protocols this backend filters, not every protocol that
+/// exists.  A workload may still reach a denied port over SCTP.
+#[test]
+fn a_denied_any_port_drops_tcp_and_udp_in_both_families() {
+    let ipv4 = "198.51.100.0/24";
+    let ipv6 = "2001:db8::/32";
+    let policy = directional_policy(
+        NetworkAction::Allow,
+        Vec::new(),
+        vec![rule(
+            vec![peer(ipv4, &[]), peer(ipv6, &[])],
+            vec![port(NetworkProtocol::Any, Some(443), None)],
+        )],
+    );
+    let emitted = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
+
+    for (family, rules, address, icmp) in [
+        ("IPv4", &emitted.ipv4, "198.51.100.25", "icmp"),
+        ("IPv6", &emitted.ipv6, "2001:db8::25", "icmpv6"),
+    ] {
+        for (protocol, packet_port, expected, reason) in [
+            ("tcp", Some(443), "DROP", "`any` covers TCP"),
+            ("udp", Some(443), "DROP", "`any` covers UDP"),
+            (
+                icmp,
+                None,
+                "ACCEPT",
+                "ICMP is in the floor, but a port-scoped rule cannot name a portless protocol",
+            ),
+            (
+                "sctp",
+                Some(443),
+                "ACCEPT",
+                "`any` is a coverage floor this backend does not extend to SCTP",
+            ),
+        ] {
+            assert_eq!(
+                chain_verdict(
+                    rules,
+                    NetworkAction::Allow,
+                    packet_address(address),
+                    protocol,
+                    packet_port
+                ),
+                expected,
+                "input=default allow, deny=[{{to:[{ipv4},{ipv6}], ports:[any/443]}}], packet={address}/{protocol}/{packet_port:?}, family={family}; {reason}; output={rules:?}"
+            );
+        }
+    }
+}
+
+/// The issue reported this defect from `iptables -S` output.  A port-scoped
+/// `any` deny renders one DROP per port-bearing protocol and names no portless
+/// one; this asserts the rendered selector set the issue was reading.
+#[test]
+fn a_denied_any_port_emits_only_tcp_and_udp_drop_rules() {
+    let destination = "192.0.2.0/24";
+    let policy = directional_policy(
+        NetworkAction::Allow,
+        Vec::new(),
+        vec![rule(
+            vec![peer(destination, &[])],
+            vec![
+                port(NetworkProtocol::Any, Some(443), None),
+                port(NetworkProtocol::Any, Some(1000), Some(2000)),
+            ],
+        )],
+    );
+    let rules = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
+    let mut selectors = rules
+        .ipv4
+        .iter()
+        .filter(|rule| {
+            argument_after(rule, "-d") == Some(destination)
+                && argument_after(rule, "-j") == Some("DROP")
+        })
+        .map(|rule| (argument_after(rule, "-p"), argument_after(rule, "--dport")))
+        .collect::<Vec<_>>();
+    selectors.sort_unstable();
+
+    assert_eq!(
+        selectors,
+        vec![
+            (Some("tcp"), Some("1000:2000")),
+            (Some("tcp"), Some("443")),
+            (Some("udp"), Some("1000:2000")),
+            (Some("udp"), Some("443")),
+        ],
+        "input=default allow, deny=[{{to:{destination}, ports:[any/443,any/1000-2000]}}]; expected one TCP and one UDP DROP per selector and no portless protocol; output={:?}",
+        rules.ipv4
+    );
+}
+
+/// The 0.8 floor is TCP, UDP, and ICMPv4/6.  Without a port there is nothing to
+/// narrow the match, so every floor member is covered in its own family.
+#[test]
+fn any_without_a_port_covers_the_whole_floor_in_both_families() {
+    let ipv4 = "198.51.100.0/24";
+    let ipv6 = "2001:db8::/32";
+    let policy = directional_policy(
+        NetworkAction::Deny,
+        vec![rule(
+            vec![peer(ipv4, &[]), peer(ipv6, &[])],
+            vec![port(NetworkProtocol::Any, None, None)],
+        )],
+        Vec::new(),
+    );
+    let emitted = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
+
+    for (family, rules, address, icmp) in [
+        ("IPv4", &emitted.ipv4, "198.51.100.25", "icmp"),
+        ("IPv6", &emitted.ipv6, "2001:db8::25", "icmpv6"),
+    ] {
+        for (protocol, packet_port) in [("tcp", Some(443)), ("udp", Some(53)), (icmp, None)] {
+            assert_eq!(
+                new_connection_action(rules, packet_address(address), protocol, packet_port),
+                "ACCEPT",
+                "input=default deny, allow=[{{to:[{ipv4},{ipv6}], ports:[any]}}], packet={address}/{protocol}/{packet_port:?}, family={family}; output={rules:?}"
+            );
+        }
+    }
+}
+
+/// `any` lowers to one rule per protocol rather than a single atomic match, so
+/// a named-protocol deny carves that protocol out and leaves the rest allowed.
+#[test]
+fn an_explicit_deny_carves_one_protocol_out_of_an_any_allow() {
+    let destination = "192.0.2.0/24";
+    let policy = directional_policy(
+        NetworkAction::Deny,
+        vec![rule(
+            vec![peer(destination, &[])],
+            vec![port(NetworkProtocol::Any, Some(443), None)],
+        )],
+        vec![rule(
+            vec![peer(destination, &[])],
+            vec![port(NetworkProtocol::Tcp, Some(443), None)],
+        )],
+    );
+    let rules = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
+    let address = packet_address("192.0.2.25");
+
+    for (protocol, expected) in [("tcp", "DROP"), ("udp", "ACCEPT")] {
+        assert_eq!(
+            new_connection_action(&rules.ipv4, address, protocol, Some(443)),
+            expected,
+            "input=default deny, allow=[{{to:{destination}, ports:[any/443]}}], deny=[{{to:{destination}, ports:[tcp/443]}}], packet=192.0.2.25/{protocol}/443; output={:?}",
+            rules.ipv4
+        );
+    }
+}
+
 #[test]
 fn icmp_ignores_a_written_port() {
     let destination = "192.0.2.0/24";
