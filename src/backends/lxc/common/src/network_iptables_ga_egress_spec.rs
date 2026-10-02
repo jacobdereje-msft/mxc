@@ -545,6 +545,48 @@ fn any_with_a_port_expands_to_the_protocol_floor() {
 }
 
 #[test]
+fn the_floor_names_icmpv6_on_the_ipv6_chain() {
+    let destination = "2001:db8::/32";
+    let policy = directional_policy(
+        NetworkAction::Deny,
+        vec![rule(
+            vec![peer(destination, &[])],
+            vec![port(NetworkProtocol::Any, Some(443), None)],
+        )],
+        Vec::new(),
+    );
+    let rules = NetworkIptablesManager::build_policy_rule_args("MXC-test", &policy, true);
+    let mut selectors = rules
+        .ipv6
+        .iter()
+        .filter(|rule| {
+            argument_after(rule, "-d") == Some(destination)
+                && argument_after(rule, "-j") == Some("ACCEPT")
+        })
+        .map(|rule| (argument_after(rule, "-p"), argument_after(rule, "--dport")))
+        .collect::<Vec<_>>();
+    selectors.sort_unstable();
+
+    assert_eq!(
+        selectors,
+        vec![
+            (Some("icmpv6"), None),
+            (Some("tcp"), Some("443")),
+            (Some("udp"), Some("443")),
+        ],
+        "input=default deny, allow=[{{to:{destination}, ports:[any/443]}}]; the floor must reach the IPv6 chain, naming icmpv6 where the IPv4 chain names icmp; output={:?}",
+        rules.ipv6
+    );
+
+    assert_eq!(
+        new_connection_action(&rules.ipv6, packet_address("2001:db8::25"), "icmpv6", None),
+        "ACCEPT",
+        "input=default deny, allow=[{{to:{destination}, ports:[any/443]}}], packet=2001:db8::25/icmpv6; output={:?}",
+        rules.ipv6
+    );
+}
+
+#[test]
 fn a_denied_any_with_a_port_blocks_the_whole_floor() {
     let destination = "192.0.2.0/24";
     let policy = directional_policy(
