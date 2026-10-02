@@ -174,17 +174,17 @@ none.
 
 ### What each kind of rule does
 
-Nothing leaves the container unless something permits it, and only the five
-protocols above can ever be permitted.
+An `egress` rule is the only thing that lets traffic out, and it can only
+permit the five protocols above.
 
 | The rule | Under `default: deny` | Under `default: allow` |
 |----------|-----------------------|------------------------|
-| `allow` | The only way out.  Permits the destinations it names. | Nothing.  Those destinations are reachable already. |
+| `allow` | The only way out.  Permits the destinations it names. | Nothing.  An `allow` never adds reach under this default. |
 | `deny` | Narrows an `allow` rule wherever the two overlap. | The only thing that blocks.  Refuses the destinations it names. |
 
-A `deny` beats an `allow` under either default.  That is the narrowing under
-`default: deny`, and under `default: allow` it means an `allow` cannot reopen a
-destination a `deny` has closed.
+A `deny` beats an `allow` under either default.  Under `default: deny` a `deny`
+narrows the reach an `allow` opened.  Under `default: allow` an `allow` cannot
+reopen a destination a `deny` has closed.
 
 Both kinds of rule are read whether or not they change anything.  A malformed
 rule fails the run even where it would have had no effect.
@@ -326,9 +326,10 @@ The zone query should answer the zone you assigned.
   outside world as long as nothing inside deliberately opens it, including
   services the workload itself starts.
 - **Only five protocols can leave a filtered container.** TCP, UDP, SCTP, DCCP,
-  and ICMP are the whole of what an egress policy can permit.  GRE, ESP, and
-  anything else a rule has no way to name never leave, under a default of
-  `allow` as readily as `deny`.
+  and ICMP are the whole of what an `egress` rule can permit.  GRE, ESP, and
+  anything else an `egress` rule has no way to name never leave, under a default
+  of `allow` as readily as `deny`.  A legacy `allowedHosts` entry is not a
+  protocol rule: it opens the destination it names to every protocol.
 - **A workload can send around the policy.** The container keeps the permission
   an explicit `protocol: "icmp"` allow needs to work.  That same permission lets
   a program assemble its own packets and put them on the wire directly, where no
@@ -340,8 +341,8 @@ The zone query should answer the zone you assigned.
   during that interval keeps working after the policy lands — the policy stops
   new connections, not ones already open.
 - **A filtered container cannot renew a DHCP lease.** A container under policy
-  can still reach itself, resolve names, and finish connections already open.
-  Nothing is opened for DHCP.  A container that runs past the end of its lease
+  can still reach itself and finish connections already open.  Nothing is
+  opened for DHCP.  A container that runs past the end of its lease
   loses its address; one that finishes within the lease period is unaffected.
 - **A container that needs a network waits for an IPv4 address.** A dual-stack
   `lxcbr0` hands out an IPv6 address seconds before its IPv4 lease arrives, and
