@@ -354,8 +354,10 @@ terminal.dispose();
 
 Terminal output is merged; `standardError` is `null`. Closing `input` sends
 EOF. Write control characters and escape sequences to `input` like any other
-terminal bytes. IsolationSession supports this API; unsupported backends are
-rejected before sandbox creation.
+terminal bytes. IsolationSession and macOS Seatbelt direct execution support
+this API. Seatbelt rejects PTY mode with `guiAccess` or legacy
+`launchMethod: "open"`; other unsupported backends are rejected before sandbox
+creation.
 
 Use `spawnInContainerWithPty` to attach the same `MxcPtyProcess` abstraction to a command
 inside an already-started container:

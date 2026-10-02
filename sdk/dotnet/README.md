@@ -697,8 +697,10 @@ Console.WriteLine($"exit={result.ExitCode} timedOut={result.TimedOut}");
 
 PTY stderr is merged into `Output`; there is no separate error stream. Closing
 `Input` sends EOF. Write control characters and escape sequences to `Input`
-like any other terminal bytes. IsolationSession supports this API; unsupported
-backends are rejected before sandbox creation.
+like any other terminal bytes. IsolationSession and macOS Seatbelt direct
+execution support this API.
+Seatbelt rejects PTY mode with `guiAccess` or legacy `launchMethod: "open"`;
+other unsupported backends are rejected before sandbox creation.
 
 For an already-started container, use the same terminal type:
 

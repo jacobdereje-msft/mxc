@@ -681,7 +681,10 @@ It never fails: any unreadable or unrecognized value reads back as
 
 `v1::spawn_with_pty` and `v1::container::spawn_in_container_with_pty` allocate
 a backend-owned pseudo-terminal and return a caller-controlled
-`MxcPtyProcess`. IsolationSession is currently the only supporting backend.
+`MxcPtyProcess`. One-shot PTY spawning supports IsolationSession and macOS
+Seatbelt direct execution. Seatbelt rejects PTY mode with `guiAccess` or the
+legacy `launchMethod: "open"` path because both require externally owned
+terminal UI. Spawning in an existing container is specific to IsolationSession.
 Untaken terminal input is closed by `wait()`, and untaken merged output is
 drained and discarded without waiting indefinitely for descendants that keep
 the terminal open.
