@@ -426,8 +426,9 @@ they cannot preserve either posture.
   AppContainer proxy uses its profile name. Windows requires `ingress.default: "allow"` to grant the bidirectional
   `privateNetworkClientServer` capability. With `allowedProxyPeer`, proxy reachability remains scoped to that peer and
   endpoint and `ingress.hostLoopback` stays `"deny"`. An identity-less host proxy cannot use peer scoping and is the
-  documented development/testing compatibility path that requires `ingress.hostLoopback: "allow"`; it does not
-  provide the strict host-loopback-closure guarantee.
+  documented development/testing compatibility path; it does not provide the strict host-loopback-closure guarantee.
+  Its `ingress.hostLoopback` is free: `"allow"` also opens both host-loopback directions and needs PSEC 1.1 with
+  ingress support, while `"deny"` keeps the configured proxy endpoint alone and runs under PSEC 1.0.
 - **Model 1:** Grants `internetClient`, allowing direct internet egress under WFP IP/CIDR/port/protocol rules.
   Private-network outbound also requires `ingress.default: "allow"` and remains subject to the same `egress` rules.
 - **Model 3:** Grants no `internetClient`, private-network capability, or loopback exemptions.

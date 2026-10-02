@@ -156,6 +156,13 @@ AppContainer fallback rejects
 `privateNetworkClientServer` is bidirectional and no schema 0.8 WFP filter is
 available there to block private-network egress.
 
+`ingress.hostLoopback: "allow"` additionally needs PSEC contract 1.1 with
+ingress support, which the `BaseContainer` tier does not imply. An identity-less
+`runtimeConfig.networkProxy` runs on a PSEC 1.0 host by keeping
+`hostLoopback: "deny"`: MXC grants the `networkLoopback` capability and the
+`MXC-Loopback` peer for the proxy itself, so only the bidirectional
+host-loopback grant is lost.
+
 ## UI restrictions
 
 UI restrictions map to Job Object `JOB_OBJECT_UILIMIT_*` flags plus the

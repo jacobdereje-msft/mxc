@@ -119,6 +119,64 @@ fn identity_scoped_proxy_does_not_grant_host_loopback() {
     assert!(network.egress().is_none());
 }
 
+/// An identity-less proxy that keeps `hostLoopback: "deny"` stays on the PSEC
+/// 1.0 capability mapping. It still needs the reserved peer and the loopback
+/// capability to reach its endpoint, because the capability is what authorizes
+/// the connection and the native ingress table a proxy policy cannot carry is
+/// the only other way to express it.
+///
+/// This is the posture a host without PSEC 1.1 ingress support must use. The
+/// policy is otherwise identical to the `"allow"` one, so the two tests
+/// together pin that `hostLoopback` selects the contract version and nothing
+/// else.
+#[test]
+fn identity_less_proxy_keeps_peer_and_capability_under_psec_1_0() {
+    let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let mut request = runtime_proxy_request(&proxy);
+    request
+        .policy
+        .network_ingress
+        .as_mut()
+        .unwrap()
+        .host_loopback = NetworkAction::Deny;
+    let bytes =
+        build_psec_v1_security_environment_spec(&request, SecurityEnvironmentVersion::V1_0, false);
+    let spec = psec_layout::root_as_process_security_environment(&bytes).unwrap();
+    let network = spec.network_policy().unwrap();
+
+    assert_eq!(spec.version().minor(), 0);
+    assert_eq!(
+        spec.capabilities().unwrap().split(',').collect::<Vec<_>>(),
+        [PRIVATE_NETWORK_CAPABILITY, "networkLoopback"]
+    );
+    assert_eq!(
+        network.allowed_appcontainer_peer(),
+        Some(LOOPBACK_NETWORK_PEER)
+    );
+    assert!(network.proxy().is_some());
+    assert!(network.ingress().is_none());
+    assert!(network.egress().is_none());
+}
+
+/// A policy with no proxy at all must not pick up the loopback capability from
+/// the identity test above: `hostLoopback` alone travels in the native ingress
+/// table there.
+#[test]
+fn a_policy_without_a_proxy_does_not_take_the_loopback_capability() {
+    let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let mut request = runtime_proxy_request(&proxy);
+    request.policy.runtime_network_proxy_specified = false;
+    request.policy.network_proxy = ProxyConfig::default();
+    let bytes =
+        build_psec_v1_security_environment_spec(&request, SecurityEnvironmentVersion::V1_1, true);
+    let spec = psec_layout::root_as_process_security_environment(&bytes).unwrap();
+    let network = spec.network_policy().unwrap();
+
+    assert_eq!(spec.capabilities(), Some(PRIVATE_NETWORK_CAPABILITY));
+    assert!(network.proxy().is_none());
+    assert!(network.ingress().is_some());
+}
+
 fn run_proxy_command(request: ExecutionRequest) -> String {
     run_proxy_command_with_stdout(request, |mut stdout| {
         let mut output = String::new();
