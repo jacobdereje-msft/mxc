@@ -181,27 +181,18 @@ PEER_HOST_IP="203.0.113.1"
 PEER_IP="203.0.113.2"
 PEER_CIDR="203.0.113.0/24"
 PEER_PORT="443"
-# A UDP echo and an SCTP listener both hold this port.
 PEER_SHARED_PORT="8053"
 
-PEER_LISTENER_PID=""
-PEER_UDP_LISTENER_PID=""
-PEER_SCTP_LISTENER_PID=""
+PEER_LISTENER_PIDS=""
 PEER_LISTENER_LOG="$(mktemp)"
 PEER_UDP_LISTENER_LOG="$(mktemp)"
 PEER_SCTP_LISTENER_LOG="$(mktemp)"
 RENDERED_CONFIG="$(mktemp --suffix=.json)"
 IP_FORWARD_WAS=""
 teardown_peer() {
-    if [ -n "$PEER_LISTENER_PID" ]; then
-        kill "$PEER_LISTENER_PID" >/dev/null 2>&1 || true
-    fi
-    if [ -n "$PEER_UDP_LISTENER_PID" ]; then
-        kill "$PEER_UDP_LISTENER_PID" >/dev/null 2>&1 || true
-    fi
-    if [ -n "$PEER_SCTP_LISTENER_PID" ]; then
-        kill "$PEER_SCTP_LISTENER_PID" >/dev/null 2>&1 || true
-    fi
+    for pid in $PEER_LISTENER_PIDS; do
+        kill "$pid" >/dev/null 2>&1 || true
+    done
     ip netns del "$PEER_NETNS" >/dev/null 2>&1 || true
     ip link del "$PEER_HOST_VETH" >/dev/null 2>&1 || true
     if [ -n "$IP_FORWARD_WAS" ]; then
@@ -242,7 +233,7 @@ sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 \
 # is enough.  A reply proves the SYN reached the peer.
 ip netns exec "$PEER_NETNS" python3 -m http.server "$PEER_PORT" --bind "$PEER_IP" \
     >"$PEER_LISTENER_LOG" 2>&1 &
-PEER_LISTENER_PID=$!
+PEER_LISTENER_PIDS="$PEER_LISTENER_PIDS $!"
 
 # Alive is not reachable.  A peer that never bound has to fail here as harness
 # breakage, rather than later as the firewall blocking the allow case.
@@ -261,7 +252,7 @@ while True:
     payload, sender = s.recvfrom(1024)
     s.sendto(payload, sender)
 " >"$PEER_UDP_LISTENER_LOG" 2>&1 &
-PEER_UDP_LISTENER_PID=$!
+PEER_LISTENER_PIDS="$PEER_LISTENER_PIDS $!"
 
 # A silent echo service would make the udp allow case read as a firewall block.
 if ! PEER_PROBE_ERROR="$(await_peer_udp_echo "$PEER_IP" "$PEER_SHARED_PORT")"; then
@@ -270,8 +261,7 @@ if ! PEER_PROBE_ERROR="$(await_peer_udp_echo "$PEER_IP" "$PEER_SHARED_PORT")"; t
 fi
 
 # SCTP and UDP are separate protocols to the kernel, and a listener on each can
-# hold the same port number.  The carried-protocol cases need one port reached
-# over both.
+# hold the same port number.
 ip netns exec "$PEER_NETNS" python3 -c "
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_SCTP)
@@ -282,7 +272,7 @@ while True:
     client, _ = s.accept()
     client.close()
 " >"$PEER_SCTP_LISTENER_LOG" 2>&1 &
-PEER_SCTP_LISTENER_PID=$!
+PEER_LISTENER_PIDS="$PEER_LISTENER_PIDS $!"
 
 # A peer that never bound would read as the firewall refusing the association.
 if ! PEER_PROBE_ERROR="$(await_peer_sctp "$PEER_IP" "$PEER_SHARED_PORT")"; then
