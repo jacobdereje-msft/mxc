@@ -181,9 +181,8 @@ PEER_HOST_IP="203.0.113.1"
 PEER_IP="203.0.113.2"
 PEER_CIDR="203.0.113.0/24"
 PEER_PORT="443"
-# A UDP echo service, so the protocol-any fan-out can be probed on the half no
-# TCP case reaches.
-PEER_UDP_PORT="8053"
+# A UDP echo and an SCTP listener both hold this port.
+PEER_SHARED_PORT="8053"
 
 PEER_LISTENER_PID=""
 PEER_UDP_LISTENER_PID=""
@@ -257,7 +256,7 @@ fi
 ip netns exec "$PEER_NETNS" python3 -c "
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.bind(('$PEER_IP', $PEER_UDP_PORT))
+s.bind(('$PEER_IP', $PEER_SHARED_PORT))
 while True:
     payload, sender = s.recvfrom(1024)
     s.sendto(payload, sender)
@@ -265,9 +264,9 @@ while True:
 PEER_UDP_LISTENER_PID=$!
 
 # A silent echo service would make the udp allow case read as a firewall block.
-if ! PEER_PROBE_ERROR="$(await_peer_udp_echo "$PEER_IP" "$PEER_UDP_PORT")"; then
+if ! PEER_PROBE_ERROR="$(await_peer_udp_echo "$PEER_IP" "$PEER_SHARED_PORT")"; then
     fail_unreachable_peer "the egress peer UDP echo service" \
-        "$PEER_IP:$PEER_UDP_PORT" "$PEER_PROBE_ERROR" "$PEER_UDP_LISTENER_LOG"
+        "$PEER_IP:$PEER_SHARED_PORT" "$PEER_PROBE_ERROR" "$PEER_UDP_LISTENER_LOG"
 fi
 
 # SCTP and UDP are separate protocols to the kernel, and a listener on each can
@@ -277,7 +276,7 @@ ip netns exec "$PEER_NETNS" python3 -c "
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_SCTP)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('$PEER_IP', $PEER_UDP_PORT))
+s.bind(('$PEER_IP', $PEER_SHARED_PORT))
 s.listen(8)
 while True:
     client, _ = s.accept()
@@ -286,9 +285,9 @@ while True:
 PEER_SCTP_LISTENER_PID=$!
 
 # A peer that never bound would read as the firewall refusing the association.
-if ! PEER_PROBE_ERROR="$(await_peer_sctp "$PEER_IP" "$PEER_UDP_PORT")"; then
+if ! PEER_PROBE_ERROR="$(await_peer_sctp "$PEER_IP" "$PEER_SHARED_PORT")"; then
     fail_unreachable_peer "the egress peer SCTP service" \
-        "$PEER_IP:$PEER_UDP_PORT" "$PEER_PROBE_ERROR" "$PEER_SCTP_LISTENER_LOG"
+        "$PEER_IP:$PEER_SHARED_PORT" "$PEER_PROBE_ERROR" "$PEER_SCTP_LISTENER_LOG"
 fi
 
 # The ICMP cases below read an unanswered echo as a firewall verdict, so a peer
@@ -330,8 +329,8 @@ done
 # Both udp fixtures probe the echo service, so a port the listener does not hold
 # would read as the firewall blocking rather than as drift.
 for cfg in "$ANY_UDP_CONFIG" "$ANY_UDP_WRONG_PORT_CONFIG" "$ANY_UDP_UNSCOPED_CONFIG"; do
-    grep -Fq "$PEER_UDP_PORT" "$cfg" \
-        || fail "fixture ${cfg##*/} no longer probes udp/$PEER_UDP_PORT; script and fixture drifted."
+    grep -Fq "$PEER_SHARED_PORT" "$cfg" \
+        || fail "fixture ${cfg##*/} no longer probes udp/$PEER_SHARED_PORT; script and fixture drifted."
 done
 
 # An egress-only config is the shape a backend claiming only the two egress
@@ -393,8 +392,8 @@ assert_allowed "tcp/443 was unreachable under protocol any, so the any selector 
 run_case "protocol-any case: same policy, probe icmp" "$ANY_ICMP_CONFIG"
 assert_allowed "an ICMP echo was unreachable under protocol any. The any selector is being lowered to the transports alone, so it is narrower than written."
 
-run_case "protocol-any case: same policy, probe udp/$PEER_UDP_PORT" "$ANY_UDP_UNSCOPED_CONFIG"
-assert_allowed "udp/$PEER_UDP_PORT was unreachable under protocol any carrying no port. An unscoped any is being lowered to a protocol list that omits udp, which the port-scoped cases below would not catch."
+run_case "protocol-any case: same policy, probe udp/$PEER_SHARED_PORT" "$ANY_UDP_UNSCOPED_CONFIG"
+assert_allowed "udp/$PEER_SHARED_PORT was unreachable under protocol any carrying no port. An unscoped any is being lowered to a protocol list that omits udp, which the port-scoped cases below would not catch."
 
 run_case "protocol-any case: peer allowed on any port 443, probe tcp/443" "$ANY_PORT_MATCH_CONFIG"
 assert_allowed "tcp/443 was unreachable while protocol any allowed port 443, so the tcp/udp fan-out is not reaching the chain."
@@ -402,77 +401,78 @@ assert_allowed "tcp/443 was unreachable while protocol any allowed port 443, so 
 run_case "protocol-any case: peer allowed on any port 444, probe tcp/443" "$ANY_WRONG_PORT_CONFIG"
 assert_blocked "tcp/443 succeeded while protocol any allowed only port 444. The fan-out drops the port selector, so any carrying a port opens every port."
 
-run_case "protocol-any case: peer allowed on any port $PEER_UDP_PORT, probe udp/$PEER_UDP_PORT" "$ANY_UDP_CONFIG"
-assert_allowed "udp/$PEER_UDP_PORT was unreachable while protocol any allowed that port. Only the TCP half of the fan-out is reaching the chain, so the tcp cases above prove nothing about udp."
+run_case "protocol-any case: peer allowed on any port $PEER_SHARED_PORT, probe udp/$PEER_SHARED_PORT" "$ANY_UDP_CONFIG"
+assert_allowed "udp/$PEER_SHARED_PORT was unreachable while protocol any allowed that port. Only the TCP half of the fan-out is reaching the chain, so the tcp cases above prove nothing about udp."
 
-run_case "protocol-any case: peer allowed on any port 8054, probe udp/$PEER_UDP_PORT" "$ANY_UDP_WRONG_PORT_CONFIG"
-assert_blocked "udp/$PEER_UDP_PORT succeeded while protocol any allowed only port 8054. The UDP half of the fan-out ignores the port selector."
+run_case "protocol-any case: peer allowed on any port 8054, probe udp/$PEER_SHARED_PORT" "$ANY_UDP_WRONG_PORT_CONFIG"
+assert_blocked "udp/$PEER_SHARED_PORT succeeded while protocol any allowed only port 8054. The UDP half of the fan-out ignores the port selector."
 
 render_case() {
     local template="$1" command_line="$2" protocol="${3:-}" port="${4:-}"
-    local command_literal="${command_line//\\/\\\\}"
-    command_literal="${command_literal//&/\\&}"
-    sed "s#{{COMMAND}}#$command_literal#g" "$template" | \
-        sed "s#{{PROTOCOL}}#$protocol#g" | \
-        sed "s#{{PORT}}#$port#g" >"$RENDERED_CONFIG"
+    local rendered
+    rendered="$(<"$template")"
+    rendered="${rendered//'{{COMMAND}}'/"$command_line"}"
+    rendered="${rendered//'{{PROTOCOL}}'/"$protocol"}"
+    rendered="${rendered//'{{PORT}}'/"$port"}"
+    printf '%s\n' "$rendered" >"$RENDERED_CONFIG"
     echo "$RENDERED_CONFIG"
 }
 
 TCP_COMMAND="sh -c 'curl -s --max-time 8 -o /dev/null http://$PEER_IP:443/ && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
-UDP_COMMAND="sh -c 'echo probe | timeout 8 nc -u -w 3 $PEER_IP $PEER_UDP_PORT 2>/dev/null | grep -q probe && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
+UDP_COMMAND="sh -c 'echo probe | timeout 8 nc -u -w 3 $PEER_IP $PEER_SHARED_PORT 2>/dev/null | grep -q probe && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
 ICMP_COMMAND="sh -c 'timeout 8 ping -c 1 -W 5 $PEER_IP >/dev/null 2>&1 && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
 SCTP_PROBE='import socket,sys;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_SCTP);s.settimeout(8);s.connect((sys.argv[1],int(sys.argv[2])))'
-SCTP_COMMAND="sh -c 'python3 -c \\\"$SCTP_PROBE\\\" $PEER_IP $PEER_UDP_PORT >/dev/null 2>&1 && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
+SCTP_COMMAND="sh -c 'python3 -c \\\"$SCTP_PROBE\\\" $PEER_IP $PEER_SHARED_PORT >/dev/null 2>&1 && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
 
 # A tcp or udp probe answers the same way whether a rule reaches every
 # port-carrying protocol or only tcp and udp.  SCTP is what separates the two.
-run_case "portless-deny case: egress.default allow, peer denied with no ports entry, reach sctp/$PEER_UDP_PORT" \
+run_case "default allow with a deny rule naming no protocol and no port. Probe sctp" \
     "$(render_case "$ALLOW_PORTLESS_DENY_TEMPLATE" "$SCTP_COMMAND")"
-assert_blocked "an SCTP association to a destination denied by a rule naming no ports succeeded. A deny naming no protocol covers every protocol, and this one is reaching the chain as tcp and udp alone, which leaves the destination reachable over the transports the rule did not enumerate."
+assert_blocked "Expected sctp blocked."
 
-run_case "portless-deny case: the same policy, reach tcp/443" \
+run_case "default allow with a deny rule naming no protocol and no port. Probe tcp/443" \
     "$(render_case "$ALLOW_PORTLESS_DENY_TEMPLATE" "$TCP_COMMAND")"
-assert_blocked "tcp/443 succeeded under a deny rule covering the whole destination. The rule installed nothing at all, so the SCTP case above proves nothing about which protocols the rule carries."
+assert_blocked "Expected tcp/443 blocked."
 
-run_case "ported-deny case: egress.default allow, peer denied on any port $PEER_UDP_PORT, reach sctp/$PEER_UDP_PORT" \
-    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$SCTP_COMMAND" any "$PEER_UDP_PORT")"
-assert_blocked "an SCTP association to a port denied under protocol any succeeded. The operator denied a port without naming a transport, and SCTP escaped because the deny reached the chain as tcp and udp alone."
+run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe sctp" \
+    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$SCTP_COMMAND" any "$PEER_SHARED_PORT")"
+assert_blocked "Expected sctp blocked."
 
-run_case "ported-deny case: the same policy, reach udp/$PEER_UDP_PORT" \
-    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$UDP_COMMAND" any "$PEER_UDP_PORT")"
-assert_blocked "udp/$PEER_UDP_PORT stayed reachable under a deny naming that port with protocol any. The blanket accepts that carry the default are answering ahead of the operator's deny, which turns an allow-with-exceptions policy into no policy at all."
+run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe udp" \
+    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$UDP_COMMAND" any "$PEER_SHARED_PORT")"
+assert_blocked "Expected udp blocked."
 
-run_case "ported-deny case: the same policy, reach tcp/443" \
-    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$TCP_COMMAND" any "$PEER_UDP_PORT")"
-assert_allowed "tcp/443 was unreachable under egress.default allow while the only deny named port $PEER_UDP_PORT. The chain closes on a drop, and traffic the operator never denied leaves only if the chain also carries a TCP accept. That accept is missing, which cuts the container off from everything it did not explicitly deny."
+run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe tcp/443" \
+    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$TCP_COMMAND" any "$PEER_SHARED_PORT")"
+assert_allowed "Expected tcp/443 allowed."
 
-run_case "ported-deny case: the same policy, send an ICMP echo" \
-    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$ICMP_COMMAND" any "$PEER_UDP_PORT")"
-assert_allowed "an ICMP echo was unreachable under egress.default allow while the only deny named a port. ICMP carries no port and cannot match a port-scoped rule, so a policy denying one port is silently denying ICMP as well."
+run_case "default allow with a deny rule naming protocol any and port $PEER_SHARED_PORT. Probe icmp" \
+    "$(render_case "$ALLOW_PORTED_DENY_TEMPLATE" "$ICMP_COMMAND" any "$PEER_SHARED_PORT")"
+assert_allowed "Expected icmp allowed."
 
-run_case "portless-allow case: egress.default deny, peer allowed with no ports entry, reach sctp/$PEER_UDP_PORT" \
+run_case "default deny with an allow rule naming no protocol and no port. Probe sctp" \
     "$(render_case "$DENY_PORTLESS_ALLOW_TEMPLATE" "$SCTP_COMMAND")"
-assert_allowed "an SCTP association was refused while an allow rule naming no ports covered the destination. Omitting ports matches every protocol, and the rule is reaching the chain as tcp and udp alone, which makes it narrower than written."
+assert_allowed "Expected sctp allowed."
 
-run_case "portless-allow case: the same policy, reach tcp/443" \
+run_case "default deny with an allow rule naming no protocol and no port. Probe tcp/443" \
     "$(render_case "$DENY_PORTLESS_ALLOW_TEMPLATE" "$TCP_COMMAND")"
-assert_allowed "tcp/443 was unreachable while an allow rule naming no ports covered the destination. Omitting ports matches every protocol, and the rule is not carrying TCP."
+assert_allowed "Expected tcp/443 allowed."
 
-run_case "portless-allow case: the same policy, reach udp/$PEER_UDP_PORT" \
+run_case "default deny with an allow rule naming no protocol and no port. Probe udp" \
     "$(render_case "$DENY_PORTLESS_ALLOW_TEMPLATE" "$UDP_COMMAND")"
-assert_allowed "udp/$PEER_UDP_PORT was unreachable while an allow rule naming no ports covered the destination. The rule is being lowered to a protocol list that omits udp, which makes it narrower than written."
+assert_allowed "Expected udp allowed."
 
-run_case "portless-allow case: the same policy, send an ICMP echo" \
+run_case "default deny with an allow rule naming no protocol and no port. Probe icmp" \
     "$(render_case "$DENY_PORTLESS_ALLOW_TEMPLATE" "$ICMP_COMMAND")"
-assert_allowed "an ICMP echo was unreachable while an allow rule naming no ports covered the destination. The rule is being lowered to the transports alone, which drops ICMP from a rule that names no protocol at all."
+assert_allowed "Expected icmp allowed."
 
-run_case "ported-allow case: egress.default deny, peer allowed on any port $PEER_UDP_PORT, reach sctp/$PEER_UDP_PORT" \
-    "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$SCTP_COMMAND" any "$PEER_UDP_PORT")"
-assert_allowed "an SCTP association to a port allowed under protocol any was refused. The operator permitted a port without naming a transport, and the rule reached the chain as tcp and udp alone, so traffic the policy permits in writing is dropped."
+run_case "default deny with an allow rule naming protocol any and port $PEER_SHARED_PORT. Probe sctp" \
+    "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$SCTP_COMMAND" any "$PEER_SHARED_PORT")"
+assert_allowed "Expected sctp allowed."
 
-run_case "ported-allow case: the same policy, reach tcp/443" \
-    "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$TCP_COMMAND" any "$PEER_UDP_PORT")"
-assert_blocked "tcp/443 succeeded while protocol any allowed only port $PEER_UDP_PORT. The port selector is being dropped, so the SCTP case above proves only that the destination matched."
+run_case "default deny with an allow rule naming protocol any and port $PEER_SHARED_PORT. Probe tcp/443" \
+    "$(render_case "$DENY_PORTED_ALLOW_TEMPLATE" "$TCP_COMMAND" any "$PEER_SHARED_PORT")"
+assert_blocked "Expected tcp/443 blocked."
 
 echo "PASS: schema 0.8 egress rules filtered by destination, by port, by port range, by protocol, by resolver, by deny rule, and by exclusion, and no exclusion answered for a destination a later rule denied."
 echo "LXC schema 0.8 egress enforcement test complete."
