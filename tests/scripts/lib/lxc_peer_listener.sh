@@ -86,9 +86,7 @@ PY
 
 # Poll an SCTP peer until it accepts an association.
 #
-# A refusal here can also mean the host kernel carries no SCTP module, which
-# would otherwise surface later as the firewall blocking every carried-protocol
-# case.
+# Prints the last connection error and returns non-zero if the deadline passes.
 await_peer_sctp() {
     python3 - "$1" "$2" "${3:-20}" <<'PY'
 import socket

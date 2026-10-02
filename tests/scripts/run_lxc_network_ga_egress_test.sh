@@ -270,10 +270,9 @@ if ! PEER_PROBE_ERROR="$(await_peer_udp_echo "$PEER_IP" "$PEER_UDP_PORT")"; then
         "$PEER_IP:$PEER_UDP_PORT" "$PEER_PROBE_ERROR" "$PEER_UDP_LISTENER_LOG"
 fi
 
-# A rule naming a port without naming a transport reaches more than one
-# protocol, so the carried-protocol cases probe one port number over two of
-# them.  SCTP and UDP are separate protocols to the kernel, and a listener on
-# each can hold the same port.
+# SCTP and UDP are separate protocols to the kernel, and a listener on each can
+# hold the same port number.  The carried-protocol cases need one port reached
+# over both.
 ip netns exec "$PEER_NETNS" python3 -c "
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_SCTP)
@@ -411,15 +410,11 @@ assert_blocked "udp/$PEER_UDP_PORT succeeded while protocol any allowed only por
 
 render_case() {
     local template="$1" command_line="$2" protocol="${3:-}" port="${4:-}"
-    # sed reads a backslash as an escape and an ampersand as the text it
-    # matched.  The SCTP command carries the first and every command carries
-    # the second.
     local command_literal="${command_line//\\/\\\\}"
     command_literal="${command_literal//&/\\&}"
-    sed -e "s#{{COMMAND}}#$command_literal#g" \
-        -e "s#{{PROTOCOL}}#$protocol#g" \
-        -e "s#{{PORT}}#$port#g" \
-        "$template" >"$RENDERED_CONFIG"
+    sed "s#{{COMMAND}}#$command_literal#g" "$template" | \
+        sed "s#{{PROTOCOL}}#$protocol#g" | \
+        sed "s#{{PORT}}#$port#g" >"$RENDERED_CONFIG"
     echo "$RENDERED_CONFIG"
 }
 
@@ -429,11 +424,8 @@ ICMP_COMMAND="sh -c 'timeout 8 ping -c 1 -W 5 $PEER_IP >/dev/null 2>&1 && echo M
 SCTP_PROBE='import socket,sys;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_SCTP);s.settimeout(8);s.connect((sys.argv[1],int(sys.argv[2])))'
 SCTP_COMMAND="sh -c 'python3 -c \\\"$SCTP_PROBE\\\" $PEER_IP $PEER_UDP_PORT >/dev/null 2>&1 && echo MXC_NET_ALLOWED || echo MXC_NET_BLOCKED'"
 
-# A rule written as protocol any carrying a port names no transport, so every
-# transport that carries a port belongs to it.  A tcp or udp probe answers the
-# same way whether the rule covers four protocols or two, which leaves SCTP as
-# the probe that can tell a complete rule from one narrowed to tcp and udp.
-
+# A tcp or udp probe answers the same way whether a rule reaches every
+# port-carrying protocol or only tcp and udp.  SCTP is what separates the two.
 run_case "portless-deny case: egress.default allow, peer denied with no ports entry, reach sctp/$PEER_UDP_PORT" \
     "$(render_case "$ALLOW_PORTLESS_DENY_TEMPLATE" "$SCTP_COMMAND")"
 assert_blocked "an SCTP association to a destination denied by a rule naming no ports succeeded. A deny naming no protocol covers every protocol, and this one is reaching the chain as tcp and udp alone, which leaves the destination reachable over the transports the rule did not enumerate."
