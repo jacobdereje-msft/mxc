@@ -8,7 +8,6 @@
 
 use std::ffi::c_void;
 use std::fmt::Write;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Arc;
@@ -16,11 +15,8 @@ use std::sync::Arc;
 use learning_mode_core::DenialAnalyzer;
 use learning_mode_windows::{EtlDenialAnalyzer, LEARNING_MODE_API_SET};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, SetHandleInformation, ERROR_CALL_NOT_IMPLEMENTED, E_NOTIMPL, HANDLE,
-    HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
-};
-use windows::Win32::System::Console::{
-    GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    CloseHandle, GetLastError, ERROR_CALL_NOT_IMPLEMENTED, E_NOTIMPL, HANDLE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows::Win32::System::Threading::{
     CreateProcessW, GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
@@ -51,6 +47,7 @@ use crate::secenv::{
     SecurityEnvironmentVersion, PROCESS_SECURITY_ENVIRONMENT_FLAG_NONE,
     SECURITY_ENVIRONMENT_API_SET,
 };
+use crate::stdio::ChildStdio;
 use wxc_common::api_set::is_api_set_implemented;
 use wxc_common::audit::{
     sanitize_identity, AuditEvent, AuditEventName, KillMethod, TeardownSkipReason, TeardownStatus,
@@ -63,8 +60,7 @@ use wxc_common::models::{
     FailurePhase, ProxyAddress, SandboxOutputMetadata, ScriptResponse,
 };
 use wxc_common::process_util::{
-    create_std_pipes, InterruptiblePipeReader, OwnedHandle, PipeReadCanceller, PipeWriter,
-    SendOwnedHandle,
+    InterruptiblePipeReader, OwnedHandle, PipeReadCanceller, PipeWriter, SendOwnedHandle,
 };
 use wxc_common::sandbox_process::{
     boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, spawn_discard,
@@ -393,11 +389,6 @@ impl BaseContainerRunner {
         logger: &mut Logger,
         stdio: StdioMode,
     ) -> Result<BaseChild, ScriptResponse> {
-        let capture = stdio == StdioMode::Pipes;
-        let pty_size = match stdio {
-            StdioMode::Pty(size) => Some(size),
-            _ => None,
-        };
         let _ = writeln!(
             logger,
             "{EMOJI_SECTION} SECTION: Backend runner 'BaseContainer'"
@@ -538,11 +529,13 @@ impl BaseContainerRunner {
         // In capture mode (`StdioMode::Pipes`) we always take the pipe
         // path and wire the child to capture pipes that the streaming handle
         // reads from.
-        let pipe_mode = pty_size.is_none()
-            && (capture || !std::io::stdout().is_terminal() || !std::io::stderr().is_terminal());
+        let mut child_stdio = ChildStdio::new(stdio).map_err(|error| {
+            ScriptResponse::error(&format!("failed to configure child stdio: {error}"))
+        })?;
+        let uses_pipe_handles = child_stdio.uses_pipe_handles();
 
-        if pipe_mode {
-            if capture {
+        if uses_pipe_handles {
+            if child_stdio.captures_output() {
                 let _ = writeln!(
                     logger,
                     "STDIO mode: capture (piping child output to the streaming handle)"
@@ -555,125 +548,18 @@ impl BaseContainerRunner {
             }
         }
 
-        // --- Retrieve / create std handles (pipe mode only) ---
-        let mut h_stdin = HANDLE::default();
-        let mut h_stdout = HANDLE::default();
-        let mut h_stderr = HANDLE::default();
-
-        // Capture pipe read-ends (parent side) kept alive until after the wait;
-        // child-side ends kept alive until after process creation.
-        let mut capture_reads: Option<(OwnedHandle, OwnedHandle)> = None;
-        let mut capture_child_ends: Vec<OwnedHandle> = Vec::new();
-        // Parent's stdin write-end; in capture mode it is handed to the caller
-        // so they can write to the child.
-        let mut captured_stdin_write: Option<OwnedHandle> = None;
-
-        if pipe_mode {
-            if capture {
-                let (stdin_read, stdin_write) = match create_std_pipes(false) {
-                    Ok(p) => p,
-                    Err(e) => return Err(ScriptResponse::error(&format!("stdin pipe: {e}"))),
-                };
-                let (stdout_read, stdout_write) = match create_std_pipes(true) {
-                    Ok(p) => p,
-                    Err(e) => return Err(ScriptResponse::error(&format!("stdout pipe: {e}"))),
-                };
-                let (stderr_read, stderr_write) = match create_std_pipes(true) {
-                    Ok(p) => p,
-                    Err(e) => return Err(ScriptResponse::error(&format!("stderr pipe: {e}"))),
-                };
-
-                h_stdin = stdin_read.get();
-                h_stdout = stdout_write.get();
-                h_stderr = stderr_write.get();
-
-                capture_child_ends.push(stdin_read);
-                capture_child_ends.push(stdout_write);
-                capture_child_ends.push(stderr_write);
-                captured_stdin_write = Some(stdin_write);
-                capture_reads = Some((stdout_read, stderr_read));
-            } else {
-                h_stdin = match unsafe { GetStdHandle(STD_INPUT_HANDLE) } {
-                    Ok(h) => h,
-                    Err(e) => {
-                        return Err(ScriptResponse::error(&format!("GetStdHandle(STDIN): {e}")))
-                    }
-                };
-                h_stdout = match unsafe { GetStdHandle(STD_OUTPUT_HANDLE) } {
-                    Ok(h) => h,
-                    Err(e) => {
-                        return Err(ScriptResponse::error(&format!("GetStdHandle(STDOUT): {e}")))
-                    }
-                };
-                h_stderr = match unsafe { GetStdHandle(STD_ERROR_HANDLE) } {
-                    Ok(h) => h,
-                    Err(e) => {
-                        return Err(ScriptResponse::error(&format!("GetStdHandle(STDERR): {e}")))
-                    }
-                };
-
-                if h_stdin.is_invalid() || h_stdin == HANDLE::default() {
-                    return Err(ScriptResponse::error(
-                        "GetStdHandle(STDIN) returned null/invalid handle",
-                    ));
-                }
-                if h_stdout.is_invalid() || h_stdout == HANDLE::default() {
-                    return Err(ScriptResponse::error(
-                        "GetStdHandle(STDOUT) returned null/invalid handle",
-                    ));
-                }
-                if h_stderr.is_invalid() || h_stderr == HANDLE::default() {
-                    return Err(ScriptResponse::error(
-                        "GetStdHandle(STDERR) returned null/invalid handle",
-                    ));
-                }
-
-                // Ensure the handles are inheritable.
-                unsafe {
-                    if let Err(e) =
-                        SetHandleInformation(h_stdin, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT)
-                    {
-                        return Err(ScriptResponse::error(&format!(
-                            "SetHandleInformation(STDIN): {e}"
-                        )));
-                    }
-                    if let Err(e) =
-                        SetHandleInformation(h_stdout, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT)
-                    {
-                        return Err(ScriptResponse::error(&format!(
-                            "SetHandleInformation(STDOUT): {e}"
-                        )));
-                    }
-                    if let Err(e) =
-                        SetHandleInformation(h_stderr, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT)
-                    {
-                        return Err(ScriptResponse::error(&format!(
-                            "SetHandleInformation(STDERR): {e}"
-                        )));
-                    }
-                }
-            }
-        }
-
-        let pseudo_console = pty_size
-            .map(PseudoConsole::new)
-            .transpose()
-            .map_err(|error| {
-                ScriptResponse::error(&format!("CreatePseudoConsole failed: {error}"))
-            })?;
-
         // STARTUPINFOW -- in pipe mode, pass parent handles via STARTF_USESTDHANDLES
         // so child output streams directly to the SDK caller.
         let si = STARTUPINFOW {
             cb: std::mem::size_of::<STARTUPINFOW>() as u32,
-            dwFlags: if pipe_mode {
+            dwFlags: if uses_pipe_handles {
                 STARTF_USESTDHANDLES
             } else {
                 Default::default()
             },
-            hStdInput: h_stdin,
-            hStdOutput: h_stdout,
-            hStdError: h_stderr,
+            hStdInput: child_stdio.stdin,
+            hStdOutput: child_stdio.stdout,
+            hStdError: child_stdio.stderr,
             ..unsafe { std::mem::zeroed() }
         };
         #[allow(unused_assignments)]
@@ -697,7 +583,11 @@ impl BaseContainerRunner {
         // stdio is piped (no console is shared). In console-sharing mode (ConPTY)
         // the child inherits the parent's live console for interactive I/O, so
         // CREATE_NO_WINDOW must not be set there.
-        let no_window_flag = if pipe_mode { CREATE_NO_WINDOW.0 } else { 0 };
+        let no_window_flag = if uses_pipe_handles {
+            CREATE_NO_WINDOW.0
+        } else {
+            0
+        };
         // Create the child suspended so its main thread cannot spawn any
         // descendant before we've assigned it to the job object below.
         let creation_flags = CREATE_SUSPENDED.0
@@ -781,10 +671,11 @@ impl BaseContainerRunner {
         }
 
         pi = unsafe { std::mem::zeroed() };
-        let inherited_handles = if pipe_mode {
-            vec![h_stdin, h_stdout, h_stderr]
+        let inherited_pipe_handles = child_stdio.child_inherited_pipe_handles();
+        let inherited_handles = if uses_pipe_handles {
+            &inherited_pipe_handles[..]
         } else {
-            Vec::new()
+            &[]
         };
         let environment_handle = capture_session
             .as_ref()
@@ -798,8 +689,11 @@ impl BaseContainerRunner {
         let extended_startup = match SecurityEnvironmentStartupInfo::new(
             si,
             environment_handle,
-            &inherited_handles,
-            pseudo_console.as_ref().map(PseudoConsole::attribute_value),
+            inherited_handles,
+            child_stdio
+                .pseudo_console
+                .as_ref()
+                .map(PseudoConsole::attribute_value),
         ) {
             Ok(startup) => startup,
             Err(primary) => {
@@ -933,9 +827,9 @@ impl BaseContainerRunner {
 
         // Child has inherited the pipe handles; close the parent's child-side
         // ends so the read-ends observe EOF when the child exits.
-        capture_child_ends.clear();
+        child_stdio.finish_launch();
 
-        let (stdout_read, stderr_read) = match capture_reads {
+        let (stdout_read, stderr_read) = match child_stdio.capture_reads.take() {
             Some((out, err)) => (Some(out), Some(err)),
             None => (None, None),
         };
@@ -1103,10 +997,10 @@ impl BaseContainerRunner {
             thread: OwnedHandle::new(pi.hThread),
             pid: pi.dwProcessId,
             job: Some(job),
-            stdin_write: captured_stdin_write,
+            stdin_write: child_stdio.stdin_write.take(),
             stdout_read,
             stderr_read,
-            pseudo_console,
+            pseudo_console: child_stdio.pseudo_console.take(),
             timeout_ms: get_timeout_milliseconds(request.script_timeout),
             preserve_policy: request.lifecycle.preserve_policy,
             identity,

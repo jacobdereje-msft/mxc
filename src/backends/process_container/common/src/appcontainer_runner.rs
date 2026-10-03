@@ -1,23 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::io::IsTerminal;
 use std::ptr;
 use std::sync::Arc;
 
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, SetHandleInformation, ERROR_ACCESS_DISABLED_BY_POLICY,
-    ERROR_ALREADY_EXISTS, ERROR_ENVVAR_NOT_FOUND, HANDLE, HANDLE_FLAG_INHERIT, HLOCAL,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DISABLED_BY_POLICY, ERROR_ALREADY_EXISTS,
+    ERROR_ENVVAR_NOT_FOUND, HANDLE, HLOCAL, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows::Win32::Security::{DeriveCapabilitySidsFromName, FreeSid, PSID, TOKEN_QUERY};
-use windows::Win32::System::Console::{
-    GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
-};
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows::Win32::System::SystemServices::SE_GROUP_ENABLED;
 use windows::Win32::System::Threading::{
@@ -46,6 +41,7 @@ use crate::launch_diagnostics::{
 use crate::network_policy_helpers::{add_default_network_capabilities, allows_network_egress};
 use crate::process_mitigation;
 use crate::pseudo_console::{close_after_termination, PseudoConsole};
+use crate::stdio::ChildStdio;
 use wxc_common::audit::{
     sanitize_identity, AuditEvent, AuditEventName, KillMethod, OperationStatus, TeardownSkipReason,
     TeardownStatus,
@@ -56,8 +52,8 @@ use wxc_common::models::{
     ContainmentBackend, ExecutionRequest, FailurePhase, SandboxOutputMetadata, ScriptResponse,
 };
 use wxc_common::process_util::{
-    create_std_pipes, InterruptiblePipeReader, OwnedHandle, PipeReadCanceller, PipeWriter,
-    SendOwnedHandle, SidAndAttributes,
+    InterruptiblePipeReader, OwnedHandle, PipeReadCanceller, PipeWriter, SendOwnedHandle,
+    SidAndAttributes,
 };
 use wxc_common::sandbox_process::{
     boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, spawn_discard,
@@ -776,11 +772,6 @@ impl AppContainerScriptRunner {
         logger: &mut Logger,
         stdio: StdioMode,
     ) -> Result<SpawnedChild, WxcError> {
-        let capture = stdio == StdioMode::Pipes;
-        let pty_size = match stdio {
-            StdioMode::Pty(size) => Some(size),
-            _ => None,
-        };
         // --- Learning-mode capabilities ---
         // `learningModeLogging` (deny-and-record) and `permissiveLearningMode`
         // (allow-all audit) are distinct. Emit per-capability diagnostics for
@@ -835,17 +826,18 @@ impl AppContainerScriptRunner {
         // --- Determine STDIO mode ---
         // If wxc-exec's stdout or stderr is not a terminal (i.e., piped by the SDK),
         // we forward our own std handles to the child via STARTF_USESTDHANDLES so the
-        // child's output streams directly to the SDK in real time. Otherwise we use
-        // console sharing (the ConPTY path).
+        // child's output streams directly to the SDK in real time. Otherwise the
+        // child uses either the inherited console or the requested ConPTY.
         //
         // In capture mode (`StdioMode::Pipes`) we always take the pipe
         // path — but instead of forwarding our own std handles we wire the
         // child to capture pipes that the streaming handle reads from.
-        let pipe_mode = pty_size.is_none()
-            && (capture || !std::io::stdout().is_terminal() || !std::io::stderr().is_terminal());
+        let mut child_stdio = ChildStdio::new(stdio)
+            .map_err(|error| WxcError::Process(format!("configure child stdio: {error}")))?;
+        let uses_pipe_handles = child_stdio.uses_pipe_handles();
 
-        if pipe_mode {
-            if capture {
+        if uses_pipe_handles {
+            if child_stdio.captures_output() {
                 logger
                     .log_line("STDIO mode: capture (piping child output to the streaming handle)");
             } else {
@@ -854,16 +846,11 @@ impl AppContainerScriptRunner {
         }
 
         // --- Allocate and initialize attribute list ---
-        let pseudo_console = pty_size
-            .map(PseudoConsole::new)
-            .transpose()
-            .map_err(|error| WxcError::Process(format!("CreatePseudoConsole: {error}")))?;
-
         let attr_count = compute_attr_count(
             request.policy.least_privilege_mode,
             request.policy.ui.disable,
-            pipe_mode,
-            pseudo_console.is_some(),
+            uses_pipe_handles,
+            child_stdio.pseudo_console.is_some(),
         );
 
         // Lifetime spans the attribute list and CreateProcessW:
@@ -973,94 +960,16 @@ impl AppContainerScriptRunner {
         // the child to fresh capture pipes that the streaming handle reads from
         // (the `mxc` library path). Handle list for
         // PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Must outlive CreateProcessW.
-        let mut handle_list: Vec<HANDLE> = Vec::new();
-
-        let h_stdin;
-        let h_stdout;
-        let h_stderr;
-
-        // Capture pipe read-ends (parent side): kept alive until after the
-        // wait, then drained. Child-side ends (stdin read, stdout/stderr
-        // write): kept alive until after CreateProcessW, then dropped so the
-        // read-ends observe EOF when the child exits.
-        let mut capture_reads: Option<(OwnedHandle, OwnedHandle)> = None;
-        let mut capture_child_ends: Vec<OwnedHandle> = Vec::new();
-        // Parent's stdin write-end; in capture mode it is handed to the caller
-        // so they can write to the child.
-        let mut captured_stdin_write: Option<OwnedHandle> = None;
-
-        if pipe_mode {
-            if capture {
-                // create_std_pipes(false): read-end inheritable (child stdin),
-                // write-end non-inheritable (kept for streaming, else dropped).
-                let (stdin_read, stdin_write) = create_std_pipes(false)?;
-                // create_std_pipes(true): read-end non-inheritable (parent
-                // reads it), write-end inheritable (child writes to it).
-                let (stdout_read, stdout_write) = create_std_pipes(true)?;
-                let (stderr_read, stderr_write) = create_std_pipes(true)?;
-
-                h_stdin = stdin_read.get();
-                h_stdout = stdout_write.get();
-                h_stderr = stderr_write.get();
-
-                capture_child_ends.push(stdin_read);
-                capture_child_ends.push(stdout_write);
-                capture_child_ends.push(stderr_write);
-                captured_stdin_write = Some(stdin_write);
-                capture_reads = Some((stdout_read, stderr_read));
-            } else {
-                h_stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) }
-                    .map_err(|e| WxcError::Process(format!("GetStdHandle(STDIN): {e}")))?;
-                h_stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }
-                    .map_err(|e| WxcError::Process(format!("GetStdHandle(STDOUT): {e}")))?;
-                h_stderr = unsafe { GetStdHandle(STD_ERROR_HANDLE) }
-                    .map_err(|e| WxcError::Process(format!("GetStdHandle(STDERR): {e}")))?;
-
-                if h_stdin.is_invalid() || h_stdin == HANDLE::default() {
-                    return Err(WxcError::Process(
-                        "GetStdHandle(STDIN) returned null/invalid handle".to_string(),
-                    ));
-                }
-                if h_stdout.is_invalid() || h_stdout == HANDLE::default() {
-                    return Err(WxcError::Process(
-                        "GetStdHandle(STDOUT) returned null/invalid handle".to_string(),
-                    ));
-                }
-                if h_stderr.is_invalid() || h_stderr == HANDLE::default() {
-                    return Err(WxcError::Process(
-                        "GetStdHandle(STDERR) returned null/invalid handle".to_string(),
-                    ));
-                }
-
-                // Ensure the handles are inheritable.
-                unsafe {
-                    SetHandleInformation(h_stdin, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT)
-                        .map_err(|e| {
-                            WxcError::Process(format!("SetHandleInformation(STDIN): {e}"))
-                        })?;
-                    SetHandleInformation(h_stdout, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT)
-                        .map_err(|e| {
-                            WxcError::Process(format!("SetHandleInformation(STDOUT): {e}"))
-                        })?;
-                    SetHandleInformation(h_stderr, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT)
-                        .map_err(|e| {
-                            WxcError::Process(format!("SetHandleInformation(STDERR): {e}"))
-                        })?;
-                }
-            }
-
-            handle_list.push(h_stdin);
-            handle_list.push(h_stdout);
-            handle_list.push(h_stderr);
-
+        let inherited_pipe_handles = child_stdio.child_inherited_pipe_handles();
+        if uses_pipe_handles {
             // 4. HANDLE_LIST -- restrict which handles the child inherits.
             unsafe {
                 UpdateProcThreadAttribute(
                     attr_list,
                     0,
                     PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                    Some(handle_list.as_ptr() as *const core::ffi::c_void),
-                    handle_list.len() * std::mem::size_of::<HANDLE>(),
+                    Some(inherited_pipe_handles.as_ptr() as *const core::ffi::c_void),
+                    inherited_pipe_handles.len() * std::mem::size_of::<HANDLE>(),
                     None,
                     None,
                 )
@@ -1068,13 +977,9 @@ impl AppContainerScriptRunner {
                     WxcError::Process(format!("UpdateProcThreadAttribute(HANDLE_LIST): {}", e))
                 })?;
             }
-        } else {
-            h_stdin = HANDLE::default();
-            h_stdout = HANDLE::default();
-            h_stderr = HANDLE::default();
         }
 
-        if let Some(pty) = &pseudo_console {
+        if let Some(pty) = &child_stdio.pseudo_console {
             unsafe {
                 UpdateProcThreadAttribute(
                     attr_list,
@@ -1098,14 +1003,14 @@ impl AppContainerScriptRunner {
             StartupInfo: STARTUPINFOW {
                 cb: std::mem::size_of::<STARTUPINFOEXW>() as u32,
                 lpDesktop: PWSTR(desktop_wide.as_mut_ptr()),
-                dwFlags: if pipe_mode {
+                dwFlags: if uses_pipe_handles {
                     STARTF_USESTDHANDLES
                 } else {
                     Default::default()
                 },
-                hStdInput: h_stdin,
-                hStdOutput: h_stdout,
-                hStdError: h_stderr,
+                hStdInput: child_stdio.stdin,
+                hStdOutput: child_stdio.stdout,
+                hStdError: child_stdio.stderr,
                 ..Default::default()
             },
             lpAttributeList: attr_list,
@@ -1158,7 +1063,11 @@ impl AppContainerScriptRunner {
         // stdio is piped (no console is shared). In console-sharing mode (ConPTY)
         // the child inherits the parent's live console for interactive I/O, so
         // CREATE_NO_WINDOW must not be set there.
-        let no_window_flag = if pipe_mode { CREATE_NO_WINDOW.0 } else { 0 };
+        let no_window_flag = if uses_pipe_handles {
+            CREATE_NO_WINDOW.0
+        } else {
+            0
+        };
         let creation_flags = PROCESS_CREATION_FLAGS(
             EXTENDED_STARTUPINFO_PRESENT.0
                 | CREATE_SUSPENDED.0
@@ -1168,12 +1077,12 @@ impl AppContainerScriptRunner {
 
         // --- Create process ---
         //
-        // In console-sharing mode (pipe_mode == false):
-        //   stdin:  node-pty -> ConPTY -> wxc-exec -> child (AppContainer)
-        //   stdout: node-pty <- ConPTY <----------- child (shares parent's console)
+        // In console-backed mode:
+        //   StdioMode::Inherit shares the parent's console.
+        //   StdioMode::Pty attaches the child directly to the requested ConPTY.
         //   bInheritHandles = false, no STARTF_USESTDHANDLES.
         //
-        // In pipe-passthrough mode (pipe_mode == true):
+        // In pipe-handle mode:
         //   The child receives wxc-exec's own stdin/stdout/stderr handles directly.
         //   Child output streams to the SDK in real time (no intermediate buffering).
         //   bInheritHandles = true, with PROC_THREAD_ATTRIBUTE_HANDLE_LIST restricting
@@ -1186,7 +1095,7 @@ impl AppContainerScriptRunner {
                 Some(PWSTR(cmd_line_wide.as_mut_ptr())),
                 None,
                 None,
-                pipe_mode, // bInheritHandles: true only in pipe mode (restricted by HANDLE_LIST)
+                uses_pipe_handles,
                 creation_flags,
                 Some(env_ptr),
                 working_dir_pcwstr,
@@ -1215,7 +1124,7 @@ impl AppContainerScriptRunner {
 
         // The child has inherited the pipe handles, so close the parent's
         // child-side ends now (otherwise the read-ends would never see EOF).
-        capture_child_ends.clear();
+        child_stdio.finish_launch();
 
         let process_handle = OwnedHandle::new(pi.hProcess);
         let thread_handle = OwnedHandle::new(pi.hThread);
@@ -1324,7 +1233,7 @@ impl AppContainerScriptRunner {
             _ => (None, None, None),
         };
 
-        let (stdout_read, stderr_read) = match capture_reads {
+        let (stdout_read, stderr_read) = match child_stdio.capture_reads.take() {
             Some((out, err)) => (Some(out), Some(err)),
             None => (None, None),
         };
@@ -1339,10 +1248,10 @@ impl AppContainerScriptRunner {
             capture_session,
             capture_output_path,
             capture_etl_path,
-            stdin_write: captured_stdin_write,
+            stdin_write: child_stdio.stdin_write.take(),
             stdout_read,
             stderr_read,
-            pseudo_console,
+            pseudo_console: child_stdio.pseudo_console.take(),
             timeout_ms: get_timeout_milliseconds(request.script_timeout),
         })
     }

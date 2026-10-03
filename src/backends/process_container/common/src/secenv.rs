@@ -202,7 +202,19 @@ impl SecurityEnvironmentStartupInfo {
             InitializeProcThreadAttributeList(None, attribute_count, None, &mut byte_count)
         };
         let sizing_error = last_error();
-        if sizing_result.is_ok() || sizing_error != ERROR_INSUFFICIENT_BUFFER.0 || byte_count == 0 {
+        if sizing_result.is_ok() {
+            return Err(LearningModeError::ApiCall {
+                function: "InitializeProcThreadAttributeList(size)",
+                code: sizing_error,
+            });
+        }
+        if sizing_error != ERROR_INSUFFICIENT_BUFFER.0 {
+            return Err(LearningModeError::ApiCall {
+                function: "InitializeProcThreadAttributeList(size)",
+                code: sizing_error,
+            });
+        }
+        if byte_count == 0 {
             return Err(LearningModeError::ApiCall {
                 function: "InitializeProcThreadAttributeList(size)",
                 code: sizing_error,

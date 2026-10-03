@@ -50,6 +50,8 @@ pub mod sandbox_tracking;
 #[cfg(target_os = "windows")]
 mod secenv;
 #[cfg(target_os = "windows")]
+mod stdio;
+#[cfg(target_os = "windows")]
 pub use native_capture::CaptureSession;
 #[cfg(target_os = "windows")]
 pub use secenv::{

@@ -159,16 +159,8 @@ impl Drop for PseudoConsole {
 }
 
 fn coord(size: PtySize) -> std::io::Result<COORD> {
-    if size.cols == 0
-        || size.rows == 0
-        || size.cols > i16::MAX as u16
-        || size.rows > i16::MAX as u16
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "PTY rows and columns must be between 1 and 32767",
-        ));
-    }
+    size.validate()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     Ok(COORD {
         X: size.cols as i16,
         Y: size.rows as i16,
