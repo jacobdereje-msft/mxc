@@ -47,7 +47,7 @@ use crate::secenv::{
     SecurityEnvironmentVersion, PROCESS_SECURITY_ENVIRONMENT_FLAG_NONE,
     SECURITY_ENVIRONMENT_API_SET,
 };
-use crate::stdio::ChildStdio;
+use crate::stdio::ChildStdioSetup;
 use wxc_common::api_set::is_api_set_implemented;
 use wxc_common::audit::{
     sanitize_identity, AuditEvent, AuditEventName, KillMethod, TeardownSkipReason, TeardownStatus,
@@ -529,13 +529,13 @@ impl BaseContainerRunner {
         // In capture mode (`StdioMode::Pipes`) we always take the pipe
         // path and wire the child to capture pipes that the streaming handle
         // reads from.
-        let mut child_stdio = ChildStdio::new(stdio).map_err(|error| {
+        let mut stdio_setup = ChildStdioSetup::new(stdio).map_err(|error| {
             ScriptResponse::error(&format!("failed to configure child stdio: {error}"))
         })?;
-        let uses_pipe_handles = child_stdio.uses_pipe_handles();
+        let uses_pipe_handles = stdio_setup.uses_pipe_handles();
 
         if uses_pipe_handles {
-            if child_stdio.captures_output() {
+            if stdio_setup.captures_output() {
                 let _ = writeln!(
                     logger,
                     "STDIO mode: capture (piping child output to the streaming handle)"
@@ -557,9 +557,9 @@ impl BaseContainerRunner {
             } else {
                 Default::default()
             },
-            hStdInput: child_stdio.stdin,
-            hStdOutput: child_stdio.stdout,
-            hStdError: child_stdio.stderr,
+            hStdInput: stdio_setup.stdin,
+            hStdOutput: stdio_setup.stdout,
+            hStdError: stdio_setup.stderr,
             ..unsafe { std::mem::zeroed() }
         };
         #[allow(unused_assignments)]
@@ -671,7 +671,7 @@ impl BaseContainerRunner {
         }
 
         pi = unsafe { std::mem::zeroed() };
-        let inherited_pipe_handles = child_stdio.child_inherited_pipe_handles();
+        let inherited_pipe_handles = stdio_setup.child_inherited_pipe_handles();
         let inherited_handles = if uses_pipe_handles {
             &inherited_pipe_handles[..]
         } else {
@@ -690,7 +690,7 @@ impl BaseContainerRunner {
             si,
             environment_handle,
             inherited_handles,
-            child_stdio
+            stdio_setup
                 .pseudo_console
                 .as_ref()
                 .map(PseudoConsole::attribute_value),
@@ -827,9 +827,9 @@ impl BaseContainerRunner {
 
         // Child has inherited the pipe handles; close the parent's child-side
         // ends so the read-ends observe EOF when the child exits.
-        child_stdio.finish_launch();
+        stdio_setup.finish_launch();
 
-        let (stdout_read, stderr_read) = match child_stdio.capture_reads.take() {
+        let (stdout_read, stderr_read) = match stdio_setup.capture_reads.take() {
             Some((out, err)) => (Some(out), Some(err)),
             None => (None, None),
         };
@@ -997,10 +997,10 @@ impl BaseContainerRunner {
             thread: OwnedHandle::new(pi.hThread),
             pid: pi.dwProcessId,
             job: Some(job),
-            stdin_write: child_stdio.stdin_write.take(),
+            stdin_write: stdio_setup.stdin_write.take(),
             stdout_read,
             stderr_read,
-            pseudo_console: child_stdio.pseudo_console.take(),
+            pseudo_console: stdio_setup.pseudo_console.take(),
             timeout_ms: get_timeout_milliseconds(request.script_timeout),
             preserve_policy: request.lifecycle.preserve_policy,
             identity,

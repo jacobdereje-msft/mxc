@@ -41,7 +41,7 @@ use crate::launch_diagnostics::{
 use crate::network_policy_helpers::{add_default_network_capabilities, allows_network_egress};
 use crate::process_mitigation;
 use crate::pseudo_console::{close_after_termination, PseudoConsole};
-use crate::stdio::ChildStdio;
+use crate::stdio::ChildStdioSetup;
 use wxc_common::audit::{
     sanitize_identity, AuditEvent, AuditEventName, KillMethod, OperationStatus, TeardownSkipReason,
     TeardownStatus,
@@ -832,12 +832,12 @@ impl AppContainerScriptRunner {
         // In capture mode (`StdioMode::Pipes`) we always take the pipe
         // path — but instead of forwarding our own std handles we wire the
         // child to capture pipes that the streaming handle reads from.
-        let mut child_stdio = ChildStdio::new(stdio)
+        let mut stdio_setup = ChildStdioSetup::new(stdio)
             .map_err(|error| WxcError::Process(format!("configure child stdio: {error}")))?;
-        let uses_pipe_handles = child_stdio.uses_pipe_handles();
+        let uses_pipe_handles = stdio_setup.uses_pipe_handles();
 
         if uses_pipe_handles {
-            if child_stdio.captures_output() {
+            if stdio_setup.captures_output() {
                 logger
                     .log_line("STDIO mode: capture (piping child output to the streaming handle)");
             } else {
@@ -850,7 +850,7 @@ impl AppContainerScriptRunner {
             request.policy.least_privilege_mode,
             request.policy.ui.disable,
             uses_pipe_handles,
-            child_stdio.pseudo_console.is_some(),
+            stdio_setup.pseudo_console.is_some(),
         );
 
         // Lifetime spans the attribute list and CreateProcessW:
@@ -960,7 +960,7 @@ impl AppContainerScriptRunner {
         // the child to fresh capture pipes that the streaming handle reads from
         // (the `mxc` library path). Handle list for
         // PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Must outlive CreateProcessW.
-        let inherited_pipe_handles = child_stdio.child_inherited_pipe_handles();
+        let inherited_pipe_handles = stdio_setup.child_inherited_pipe_handles();
         if uses_pipe_handles {
             // 4. HANDLE_LIST -- restrict which handles the child inherits.
             unsafe {
@@ -979,7 +979,7 @@ impl AppContainerScriptRunner {
             }
         }
 
-        if let Some(pty) = &child_stdio.pseudo_console {
+        if let Some(pty) = &stdio_setup.pseudo_console {
             unsafe {
                 UpdateProcThreadAttribute(
                     attr_list,
@@ -1008,9 +1008,9 @@ impl AppContainerScriptRunner {
                 } else {
                     Default::default()
                 },
-                hStdInput: child_stdio.stdin,
-                hStdOutput: child_stdio.stdout,
-                hStdError: child_stdio.stderr,
+                hStdInput: stdio_setup.stdin,
+                hStdOutput: stdio_setup.stdout,
+                hStdError: stdio_setup.stderr,
                 ..Default::default()
             },
             lpAttributeList: attr_list,
@@ -1124,7 +1124,7 @@ impl AppContainerScriptRunner {
 
         // The child has inherited the pipe handles, so close the parent's
         // child-side ends now (otherwise the read-ends would never see EOF).
-        child_stdio.finish_launch();
+        stdio_setup.finish_launch();
 
         let process_handle = OwnedHandle::new(pi.hProcess);
         let thread_handle = OwnedHandle::new(pi.hThread);
@@ -1233,7 +1233,7 @@ impl AppContainerScriptRunner {
             _ => (None, None, None),
         };
 
-        let (stdout_read, stderr_read) = match child_stdio.capture_reads.take() {
+        let (stdout_read, stderr_read) = match stdio_setup.capture_reads.take() {
             Some((out, err)) => (Some(out), Some(err)),
             None => (None, None),
         };
@@ -1248,10 +1248,10 @@ impl AppContainerScriptRunner {
             capture_session,
             capture_output_path,
             capture_etl_path,
-            stdin_write: child_stdio.stdin_write.take(),
+            stdin_write: stdio_setup.stdin_write.take(),
             stdout_read,
             stderr_read,
-            pseudo_console: child_stdio.pseudo_console.take(),
+            pseudo_console: stdio_setup.pseudo_console.take(),
             timeout_ms: get_timeout_milliseconds(request.script_timeout),
         })
     }

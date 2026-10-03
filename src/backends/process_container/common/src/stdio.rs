@@ -26,7 +26,7 @@ impl StdioRouting {
     }
 }
 
-pub(crate) struct ChildStdio {
+pub(crate) struct ChildStdioSetup {
     pub(crate) stdin: HANDLE,
     pub(crate) stdout: HANDLE,
     pub(crate) stderr: HANDLE,
@@ -37,7 +37,7 @@ pub(crate) struct ChildStdio {
     routing: StdioRouting,
 }
 
-impl ChildStdio {
+impl ChildStdioSetup {
     pub(crate) fn new(stdio: StdioMode) -> std::io::Result<Self> {
         let routing = select_routing(
             stdio,
@@ -49,7 +49,7 @@ impl ChildStdio {
             _ => None,
         };
 
-        let mut child_stdio = Self {
+        let mut setup = Self {
             stdin: HANDLE::default(),
             stdout: HANDLE::default(),
             stderr: HANDLE::default(),
@@ -61,12 +61,12 @@ impl ChildStdio {
         };
 
         match routing {
-            StdioRouting::CapturePipes => child_stdio.configure_capture_pipes()?,
-            StdioRouting::ForwardedHandles => child_stdio.configure_inherited_handles()?,
+            StdioRouting::CapturePipes => setup.configure_capture_pipes()?,
+            StdioRouting::ForwardedHandles => setup.configure_inherited_handles()?,
             StdioRouting::SharedConsole | StdioRouting::PseudoConsole => {}
         }
 
-        Ok(child_stdio)
+        Ok(setup)
     }
 
     pub(crate) fn uses_pipe_handles(&self) -> bool {
