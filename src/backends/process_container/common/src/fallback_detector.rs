@@ -92,6 +92,10 @@ pub enum DegradationReason {
     /// BaseContainer was not selected — either it was not preferred, or the
     /// backend is not usable on this host.
     BaseContainerUnavailable,
+    /// The BaseContainer PSEC launch path does not attach a child to
+    /// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, so PTY launches must use an
+    /// AppContainer tier.
+    BaseContainerPtyUnsupported,
     /// AppContainer + BFS is not compiled into this binary (the `tier2_bfs`
     /// Cargo feature is off), so Tier 2 was skipped entirely.
     Tier2FeatureDisabled,
@@ -115,6 +119,7 @@ impl DegradationReason {
         match self {
             Self::BaseContainerDenyUnsupported => "base_container_deny_unsupported",
             Self::BaseContainerUnavailable => "base_container_unavailable",
+            Self::BaseContainerPtyUnsupported => "base_container_pty_unsupported",
             Self::Tier2FeatureDisabled => "tier2_feature_disabled",
             Self::BfscfgUnavailable => "bfscfg_unavailable",
             Self::DaclAugmentationRequired => "dacl_augmentation_required",
@@ -282,6 +287,19 @@ pub enum FallbackError {
 pub(crate) fn choose_backend_tier(
     request: &ExecutionRequest,
 ) -> Result<TierDecision, FallbackError> {
+    choose_backend_tier_inner(request, true)
+}
+
+pub(crate) fn choose_backend_tier_for_pty(
+    request: &ExecutionRequest,
+) -> Result<TierDecision, FallbackError> {
+    choose_backend_tier_inner(request, false)
+}
+
+fn choose_backend_tier_inner(
+    request: &ExecutionRequest,
+    allow_base_container: bool,
+) -> Result<TierDecision, FallbackError> {
     let policy = &request.policy;
     let base_container_decision = BaseContainerRunner::can_backend_service_request(request);
     let denied = !policy.denied_paths.is_empty();
@@ -319,7 +337,7 @@ pub(crate) fn choose_backend_tier(
     let mut reasons: Vec<DegradationReason> = Vec::new();
 
     // Tier 1 — BaseContainer
-    if base_container_decision.can_service_request() {
+    if allow_base_container && base_container_decision.can_service_request() {
         return Ok(TierDecision {
             tier: IsolationTier::BaseContainer,
             needs_dacl_augmentation: false,
@@ -328,7 +346,14 @@ pub(crate) fn choose_backend_tier(
             reasons,
         });
     }
-    if base_container_decision == BaseContainerRequestDecision::DeniedPathsUnsupported {
+    if !allow_base_container && base_container_decision.can_service_request() {
+        warnings.push(
+            "The BaseContainer PSEC launch path does not support ConPTY attachment; falling back to \
+             AppContainer for PTY execution"
+                .to_string(),
+        );
+        reasons.push(DegradationReason::BaseContainerPtyUnsupported);
+    } else if base_container_decision == BaseContainerRequestDecision::DeniedPathsUnsupported {
         warnings.push(
             "BaseContainer usable but the selected OS contract does not advertise native \
              deniedPaths support; \
@@ -1164,6 +1189,21 @@ mod tests {
         let _g = BcUsableGuard::set(true);
         let d = detect(&empty_policy()).expect("detect should succeed");
         assert!(matches!(d.tier, IsolationTier::BaseContainer));
+    }
+
+    #[test]
+    fn pty_selection_skips_usable_base_container() {
+        let _g = BcUsableGuard::set(true);
+        let request = ExecutionRequest {
+            policy: empty_policy(),
+            ..Default::default()
+        };
+        let decision =
+            choose_backend_tier_for_pty(&request).expect("PTY tier selection should succeed");
+        assert_ne!(decision.tier, IsolationTier::BaseContainer);
+        assert!(decision
+            .reasons
+            .contains(&DegradationReason::BaseContainerPtyUnsupported));
     }
 
     #[test]

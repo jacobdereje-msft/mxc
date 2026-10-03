@@ -1004,7 +1004,7 @@ impl AppContainerScriptRunner {
             StartupInfo: STARTUPINFOW {
                 cb: std::mem::size_of::<STARTUPINFOEXW>() as u32,
                 lpDesktop: PWSTR(desktop_wide.as_mut_ptr()),
-                dwFlags: if uses_pipe_handles {
+                dwFlags: if uses_pipe_handles || stdio_setup.pseudo_console.is_some() {
                     STARTF_USESTDHANDLES
                 } else {
                     Default::default()
@@ -1333,6 +1333,9 @@ impl SpawnedChild {
             }
             self.discard_capture_session_after_launch_failure();
             return Err(WxcError::Process(format!("ResumeThread failed: {:?}", err)));
+        }
+        if let Some(pseudo_console) = &mut self.pseudo_console {
+            pseudo_console.finish_launch();
         }
         Ok(())
     }

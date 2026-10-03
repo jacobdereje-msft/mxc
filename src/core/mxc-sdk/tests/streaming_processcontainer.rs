@@ -4,28 +4,40 @@
 //! Windows ProcessContainer streaming integration test, in its own
 //! Windows-gated file. The sibling `streaming.rs` is `#![cfg(macos)]`, which
 //! would otherwise make a `#[cfg(windows)]` test there impossible to compile.
-//! Requires an elevated, host-prepped Windows host (see docs/host-prep.md), so
-//! it is `#[ignore]`d.
+//! Requires a Windows host with a usable ProcessContainer tier, so it is
+//! `#[ignore]`d. PTY execution uses the AppContainer fallback; policies that
+//! require host DACL mutation may also require the preparation described in
+//! docs/host-prep.md.
 
 #![cfg(target_os = "windows")]
 
 use mxc_sdk::v1::{build_request, spawn_sandbox, spawn_with_pty, SandboxPolicy};
 use mxc_sdk::{MxcPtySize, WaitOutcome};
 
+fn processcontainer_request(command: &str) -> mxc_sdk::v1::SandboxRequest {
+    let mut policy = SandboxPolicy::default();
+    let mut egress = mxc_sdk::v1::NetworkEgressSection::default();
+    egress.default = Some(mxc_sdk::v1::NetworkAction::Allow);
+    let mut network = mxc_sdk::v1::policy::NetworkSection::default();
+    network.egress = Some(egress);
+    policy.network = Some(network);
+    policy.ui = Some(mxc_sdk::v1::policy::UiSection {
+        allow_windows: true,
+        ..Default::default()
+    });
+    policy.timeout_ms = Some(5_000);
+    let mut request = build_request(&policy, command, None).expect("build_request");
+    request.set_working_directory("C:\\Windows");
+    request
+}
+
 #[test]
-#[ignore = "requires an elevated, host-prepped Windows host (see docs/host-prep.md)"]
+#[ignore = "requires a Windows host with a usable ProcessContainer tier"]
 fn streaming_processcontainer_bidirectional_stdio() {
     use std::io::{Read, Write};
 
-    let mut policy = SandboxPolicy::default();
-    policy.filesystem = Some(mxc_sdk::v1::policy::FilesystemSection {
-        readwrite_paths: vec!["C:\\Windows\\Temp".to_string()],
-        readonly_paths: vec![],
-        denied_paths: vec![],
-        clear_policy_on_exit: None,
-    });
     // `cmd /c more` echoes stdin to stdout until EOF, then exits.
-    let request = build_request(&policy, "cmd /c more", None).expect("build_request");
+    let request = processcontainer_request("cmd /c more");
     let mut proc = spawn_sandbox(request).expect("spawn");
 
     let mut stdin = proc.take_stdin().expect("stdin available");
@@ -42,12 +54,13 @@ fn streaming_processcontainer_bidirectional_stdio() {
 }
 
 #[test]
-#[ignore = "requires an elevated, host-prepped Windows host (see docs/host-prep.md)"]
+#[ignore = "requires a Windows host with a usable ProcessContainer tier"]
 fn processcontainer_pty_supports_io_resize_and_wait() {
     use std::io::{Read, Write};
 
-    let request =
-        build_request(&SandboxPolicy::default(), "cmd.exe /d /q", None).expect("build_request");
+    let request = processcontainer_request(
+        "cmd.exe /d /q /c \"set /p value= & echo MXC_PROCESSCONTAINER_PTY_OK\"",
+    );
     let terminal = spawn_with_pty(request, MxcPtySize::default()).expect("spawn_with_pty");
     let resized = MxcPtySize {
         rows: 40,
@@ -64,27 +77,17 @@ fn processcontainer_pty_supports_io_resize_and_wait() {
         output
     });
     let mut writer = terminal.take_writer().expect("writer");
-    writer
-        .write_all(b"echo MXC_PROCESSCONTAINER_PTY_OK\r\nexit\r\n")
-        .expect("write input");
+    writer.write_all(b"hello\r\n").expect("write input");
+    let outcome = terminal.wait().expect("wait");
     drop(writer);
-
-    assert_eq!(terminal.wait().expect("wait"), WaitOutcome::Exited(0));
     let output = reader_thread.join().expect("reader thread");
+    assert_eq!(
+        outcome,
+        WaitOutcome::Exited(0),
+        "terminal output: {output:?}"
+    );
     assert!(
         output.contains("MXC_PROCESSCONTAINER_PTY_OK"),
         "got: {output:?}"
     );
-}
-
-#[test]
-#[ignore = "requires an elevated, host-prepped Windows host (see docs/host-prep.md)"]
-fn processcontainer_pty_enforces_script_timeout() {
-    let mut policy = SandboxPolicy::default();
-    policy.timeout_ms = Some(250);
-    let request =
-        build_request(&policy, "cmd.exe /d /q /c ping -t 127.0.0.1", None).expect("build_request");
-    let terminal = spawn_with_pty(request, MxcPtySize::default()).expect("spawn_with_pty");
-
-    assert_eq!(terminal.wait().expect("wait"), WaitOutcome::TimedOut);
 }

@@ -4,7 +4,7 @@
 import { describe, it, before, after, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { ChildProcess } from 'child_process';
-import { EventEmitter } from 'events';
+import { EventEmitter, once } from 'events';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -126,6 +126,43 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
     );
     assert.strictEqual(result.exitCode, 0, `[${schemaVersion}] Expected exit 0: ${result.stderr}`);
     assert.ok(result.stdout.includes('version ok'));
+  });
+
+  it('should round-trip through a caller-controlled PTY', { skip: sandboxSkipReason }, async () => {
+    const workingDirectory = 'C:\\Windows';
+    const config = sdk.createConfigFromPolicy(
+      {
+        network: { egress: { default: 'allow' } },
+        timeoutMs: 5_000,
+        ui: { allowWindows: true },
+      },
+      'processcontainer',
+      `pty-${schemaVersion}`,
+    );
+    config.process!.commandLine =
+      'cmd.exe /d /q /c "set /p value= & echo MXC_NODE_PROCESSCONTAINER_PTY_OK"';
+
+    const terminal = await sdk.spawnWithPty(
+      config,
+      { rows: 24, columns: 80 },
+      workingDirectory,
+    );
+    const chunks: Buffer[] = [];
+    terminal.output.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)));
+    const outputEnded = once(terminal.output, 'end');
+
+    terminal.resize({ rows: 40, columns: 120 });
+    terminal.input.write('hello\r\n');
+
+    const result = await terminal.waitAsync();
+    terminal.input.end();
+    await outputEnded;
+
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.exitCode, 0);
+    assert.ok(
+      Buffer.concat(chunks).toString('utf8').includes('MXC_NODE_PROCESSCONTAINER_PTY_OK'),
+    );
   });
 
   describe('proxy end-to-end', { skip: proxySkipReason }, () => {

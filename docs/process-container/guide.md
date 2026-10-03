@@ -37,6 +37,13 @@ The PSEC FlatBuffer is the contract between MXC and the OS process security
 environment. New features must flow from the versioned config contract into the
 runtime model and then into that FlatBuffer.
 
+PTY streaming is routed to an AppContainer tier. The BaseContainer PSEC launch
+path does not attach the child to `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, so MXC
+must not select that tier for `StdioMode::Pty`. Normal pipe, inherited-console,
+and run-to-completion launches continue to prefer BaseContainer when it can
+enforce the request. If an AppContainer tier cannot enforce the complete PTY
+request, launch fails rather than silently dropping policy.
+
 ## Step-by-step
 
 ### 1. Update the OS PSEC schema and implementation

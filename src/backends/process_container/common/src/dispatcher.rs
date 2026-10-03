@@ -451,11 +451,16 @@ struct BackendPlan {
 fn select_backend_with_fallback(
     request: &ExecutionRequest,
     capture_factory: Option<&Arc<dyn GuardedCaptureFactory>>,
+    requires_pty: bool,
 ) -> Result<BackendPlan, DispatchError> {
     // Keep the established tier fallback behavior for every schema version.
     // BaseContainerRunner uses PSEC whenever it is available and compatible.
     // Otherwise detection continues to the AppContainer tiers.
-    let decision = fallback_detector::choose_backend_tier(request)?;
+    let decision = if requires_pty {
+        fallback_detector::choose_backend_tier_for_pty(request)?
+    } else {
+        fallback_detector::choose_backend_tier(request)?
+    };
     let guarded_capture_required =
         request.policy.capture_denials.is_some() && decision.tier != IsolationTier::BaseContainer;
     if guarded_capture_required && capture_factory.is_none() {
@@ -606,7 +611,7 @@ pub fn dispatch_with_fallback(
     request: &ExecutionRequest,
     capture_factory: Option<Arc<dyn GuardedCaptureFactory>>,
 ) -> Result<Dispatched, DispatchError> {
-    let plan = select_backend_with_fallback(request, capture_factory.as_ref())?;
+    let plan = select_backend_with_fallback(request, capture_factory.as_ref(), false)?;
     let runner: Box<dyn ScriptRunner> = Box::new(Runner::new(plan.backend));
     Ok(Dispatched {
         runner,
@@ -681,13 +686,14 @@ pub fn spawn_with_fallback(
     stdio: StdioMode,
     capture_factory: Option<Arc<dyn GuardedCaptureFactory>>,
 ) -> Result<DispatchedProcess, SpawnDispatchError> {
+    let requires_pty = matches!(stdio, StdioMode::Pty(_));
     let BackendPlan {
         mut backend,
         dacl_manager,
         tier,
         warnings,
         degradation,
-    } = select_backend_with_fallback(request, capture_factory.as_ref())
+    } = select_backend_with_fallback(request, capture_factory.as_ref(), requires_pty)
         .map_err(SpawnDispatchError::Dispatch)?;
     log_enforcement_degraded(logger, &container_name(request), tier, &degradation);
 
@@ -1142,7 +1148,7 @@ mod tests {
         };
         let req = test_request(policy);
 
-        let plan = select_backend_with_fallback(&req, None)
+        let plan = select_backend_with_fallback(&req, None, false)
             .expect("AppContainer fallback should be selected");
         let (backend, tier) = (plan.backend, plan.tier);
         assert_ne!(tier, IsolationTier::BaseContainer);
@@ -1322,7 +1328,8 @@ mod tests {
     fn select_backend_t1_builds_base_container_no_dacl() {
         let _g = ForceTierGuard::set_tier(IsolationTier::BaseContainer);
         let req = test_request(empty_policy());
-        let plan = select_backend_with_fallback(&req, None).expect("T1 selection should succeed");
+        let plan =
+            select_backend_with_fallback(&req, None, false).expect("T1 selection should succeed");
         let (backend, dacl, tier) = (plan.backend, plan.dacl_manager, plan.tier);
         assert!(matches!(tier, IsolationTier::BaseContainer));
         assert!(
@@ -1339,7 +1346,8 @@ mod tests {
     fn select_backend_t2_no_deny_builds_appcontainer_no_dacl() {
         let _g = ForceTierGuard::set_tier(IsolationTier::AppContainerBfs);
         let req = test_request(empty_policy());
-        let plan = select_backend_with_fallback(&req, None).expect("T2 selection should succeed");
+        let plan =
+            select_backend_with_fallback(&req, None, false).expect("T2 selection should succeed");
         let (backend, dacl, tier) = (plan.backend, plan.dacl_manager, plan.tier);
         assert!(matches!(tier, IsolationTier::AppContainerBfs));
         assert!(matches!(backend, SelectedBackend::AppContainer(_)));
@@ -1354,8 +1362,8 @@ mod tests {
         let _g = ForceTierGuard::set_tier(IsolationTier::AppContainerBfs);
         let (policy, _tmp) = policy_with_denied_temp();
         let req = test_request(policy);
-        let plan =
-            select_backend_with_fallback(&req, None).expect("T2+deny selection should succeed");
+        let plan = select_backend_with_fallback(&req, None, false)
+            .expect("T2+deny selection should succeed");
         let (backend, dacl, tier) = (plan.backend, plan.dacl_manager, plan.tier);
         assert!(matches!(tier, IsolationTier::AppContainerBfs));
         assert!(matches!(backend, SelectedBackend::AppContainer(_)));
@@ -1377,8 +1385,8 @@ mod tests {
         let _g = ForceTierGuard::set_tier(IsolationTier::AppContainerBfs);
         let (policy, _tmp) = policy_with_denied_temp();
         let req = test_request(policy);
-        let plan =
-            select_backend_with_fallback(&req, None).expect("T2+deny selection should succeed");
+        let plan = select_backend_with_fallback(&req, None, false)
+            .expect("T2+deny selection should succeed");
         let (backend, tier) = (plan.backend, plan.tier);
         assert!(matches!(tier, IsolationTier::AppContainerBfs));
 
@@ -1397,7 +1405,8 @@ mod tests {
         let _g = ForceTierGuard::set_tier(IsolationTier::AppContainerDacl);
         let (policy, _tmp) = policy_with_rw_temp();
         let req = test_request(policy);
-        let plan = select_backend_with_fallback(&req, None).expect("T3 selection should succeed");
+        let plan =
+            select_backend_with_fallback(&req, None, false).expect("T3 selection should succeed");
         let (backend, dacl, tier) = (plan.backend, plan.dacl_manager, plan.tier);
         assert!(matches!(tier, IsolationTier::AppContainerDacl));
         assert!(matches!(backend, SelectedBackend::AppContainer(_)));
@@ -1417,7 +1426,8 @@ mod tests {
         // with the "bfscfg.exe is not available" error.
         let _g = BcUsableGuard::set(false);
         let req = test_request(empty_policy());
-        let plan = select_backend_with_fallback(&req, None).expect("selection should succeed");
+        let plan =
+            select_backend_with_fallback(&req, None, false).expect("selection should succeed");
         let (backend, dacl, tier) = (plan.backend, plan.dacl_manager, plan.tier);
         assert!(matches!(tier, IsolationTier::AppContainerDacl));
         assert!(matches!(backend, SelectedBackend::AppContainer(_)));

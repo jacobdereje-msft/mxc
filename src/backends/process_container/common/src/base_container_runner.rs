@@ -549,11 +549,12 @@ impl BaseContainerRunner {
             }
         }
 
-        // STARTUPINFOW -- in pipe mode, pass parent handles via STARTF_USESTDHANDLES
-        // so child output streams directly to the SDK caller.
+        // STARTF_USESTDHANDLES also keeps a ConPTY child from copying the SDK
+        // host's redirected standard handles; the null handles let ConPTY
+        // initialize its own console streams.
         let si = STARTUPINFOW {
             cb: std::mem::size_of::<STARTUPINFOW>() as u32,
-            dwFlags: if uses_pipe_handles {
+            dwFlags: if uses_pipe_handles || stdio_setup.pseudo_console.is_some() {
                 STARTF_USESTDHANDLES
             } else {
                 Default::default()
@@ -940,6 +941,9 @@ impl BaseContainerRunner {
                 failure_phase: FailurePhase::LaunchFailed,
                 ..ScriptResponse::error(&message)
             });
+        }
+        if let Some(pseudo_console) = &mut stdio_setup.pseudo_console {
+            pseudo_console.finish_launch();
         }
 
         wxc_common::telemetry::log_network_policy_applied(
