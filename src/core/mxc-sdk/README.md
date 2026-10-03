@@ -134,9 +134,9 @@ let request = build_request_with_containment(
 # Ok::<(), mxc_sdk::Error>(())
 ```
 
-This runs through `v1::run` and `v1::spawn_sandbox` like any other backend. LXC needs
-root, and it streams over pipes, so the workload sees no TTY — unlike the
-`lxc-exec` binary, which allocates a pty.
+This runs through `v1::run` and `v1::spawn_sandbox` like any other backend. LXC
+needs root. Ordinary streaming uses pipes; `v1::spawn_with_pty` allocates a
+caller-owned terminal.
 
 Filesystem-policy discovery helpers are also available to feed a policy:
 [`v1::available_tools_policy`] (PATH + tool/SDK environment directories),
@@ -526,13 +526,12 @@ Hyperlight — cannot be selected with `build_request_with_containment`; use the
 executor binaries instead. Windows Sandbox state-aware lifecycle is also
 available through the raw exact-JSON entry points above.
 
-`Containment::Lxc` names the LXC backend, served by `run` and `spawn_sandbox`
-with piped stdio. `Containment::Process` resolves to Bubblewrap on Linux, so
-LXC is reachable only by naming it. It needs root. Its stdio is pipes rather
-than a pty, so the workload sees no TTY — unlike the `lxc-exec` binary, which
-allocates one. `kill()` stops the whole container, which is the only way to
-reach a workload in its PID namespace, and dropping the handle tears the
-container down synchronously.
+`Containment::Lxc` names the LXC backend, served by `run` and `spawn_sandbox`.
+`Containment::Process` resolves to Bubblewrap on Linux, so LXC is reachable only
+by naming it. It needs root. Ordinary streaming uses pipes, while
+`v1::spawn_with_pty` returns a caller-owned terminal. `kill()` stops the whole
+container, which is the only way to reach a workload in its PID namespace, and
+dropping the handle tears the container down synchronously.
 
 ### WSLC
 
@@ -681,10 +680,12 @@ It never fails: any unreadable or unrecognized value reads back as
 
 `v1::spawn_with_pty` and `v1::container::spawn_in_container_with_pty` allocate
 a backend-owned pseudo-terminal and return a caller-controlled
-`MxcPtyProcess`. IsolationSession is currently the only supporting backend.
-Untaken terminal input is closed by `wait()`, and untaken merged output is
-drained and discarded without waiting indefinitely for descendants that keep
-the terminal open.
+`MxcPtyProcess`. IsolationSession, Linux Bubblewrap and LXC, and macOS Seatbelt
+direct execution support one-shot PTY spawning; existing-container PTY spawning
+is specific to IsolationSession. Seatbelt rejects PTY mode with `guiAccess` or
+legacy `launchMethod: "open"`. Untaken terminal input is closed by `wait()`, and
+untaken merged output is drained and discarded without waiting indefinitely for
+descendants that keep the terminal open.
 
 Other streaming entry points wire the child's stdio to ordinary pipes and
 allocate no pty; output the caller does not take is drained and discarded by

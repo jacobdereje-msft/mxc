@@ -11,7 +11,7 @@
 //! `SandboxProcess` whose stdio follows the requested `StdioMode`:
 //! `Inherit` gives the child the host's own stdio (a real TTY when the
 //! binary runs under a pty), while `Pipes` exposes stdout/stderr/stdin
-//! handles the caller can stream.
+//! handles the caller can stream and `Pty` exposes a caller-owned terminal.
 //!
 //! For apps that require LaunchServices (`launchMethod: "open"`), the runner
 //! writes a sandbox helper script and launches the target app via `open -n -W`,
@@ -29,13 +29,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use mxc_pty::{LivePty, PtySize as UnixPtySize};
 use wxc_common::interruptible_reader::{wrap_pipe, InterruptibleReader, ReadCanceller};
 use wxc_common::logger::Logger;
 use wxc_common::models::{ExecutionRequest, LaunchMethod, ProxyAddress, ScriptResponse};
 use wxc_common::sandbox_process::{
     boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, group_kill,
-    spawn_discard, take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio,
-    SandboxBackend, SandboxProcess, StdioMode, StreamCloser, WaitError,
+    join_discard, spawn_discard, take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio,
+    PtySize, SandboxBackend, SandboxProcess, StdioMode, StreamCloser, WaitError,
 };
 use wxc_common::unix_proxy_coordinator::UnixProxyCoordinator;
 use wxc_common::validator::{
@@ -147,11 +148,6 @@ impl SandboxBackend for SeatbeltScriptRunner {
     ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
         validate_common(request)?;
         self.validate(request)?;
-        if matches!(stdio, StdioMode::Pty(_)) {
-            return Err(ScriptResponse::rejected(
-                "Seatbelt does not support caller-controlled PTY spawning",
-            ));
-        }
 
         // Start the cooperative network proxy (if configured) before building
         // the profile and launching the child: the profile's proxy-reachability
@@ -203,8 +199,9 @@ impl SandboxBackend for SeatbeltScriptRunner {
 /// [`StdioMode::Pipes`] the child gets pipes and leads its own session (so the
 /// caller can tree-terminate via the process group); with
 /// [`StdioMode::Inherit`] it inherits the process's stdio (a TTY when the
-/// binary has one) and stays in the binary's session. `gui_access` apps require
-/// inherited stdio and cannot stream.
+/// binary has one) and stays in the binary's session; with [`StdioMode::Pty`]
+/// it gets a caller-owned terminal and leads its own session. `gui_access`
+/// apps require inherited stdio.
 fn spawn_exec(
     profile: &str,
     request: &ExecutionRequest,
@@ -213,10 +210,15 @@ fn spawn_exec(
     logger: &mut Logger,
     proxy: UnixProxyCoordinator,
 ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
-    if gui_access && stdio == StdioMode::Pipes {
-        return Err(error_response(
-            "Seatbelt guiAccess requires inherited stdio and cannot stream over pipes".to_string(),
-        ));
+    if gui_access && stdio != StdioMode::Inherit {
+        let mode = if stdio == StdioMode::Pipes {
+            "pipes"
+        } else {
+            "a caller-owned PTY"
+        };
+        return Err(error_response(format!(
+            "Seatbelt guiAccess requires inherited stdio and cannot use {mode}"
+        )));
     }
 
     // Pipes → own session (setsid) so a process-group tree-kill never touches
@@ -230,11 +232,15 @@ fn spawn_exec(
     // this is limited to timeout-bounded runs, which are inherently
     // non-interactive.
     let new_group = stdio == StdioMode::Inherit && timeout_from(request).is_some();
-    let mut command = build_sandbox_command(
+    let (mut command, pty) = build_sandbox_command(
         profile,
         &request.script_code,
         new_session,
         new_group,
+        match stdio {
+            StdioMode::Pty(size) => Some(size),
+            _ => None,
+        },
         logger,
     )?;
 
@@ -282,7 +288,7 @@ fn spawn_exec(
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit());
         }
-        StdioMode::Pty(_) => unreachable!("PTY mode was rejected before backend setup"),
+        StdioMode::Pty(_) => {}
     }
 
     let mut child = command
@@ -292,7 +298,7 @@ fn spawn_exec(
     let (stdin, stdout, stderr) = match stdio {
         StdioMode::Pipes => (child.stdin.take(), child.stdout.take(), child.stderr.take()),
         StdioMode::Inherit => (None, None, None),
-        StdioMode::Pty(_) => unreachable!("PTY mode was rejected before spawn"),
+        StdioMode::Pty(_) => (None, None, None),
     };
 
     // Wrap the pipe reads so the caller can abandon a stream a backgrounded
@@ -322,8 +328,9 @@ fn spawn_exec(
         stderr,
         stdout_canceller,
         stderr_canceller,
+        pty,
         timeout: timeout_from(request),
-        group: new_session || new_group,
+        group: new_session || new_group || stdio != StdioMode::Inherit,
         cleanup: Vec::new(),
         proxy,
     }))
@@ -341,11 +348,15 @@ fn spawn_open(
     logger: &mut Logger,
     proxy: UnixProxyCoordinator,
 ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
-    if stdio == StdioMode::Pipes {
-        return Err(error_response(
-            "Seatbelt launchMethod 'open' launches Terminal.app and cannot stream over pipes"
-                .to_string(),
-        ));
+    if stdio != StdioMode::Inherit {
+        let mode = if stdio == StdioMode::Pipes {
+            "stream over pipes"
+        } else {
+            "expose a caller-owned PTY"
+        };
+        return Err(error_response(format!(
+            "Seatbelt launchMethod 'open' launches Terminal.app and cannot {mode}"
+        )));
     }
 
     let _ = writeln!(
@@ -470,6 +481,7 @@ fn spawn_open(
         stderr: None,
         stdout_canceller: None,
         stderr_canceller: None,
+        pty: None,
         timeout: timeout_from(request),
         group: false,
         cleanup: vec![profile_path, helper_path, command_path],
@@ -494,6 +506,8 @@ struct SeatbeltSandboxProcess {
     /// after the stream has been taken.
     stdout_canceller: Option<ReadCanceller>,
     stderr_canceller: Option<ReadCanceller>,
+    /// Caller-owned primary PTY for direct exec mode.
+    pty: Option<LivePty>,
     timeout: Option<Duration>,
     /// The child leads its own process group (`setsid`), so termination signals
     /// the whole group; `false` for inherited / Open mode (a single process).
@@ -547,6 +561,50 @@ impl SandboxProcess for SeatbeltSandboxProcess {
         take_boxed_write(&mut self.stdin)
     }
 
+    fn is_pty(&self) -> bool {
+        self.pty.is_some()
+    }
+
+    fn pty_clone_reader(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        self.pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Seatbelt process has no PTY"))?
+            .try_clone_reader()
+    }
+
+    fn pty_take_writer(&self) -> std::io::Result<Box<dyn std::io::Write + Send>> {
+        self.pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Seatbelt process has no PTY"))?
+            .take_writer()
+    }
+
+    fn pty_resize(&self, size: PtySize) -> std::io::Result<()> {
+        self.pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Seatbelt process has no PTY"))?
+            .resize(UnixPtySize {
+                rows: size.rows,
+                cols: size.cols,
+                pixel_width: size.pixel_width,
+                pixel_height: size.pixel_height,
+            })
+    }
+
+    fn pty_size(&self) -> std::io::Result<PtySize> {
+        let size = self
+            .pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Seatbelt process has no PTY"))?
+            .size();
+        Ok(PtySize {
+            rows: size.rows,
+            cols: size.cols,
+            pixel_width: size.pixel_width,
+            pixel_height: size.pixel_height,
+        })
+    }
+
     fn take_stdout(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
         take_boxed_read(&mut self.stdout)
     }
@@ -597,12 +655,19 @@ impl SandboxProcess for SeatbeltSandboxProcess {
         // Close our copy of any not-taken stdin so the child sees EOF and is
         // not blocked waiting for input the caller never intends to send.
         self.stdin.take();
+        if let Some(pty) = self.pty.as_ref() {
+            pty.close_writer();
+        }
 
         // Drain (and discard) any not-taken stdout/stderr concurrently so the
         // child can't block on a full pipe (taken streams are the caller's
         // responsibility).
         let stdout_thread = spawn_discard(self.stdout.take());
         let stderr_thread = spawn_discard(self.stderr.take());
+        let pty_thread = match self.pty.as_ref() {
+            Some(pty) => spawn_discard(pty.take_unclaimed_reader()?),
+            None => None,
+        };
 
         let result = match wait_with_timeout(&mut self.child, self.timeout) {
             Ok(status) => Ok(status.code().unwrap_or(-1)),
@@ -627,6 +692,7 @@ impl SandboxProcess for SeatbeltSandboxProcess {
 
         cancel_and_join_discard(stdout_thread, &self.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.stderr_canceller);
+        join_discard(pty_thread);
         self.run_cleanup();
         result
     }
@@ -651,17 +717,18 @@ impl Drop for SeatbeltSandboxProcess {
 ///
 /// # Safety
 ///
-/// `pre_exec` runs between `fork()` and `exec()`. We limit operations
-/// inside it to a single FFI call (`sandbox_init`) with pre-allocated
-/// arguments. `sandbox_init` is not formally async-signal-safe but is
-/// used in this pattern by Chromium and other production macOS sandboxes.
+/// `pre_exec` runs between `fork()` and `exec()`. Session/PTY setup uses
+/// async-signal-safe syscalls before the pre-allocated `sandbox_init` call.
+/// `sandbox_init` is not formally async-signal-safe but is used in this
+/// pattern by Chromium and other production macOS sandboxes.
 fn build_sandbox_command(
     profile: &str,
     script_code: &str,
     new_session: bool,
     new_group: bool,
+    pty_size: Option<PtySize>,
     logger: &mut Logger,
-) -> Result<Command, ScriptResponse> {
+) -> Result<(Command, Option<LivePty>), ScriptResponse> {
     let profile_cstr = CString::new(profile)
         .map_err(|e| error_response(format!("seatbelt profile contains embedded NUL byte: {e}")))?;
 
@@ -702,6 +769,22 @@ fn build_sandbox_command(
         }
     }
 
+    let pty = pty_size
+        .map(|size| {
+            LivePty::attach(
+                &mut command,
+                UnixPtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: size.pixel_width,
+                    pixel_height: size.pixel_height,
+                },
+                &[],
+            )
+            .map_err(|error| error_response(format!("Seatbelt: failed to allocate PTY: {error}")))
+        })
+        .transpose()?;
+
     // SAFETY: The closure runs after fork(), before exec(). We only call
     // sandbox_init with a pre-allocated CString — no Rust allocations
     // happen inside the closure. sandbox_init is used in this fork+exec
@@ -728,7 +811,7 @@ fn build_sandbox_command(
         });
     }
 
-    Ok(command)
+    Ok((command, pty))
 }
 
 /// Emit the generated profile to `logger` for `--debug` / `--log-file`.
@@ -1004,6 +1087,37 @@ mod tests {
         request.experimental_enabled = true;
         request.seatbelt = Some(SeatbeltConfig::default());
         request
+    }
+
+    #[test]
+    fn gui_access_rejects_caller_owned_pty() {
+        let mut logger = Logger::new(wxc_common::logger::Mode::Buffer);
+        let error = spawn_exec(
+            "(version 1)\n(allow default)",
+            &base_request(),
+            true,
+            StdioMode::Pty(PtySize::default()),
+            &mut logger,
+            UnixProxyCoordinator::new(),
+        )
+        .err()
+        .expect("guiAccess PTY must be rejected");
+        assert!(error.error_message.contains("caller-owned PTY"));
+    }
+
+    #[test]
+    fn open_launch_rejects_caller_owned_pty() {
+        let mut logger = Logger::new(wxc_common::logger::Mode::Buffer);
+        let error = spawn_open(
+            "(version 1)\n(allow default)",
+            &base_request(),
+            StdioMode::Pty(PtySize::default()),
+            &mut logger,
+            UnixProxyCoordinator::new(),
+        )
+        .err()
+        .expect("open PTY must be rejected");
+        assert!(error.error_message.contains("caller-owned PTY"));
     }
 
     #[test]

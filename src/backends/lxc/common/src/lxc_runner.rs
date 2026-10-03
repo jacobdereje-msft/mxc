@@ -20,11 +20,14 @@ use wxc_common::validator::{
 };
 
 #[cfg(target_os = "linux")]
+use mxc_pty::{LivePty, PtySize as UnixPtySize};
+#[cfg(target_os = "linux")]
 use wxc_common::interruptible_reader::{wrap_pipe, InterruptibleReader, ReadCanceller};
 #[cfg(target_os = "linux")]
 use wxc_common::sandbox_process::{
-    boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, spawn_discard,
-    take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio, StreamCloser, WaitError,
+    boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, join_discard,
+    spawn_discard, take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio, PtySize,
+    StreamCloser, WaitError,
 };
 
 use crate::filesystem_mounts;
@@ -1094,7 +1097,7 @@ pub const LXC_INHERIT_STDIO_UNSUPPORTED: &str =
      the host's own stdin/stdout/stderr by allocating a pty and bridging it, which runs the \
      script to completion and cannot hand back a live handle; it also reads the host's stdin and \
      installs a process-wide window-size handler, neither of which a library may do to its \
-     caller. Stream the sandbox over pipes, or run the lxc-exec binary.";
+     caller. Use pipes, request a caller-owned PTY, or run the lxc-exec binary.";
 
 pub const LXC_STREAMING_LINUX_ONLY: &str = "LXC: sandboxes can only be launched on Linux.";
 
@@ -1136,11 +1139,11 @@ impl ScriptRunner for LxcScriptRunner {
     }
 }
 
-/// LXC's streaming half, which serves [`StdioMode::Pipes`] only.
+/// LXC's handle-based execution path, serving pipes and caller-owned PTYs.
 ///
 /// [`StdioMode::Inherit`] is refused, so wrapping this in
 /// [`wxc_common::sandbox_process::Runner`] compiles but fails at run time;
-/// `lxc-exec` stays on [`ScriptRunner`] for its pty.
+/// `lxc-exec` stays on [`ScriptRunner`] for its host-attached PTY bridge.
 impl SandboxBackend for LxcScriptRunner {
     fn network_policy_support(&self) -> NetworkPolicySupport {
         lxc_network_policy_support()
@@ -1178,24 +1181,20 @@ impl LxcScriptRunner {
             StdioMode::Inherit => {
                 return Err(ScriptResponse::error(LXC_INHERIT_STDIO_UNSUPPORTED));
             }
-            StdioMode::Pty(_) => {
-                return Err(ScriptResponse::rejected(
-                    "LXC does not support caller-controlled PTY spawning",
-                ));
-            }
-            StdioMode::Pipes => {}
+            StdioMode::Pty(_) | StdioMode::Pipes => {}
         }
         validate_common(request)?;
         SandboxBackend::validate(self, request)?;
 
-        self.launch_piped(request, logger)
+        self.launch_streaming(request, logger, stdio)
     }
 
     #[cfg(target_os = "linux")]
-    fn launch_piped(
+    fn launch_streaming(
         &self,
         request: &ExecutionRequest,
         logger: &mut Logger,
+        stdio: StdioMode,
     ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
         let mut prepared = self.prepare(request, logger)?;
 
@@ -1203,16 +1202,38 @@ impl LxcScriptRunner {
 
         // The `true` forces `--clear-env`, without which an empty env list lets
         // `lxc-attach` inherit the host environment and its proxy credentials.
-        let launched = prepared.container.attach_spawn(
-            &prepared.script_code,
-            &prepared.start_directory,
-            &prepared.exec_env,
-            true,
-            prepared.firewall,
-        );
+        let launched = match stdio {
+            StdioMode::Pipes => prepared
+                .container
+                .attach_spawn(
+                    &prepared.script_code,
+                    &prepared.start_directory,
+                    &prepared.exec_env,
+                    true,
+                    prepared.firewall,
+                )
+                .map(|child| (child, None)),
+            StdioMode::Pty(size) => prepared
+                .container
+                .attach_spawn_pty(
+                    &prepared.script_code,
+                    &prepared.start_directory,
+                    &prepared.exec_env,
+                    true,
+                    prepared.firewall,
+                    UnixPtySize {
+                        rows: size.rows,
+                        cols: size.cols,
+                        pixel_width: size.pixel_width,
+                        pixel_height: size.pixel_height,
+                    },
+                )
+                .map(|(child, pty)| (child, Some(pty))),
+            StdioMode::Inherit => unreachable!("inherited stdio was rejected before launch"),
+        };
 
-        let mut child = match launched {
-            Ok(child) => child,
+        let (mut child, pty) = match launched {
+            Ok(launched) => launched,
             Err(e) => {
                 let cleanup = self.abandon_prepared(&mut prepared, logger);
                 return Err(ScriptResponse::error(&launch_failure_message(
@@ -1222,14 +1243,15 @@ impl LxcScriptRunner {
             }
         };
 
-        let stdin = child.stdin.take();
+        let (stdin, child_stdout, child_stderr) = match stdio {
+            StdioMode::Pipes => (child.stdin.take(), child.stdout.take(), child.stderr.take()),
+            StdioMode::Pty(_) => (None, None, None),
+            StdioMode::Inherit => unreachable!("inherited stdio was rejected before launch"),
+        };
 
         // Wrap the pipe reads so the caller can abandon a stream a backgrounded
         // descendant is holding open without killing the workload.
-        let wrapped = (
-            wrap_pipe(child.stdout.take()),
-            wrap_pipe(child.stderr.take()),
-        );
+        let wrapped = (wrap_pipe(child_stdout), wrap_pipe(child_stderr));
         let (stdout, stdout_canceller, stderr, stderr_canceller) = match wrapped {
             (Ok((out, out_canceller)), Ok((err, err_canceller))) => {
                 (out, out_canceller, err, err_canceller)
@@ -1261,6 +1283,7 @@ impl LxcScriptRunner {
             stderr,
             stdout_canceller,
             stderr_canceller,
+            pty,
             timeout: prepared.timeout,
             prepared,
             cleanup_policy: self.cleanup_policy,
@@ -1270,10 +1293,11 @@ impl LxcScriptRunner {
 
     /// Stub for the workspace-wide clippy lane that runs on Windows.
     #[cfg(not(target_os = "linux"))]
-    fn launch_piped(
+    fn launch_streaming(
         &self,
         _request: &ExecutionRequest,
         _logger: &mut Logger,
+        _stdio: StdioMode,
     ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
         Err(ScriptResponse::error(LXC_STREAMING_LINUX_ONLY))
     }
@@ -1292,6 +1316,7 @@ struct LxcChild {
     /// minted after the stream is taken.
     stdout_canceller: Option<ReadCanceller>,
     stderr_canceller: Option<ReadCanceller>,
+    pty: Option<LivePty>,
 
     timeout: Option<Duration>,
     prepared: PreparedSandbox,
@@ -1382,6 +1407,54 @@ impl SandboxProcess for LxcSandboxProcess {
         take_boxed_write(&mut self.inner.stdin)
     }
 
+    fn is_pty(&self) -> bool {
+        self.inner.pty.is_some()
+    }
+
+    fn pty_clone_reader(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        self.inner
+            .pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("LXC process has no PTY"))?
+            .try_clone_reader()
+    }
+
+    fn pty_take_writer(&self) -> std::io::Result<Box<dyn std::io::Write + Send>> {
+        self.inner
+            .pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("LXC process has no PTY"))?
+            .take_writer()
+    }
+
+    fn pty_resize(&self, size: PtySize) -> std::io::Result<()> {
+        self.inner
+            .pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("LXC process has no PTY"))?
+            .resize(UnixPtySize {
+                rows: size.rows,
+                cols: size.cols,
+                pixel_width: size.pixel_width,
+                pixel_height: size.pixel_height,
+            })
+    }
+
+    fn pty_size(&self) -> std::io::Result<PtySize> {
+        let size = self
+            .inner
+            .pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("LXC process has no PTY"))?
+            .size();
+        Ok(PtySize {
+            rows: size.rows,
+            cols: size.cols,
+            pixel_width: size.pixel_width,
+            pixel_height: size.pixel_height,
+        })
+    }
+
     fn take_stdout(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
         take_boxed_read(&mut self.inner.stdout)
     }
@@ -1424,12 +1497,19 @@ impl SandboxProcess for LxcSandboxProcess {
     fn wait(&mut self) -> std::io::Result<i32> {
         // Close our copy of any not-taken stdin so the child sees EOF.
         self.inner.stdin.take();
+        if let Some(pty) = self.inner.pty.as_ref() {
+            pty.close_writer();
+        }
 
         // Drain (and discard) any not-taken stdout/stderr concurrently so the
         // child can't block on a full pipe (taken streams are the caller's
         // responsibility).
         let stdout_thread = spawn_discard(self.inner.stdout.take());
         let stderr_thread = spawn_discard(self.inner.stderr.take());
+        let pty_thread = match self.inner.pty.as_ref() {
+            Some(pty) => spawn_discard(pty.take_unclaimed_reader()?),
+            None => None,
+        };
 
         let result = match wait_with_timeout(&mut self.inner.child, self.inner.timeout) {
             Ok(status) => Ok(status.code().unwrap_or(-1)),
@@ -1461,6 +1541,7 @@ impl SandboxProcess for LxcSandboxProcess {
 
         cancel_and_join_discard(stdout_thread, &self.inner.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.inner.stderr_canceller);
+        join_discard(pty_thread);
         self.run_teardown();
         result
     }
