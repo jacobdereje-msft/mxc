@@ -77,6 +77,14 @@ fn seatbelt_pty_enforces_script_timeout() {
     );
 }
 
+#[test]
+fn seatbelt_pty_transfers_native_stdio() {
+    unix_pty_contract::assert_native_stdio(seatbelt_request(
+        unix_pty_contract::NATIVE_STDIO_COMMAND,
+        30_000,
+    ));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn streaming_try_wait_reports_exit_after_completion() {

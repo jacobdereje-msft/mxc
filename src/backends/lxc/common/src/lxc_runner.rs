@@ -25,9 +25,9 @@ use mxc_pty::{LivePty, PtySize as UnixPtySize};
 use wxc_common::interruptible_reader::{wrap_pipe, InterruptibleReader, ReadCanceller};
 #[cfg(target_os = "linux")]
 use wxc_common::sandbox_process::{
-    boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, join_discard,
-    spawn_discard, take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio, PtySize,
-    StreamCloser, WaitError,
+    boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, spawn_discard,
+    take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio, PtySize, StreamCloser,
+    WaitError,
 };
 
 use crate::filesystem_mounts;
@@ -1276,6 +1276,7 @@ impl LxcScriptRunner {
             }
         };
 
+        let started = Instant::now();
         Ok(Box::new(LxcSandboxProcess::new(LxcChild {
             child,
             stdin,
@@ -1285,6 +1286,8 @@ impl LxcScriptRunner {
             stderr_canceller,
             pty,
             timeout: prepared.timeout,
+            started,
+            timed_out: false,
             prepared,
             cleanup_policy: self.cleanup_policy,
             destroy_on_exit: self.destroy_on_exit,
@@ -1319,6 +1322,8 @@ struct LxcChild {
     pty: Option<LivePty>,
 
     timeout: Option<Duration>,
+    started: Instant,
+    timed_out: bool,
     prepared: PreparedSandbox,
     cleanup_policy: bool,
     destroy_on_exit: bool,
@@ -1388,6 +1393,14 @@ impl SandboxProcess for LxcSandboxProcess {
     fn take_native_stdio(&mut self) -> std::io::Result<Option<NativeStdio>> {
         use std::os::fd::AsFd;
 
+        if let Some(pty) = self.inner.pty.as_ref() {
+            let stdio = pty.take_native_stdio()?;
+            return Ok(Some(NativeStdio {
+                stdin: Some(stdio.stdin),
+                stdout: Some(stdio.stdout),
+                stderr: None,
+            }));
+        }
         let stdio = duplicate_and_take_native_stdio(
             &mut self.inner.stdin,
             &mut self.inner.stdout,
@@ -1417,6 +1430,18 @@ impl SandboxProcess for LxcSandboxProcess {
             .as_ref()
             .ok_or_else(|| std::io::Error::other("LXC process has no PTY"))?
             .try_clone_reader()
+    }
+
+    fn pty_clone_reader_with_closer(
+        &self,
+    ) -> std::io::Result<wxc_common::sandbox_process::PtyReaderWithCloser> {
+        let (reader, closer) = self
+            .inner
+            .pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("LXC process has no PTY"))?
+            .try_clone_reader_with_canceller()?;
+        Ok((reader, Some(Box::new(closer))))
     }
 
     fn pty_take_writer(&self) -> std::io::Result<Box<dyn std::io::Write + Send>> {
@@ -1472,11 +1497,29 @@ impl SandboxProcess for LxcSandboxProcess {
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
-        Ok(self
+        if let Some(status) = self.inner.child.try_wait()? {
+            return Ok(Some(status.code().unwrap_or(-1)));
+        }
+        if self
             .inner
-            .child
-            .try_wait()?
-            .map(|status| status.code().unwrap_or(-1)))
+            .timeout
+            .is_some_and(|timeout| self.inner.started.elapsed() >= timeout)
+        {
+            self.inner.timed_out = true;
+            let terminated = self.kill_for_timeout();
+            let _ = self.inner.child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                match terminated {
+                    Ok(()) => "LXC: script timed out".to_string(),
+                    Err(error) => format!(
+                        "LXC: script timed out, and the container could not be stopped, so the \
+                         workload may still be running: {error}"
+                    ),
+                },
+            ));
+        }
+        Ok(None)
     }
 
     /// Always `0` — the workload runs in the container's PID namespace, and the
@@ -1506,42 +1549,60 @@ impl SandboxProcess for LxcSandboxProcess {
         // responsibility).
         let stdout_thread = spawn_discard(self.inner.stdout.take());
         let stderr_thread = spawn_discard(self.inner.stderr.take());
-        let pty_thread = match self.inner.pty.as_ref() {
-            Some(pty) => spawn_discard(pty.take_unclaimed_reader()?),
-            None => None,
+        let (pty_thread, pty_canceller) = match self.inner.pty.as_ref() {
+            Some(pty) => match pty.take_unclaimed_reader()? {
+                Some((reader, canceller)) => (spawn_discard(Some(reader)), Some(canceller)),
+                None => (None, None),
+            },
+            None => (None, None),
         };
 
-        let result = match wait_with_timeout(&mut self.inner.child, self.inner.timeout) {
-            Ok(status) => Ok(status.code().unwrap_or(-1)),
-            Err(WaitError::Timeout) => {
-                // Stopping the container releases the pipe write ends a
-                // backgrounded descendant would otherwise hold past the
-                // deadline, so the drains below can finish.
-                let terminated = self.kill_for_timeout();
-                let _ = self.inner.child.wait();
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    match terminated {
-                        Ok(()) => "LXC: script timed out".to_string(),
-                        Err(e) => format!(
-                            "LXC: script timed out, and the container could not be stopped, \
+        let remaining_timeout = self
+            .inner
+            .timeout
+            .map(|timeout| timeout.saturating_sub(self.inner.started.elapsed()));
+        let result = if self.inner.timed_out {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "LXC: script timed out",
+            ))
+        } else {
+            match wait_with_timeout(&mut self.inner.child, remaining_timeout) {
+                Ok(status) => Ok(status.code().unwrap_or(-1)),
+                Err(WaitError::Timeout) => {
+                    self.inner.timed_out = true;
+                    // Stopping the container releases the pipe write ends a
+                    // backgrounded descendant would otherwise hold past the
+                    // deadline, so the drains below can finish.
+                    let terminated = self.kill_for_timeout();
+                    let _ = self.inner.child.wait();
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        match terminated {
+                            Ok(()) => "LXC: script timed out".to_string(),
+                            Err(e) => format!(
+                                "LXC: script timed out, and the container could not be stopped, \
                              so the workload may still be running: {e}"
-                        ),
-                    },
-                ))
-            }
-            Err(WaitError::Io(error)) => {
-                // The workload may still be running, and teardown is about to
-                // release the container it is running in.
-                let _ = self.kill();
-                let _ = self.inner.child.wait();
-                Err(std::io::Error::other(format!("LXC: wait failed: {error}")))
+                            ),
+                        },
+                    ))
+                }
+                Err(WaitError::Io(error)) => {
+                    // The workload may still be running, and teardown is about to
+                    // release the container it is running in.
+                    let _ = self.kill();
+                    let _ = self.inner.child.wait();
+                    Err(std::io::Error::other(format!("LXC: wait failed: {error}")))
+                }
             }
         };
 
         cancel_and_join_discard(stdout_thread, &self.inner.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.inner.stderr_canceller);
-        join_discard(pty_thread);
+        if let Some(pty) = self.inner.pty.as_ref() {
+            pty.finish_native_bridge();
+        }
+        cancel_and_join_discard(pty_thread, &pty_canceller);
         self.run_teardown();
         result
     }

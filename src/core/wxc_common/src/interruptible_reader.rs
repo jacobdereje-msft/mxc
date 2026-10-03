@@ -82,13 +82,15 @@ pub struct InterruptibleReader {
 impl InterruptibleReader {
     /// Wrap an owned readable pipe `fd` so its reads can be cancelled
     /// out-of-band. Sets `fd` non-blocking and creates the self-pipe used for
-    /// wakeups.
+    /// wakeups. The wrapped descriptor is also marked close-on-exec so callers
+    /// may safely supply duplicated pipes or terminals from any source.
     ///
     /// # Errors
     ///
     /// Returns the underlying [`io::Error`] if the self-pipe cannot be created
-    /// or either fd cannot be switched to non-blocking mode.
+    /// or descriptor flags cannot be applied.
     pub fn new(fd: OwnedFd) -> io::Result<Self> {
+        set_cloexec(fd.as_raw_fd())?;
         set_nonblocking(fd.as_raw_fd())?;
 
         // Self-pipe for wakeups: the write end is non-blocking so `cancel`
@@ -103,8 +105,7 @@ impl InterruptibleReader {
         let wake_w = unsafe { OwnedFd::from_raw_fd(fds[1]) };
         // `pipe(2)` doesn't set close-on-exec, so mark both ends `FD_CLOEXEC` —
         // otherwise they leak into any process this thread later forks+execs
-        // (e.g. another sandbox child). The data pipe is already CLOEXEC: Rust
-        // sets it on `Child` stdio.
+        // (e.g. another sandbox child).
         set_cloexec(wake_r.as_raw_fd())?;
         set_cloexec(wake_w.as_raw_fd())?;
         set_nonblocking(wake_w.as_raw_fd())?;

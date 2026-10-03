@@ -10,6 +10,8 @@ use mxc_sdk::{MxcPtySize, WaitOutcome};
 pub const ROUND_TRIP_COMMAND: &str =
     "read value; stty size; printf 'stdout:%s\\n' \"$value\"; printf 'stderr:merged\\n' >&2";
 pub const TIMEOUT_COMMAND: &str = "sleep 30";
+pub const NATIVE_STDIO_COMMAND: &str =
+    "read value; printf 'native-stdout:%s\\n' \"$value\"; printf 'native-stderr\\n' >&2";
 
 pub fn assert_round_trip(request: SandboxRequest) {
     let terminal = spawn_with_pty(
@@ -64,5 +66,34 @@ pub fn assert_timeout(request: SandboxRequest, maximum: Duration) {
         started.elapsed() < maximum,
         "PTY timeout exceeded {maximum:?}: {:?}",
         started.elapsed()
+    );
+}
+
+pub fn assert_native_stdio(request: SandboxRequest) {
+    let mut terminal =
+        spawn_with_pty(request, MxcPtySize::default()).expect("spawn_with_pty for native stdio");
+    let stdio = terminal
+        .take_native_stdio()
+        .expect("take native stdio")
+        .expect("native PTY stdio available");
+    assert!(stdio.stderr.is_none(), "PTY stderr must remain merged");
+
+    let mut input = std::fs::File::from(stdio.stdin.expect("PTY input pipe"));
+    let mut output = std::fs::File::from(stdio.stdout.expect("PTY output pipe"));
+    input.write_all(b"hello\n").expect("write native input");
+    drop(input);
+
+    assert_eq!(terminal.wait().expect("wait"), WaitOutcome::Exited(0));
+    let mut text = String::new();
+    output
+        .read_to_string(&mut text)
+        .expect("read native output");
+    assert!(
+        text.contains("native-stdout:hello"),
+        "stdout missing from native PTY output: {text:?}"
+    );
+    assert!(
+        text.contains("native-stderr"),
+        "stderr was not merged into native PTY output: {text:?}"
     );
 }

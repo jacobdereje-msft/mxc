@@ -1674,6 +1674,7 @@ version = "0.9.0"
 dependencies = [
  "libc",
  "nix",
+ "wxc_common",
 ]
 
 [[package]]

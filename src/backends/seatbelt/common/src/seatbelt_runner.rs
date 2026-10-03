@@ -27,7 +27,7 @@ use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mxc_pty::{LivePty, PtySize as UnixPtySize};
 use wxc_common::interruptible_reader::{wrap_pipe, InterruptibleReader, ReadCanceller};
@@ -35,8 +35,8 @@ use wxc_common::logger::Logger;
 use wxc_common::models::{ExecutionRequest, LaunchMethod, ProxyAddress, ScriptResponse};
 use wxc_common::sandbox_process::{
     boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, group_kill,
-    join_discard, spawn_discard, take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio,
-    PtySize, SandboxBackend, SandboxProcess, StdioMode, StreamCloser, WaitError,
+    spawn_discard, take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio, PtySize,
+    SandboxBackend, SandboxProcess, StdioMode, StreamCloser, WaitError,
 };
 use wxc_common::unix_proxy_coordinator::UnixProxyCoordinator;
 use wxc_common::validator::{
@@ -321,6 +321,7 @@ fn spawn_exec(
             }
         };
 
+    let started = Instant::now();
     Ok(Box::new(SeatbeltSandboxProcess {
         child,
         stdin,
@@ -330,6 +331,8 @@ fn spawn_exec(
         stderr_canceller,
         pty,
         timeout: timeout_from(request),
+        started,
+        timed_out: false,
         group: new_session || new_group || stdio != StdioMode::Inherit,
         cleanup: Vec::new(),
         proxy,
@@ -474,6 +477,7 @@ fn spawn_open(
     // The `open -W` process is the thing to wait on; the sandboxed shell runs
     // inside Terminal. No streamable stdio; the temp files are removed once the
     // handle's `wait()` (or drop) runs.
+    let started = Instant::now();
     Ok(Box::new(SeatbeltSandboxProcess {
         child,
         stdin: None,
@@ -483,6 +487,8 @@ fn spawn_open(
         stderr_canceller: None,
         pty: None,
         timeout: timeout_from(request),
+        started,
+        timed_out: false,
         group: false,
         cleanup: vec![profile_path, helper_path, command_path],
         proxy,
@@ -509,6 +515,8 @@ struct SeatbeltSandboxProcess {
     /// Caller-owned primary PTY for direct exec mode.
     pty: Option<LivePty>,
     timeout: Option<Duration>,
+    started: Instant,
+    timed_out: bool,
     /// The child leads its own process group (`setsid`), so termination signals
     /// the whole group; `false` for inherited / Open mode (a single process).
     group: bool,
@@ -542,6 +550,14 @@ impl SeatbeltSandboxProcess {
 
 impl SandboxProcess for SeatbeltSandboxProcess {
     fn take_native_stdio(&mut self) -> std::io::Result<Option<NativeStdio>> {
+        if let Some(pty) = self.pty.as_ref() {
+            let stdio = pty.take_native_stdio()?;
+            return Ok(Some(NativeStdio {
+                stdin: Some(stdio.stdin),
+                stdout: Some(stdio.stdout),
+                stderr: None,
+            }));
+        }
         let stdio = duplicate_and_take_native_stdio(
             &mut self.stdin,
             &mut self.stdout,
@@ -570,6 +586,17 @@ impl SandboxProcess for SeatbeltSandboxProcess {
             .as_ref()
             .ok_or_else(|| std::io::Error::other("Seatbelt process has no PTY"))?
             .try_clone_reader()
+    }
+
+    fn pty_clone_reader_with_closer(
+        &self,
+    ) -> std::io::Result<wxc_common::sandbox_process::PtyReaderWithCloser> {
+        let (reader, closer) = self
+            .pty
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Seatbelt process has no PTY"))?
+            .try_clone_reader_with_canceller()?;
+        Ok((reader, Some(Box::new(closer))))
     }
 
     fn pty_take_writer(&self) -> std::io::Result<Box<dyn std::io::Write + Send>> {
@@ -622,10 +649,28 @@ impl SandboxProcess for SeatbeltSandboxProcess {
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
-        Ok(self
-            .child
-            .try_wait()?
-            .map(|status| status.code().unwrap_or(-1)))
+        if let Some(status) = self.child.try_wait()? {
+            return Ok(Some(status.code().unwrap_or(-1)));
+        }
+        if self
+            .timeout
+            .is_some_and(|timeout| self.started.elapsed() >= timeout)
+        {
+            self.timed_out = true;
+            let terminated = self.kill_for_timeout();
+            let _ = self.child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                match terminated {
+                    Ok(()) => "Seatbelt: process timed out".to_string(),
+                    Err(error) => format!(
+                        "Seatbelt: process timed out, and the process group could not be \
+                         terminated: {error}"
+                    ),
+                },
+            ));
+        }
+        Ok(None)
     }
 
     fn id(&self) -> u32 {
@@ -664,35 +709,52 @@ impl SandboxProcess for SeatbeltSandboxProcess {
         // responsibility).
         let stdout_thread = spawn_discard(self.stdout.take());
         let stderr_thread = spawn_discard(self.stderr.take());
-        let pty_thread = match self.pty.as_ref() {
-            Some(pty) => spawn_discard(pty.take_unclaimed_reader()?),
-            None => None,
+        let (pty_thread, pty_canceller) = match self.pty.as_ref() {
+            Some(pty) => match pty.take_unclaimed_reader()? {
+                Some((reader, canceller)) => (spawn_discard(Some(reader)), Some(canceller)),
+                None => (None, None),
+            },
+            None => (None, None),
         };
 
-        let result = match wait_with_timeout(&mut self.child, self.timeout) {
-            Ok(status) => Ok(status.code().unwrap_or(-1)),
-            Err(WaitError::Timeout) => {
-                // Timed out — terminate now (`kill()` SIGKILLs the group or the
-                // lone child) and reap the zombie.
-                let _ = self.kill();
-                let _ = self.child.wait();
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "Seatbelt: process timed out",
-                ))
-            }
-            Err(WaitError::Io(error)) => {
-                // The child may still be running: kill+reap it (don't orphan
-                // the sandbox) before returning.
-                let _ = self.kill();
-                let _ = self.child.wait();
-                Err(std::io::Error::other(format!("wait failed: {error}")))
+        let remaining_timeout = self
+            .timeout
+            .map(|timeout| timeout.saturating_sub(self.started.elapsed()));
+        let result = if self.timed_out {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Seatbelt: process timed out",
+            ))
+        } else {
+            match wait_with_timeout(&mut self.child, remaining_timeout) {
+                Ok(status) => Ok(status.code().unwrap_or(-1)),
+                Err(WaitError::Timeout) => {
+                    self.timed_out = true;
+                    // Timed out — terminate now (`kill()` SIGKILLs the group or the
+                    // lone child) and reap the zombie.
+                    let _ = self.kill();
+                    let _ = self.child.wait();
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Seatbelt: process timed out",
+                    ))
+                }
+                Err(WaitError::Io(error)) => {
+                    // The child may still be running: kill+reap it (don't orphan
+                    // the sandbox) before returning.
+                    let _ = self.kill();
+                    let _ = self.child.wait();
+                    Err(std::io::Error::other(format!("wait failed: {error}")))
+                }
             }
         };
 
         cancel_and_join_discard(stdout_thread, &self.stdout_canceller);
         cancel_and_join_discard(stderr_thread, &self.stderr_canceller);
-        join_discard(pty_thread);
+        if let Some(pty) = self.pty.as_ref() {
+            pty.finish_native_bridge();
+        }
+        cancel_and_join_discard(pty_thread, &pty_canceller);
         self.run_cleanup();
         result
     }

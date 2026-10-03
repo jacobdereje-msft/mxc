@@ -99,6 +99,17 @@ fn bubblewrap_pty_enforces_script_timeout() {
 }
 
 #[test]
+fn bubblewrap_pty_transfers_native_stdio() {
+    if !bwrap_available() {
+        return;
+    }
+    unix_pty_contract::assert_native_stdio(bwrap_request(
+        unix_pty_contract::NATIVE_STDIO_COMMAND,
+        30_000,
+    ));
+}
+
+#[test]
 fn streaming_bubblewrap_wait_with_output_captures_both_streams() {
     // Each stream exceeds the 64 KiB pipe buffer, so a sequential drain would
     // deadlock. Bounded here rather than by the sandbox timeout, which does not

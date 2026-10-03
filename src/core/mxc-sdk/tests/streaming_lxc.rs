@@ -138,6 +138,21 @@ fn lxc_pty_enforces_script_timeout_and_tears_down() {
     assert_container_released(&name);
 }
 
+#[test]
+fn lxc_pty_transfers_native_stdio() {
+    if !lxc_ready() {
+        return;
+    }
+    let _guard = exclusive();
+    let name = container_name("pty-native-stdio");
+    unix_pty_contract::assert_native_stdio(lxc_request(
+        unix_pty_contract::NATIVE_STDIO_COMMAND,
+        &name,
+        LIVE_TIMEOUT_MS,
+    ));
+    assert_container_released(&name);
+}
+
 /// Whether `lxc-ls` still lists `name` as started. Mirrors the backend's own
 /// `LxcContainer::is_running`, so the test cannot disagree with it about what
 /// running means.

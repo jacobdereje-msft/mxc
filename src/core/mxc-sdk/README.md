@@ -683,9 +683,11 @@ a backend-owned pseudo-terminal and return a caller-controlled
 `MxcPtyProcess`. IsolationSession, Linux Bubblewrap and LXC, and macOS Seatbelt
 direct execution support one-shot PTY spawning; existing-container PTY spawning
 is specific to IsolationSession. Seatbelt rejects PTY mode with `guiAccess` or
-legacy `launchMethod: "open"`. Untaken terminal input is closed by `wait()`, and
-untaken merged output is drained and discarded without waiting indefinitely for
-descendants that keep the terminal open.
+legacy `launchMethod: "open"`. `wait()` requests terminal EOF for untaken input
+by sending the configured `VEOF` character in canonical mode; raw-mode programs
+must use their own completion protocol. Untaken merged output is drained and
+discarded without waiting indefinitely for descendants that keep the terminal
+open.
 
 Other streaming entry points wire the child's stdio to ordinary pipes and
 allocate no pty; output the caller does not take is drained and discarded by

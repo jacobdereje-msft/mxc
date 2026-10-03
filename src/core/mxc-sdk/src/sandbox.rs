@@ -328,10 +328,11 @@ impl MxcPtyProcess {
 
     /// Wait for the sandboxed process to exit.
     ///
-    /// If the caller has not taken the PTY writer, this closes it first so an
-    /// interactive workload waiting for input can observe EOF. Untaken output
-    /// is drained while the workload runs, then cancelled after the foreground
-    /// process exits so a descendant retaining the PTY cannot hang this call.
+    /// If the caller has not taken the PTY writer, this requests canonical-mode
+    /// terminal EOF first. Raw-mode applications must use their own completion
+    /// protocol. Untaken output is drained while the workload runs, then
+    /// cancelled after the foreground process exits so a descendant retaining
+    /// the PTY cannot hang this call.
     pub fn wait(&self) -> std::io::Result<WaitOutcome> {
         if !self.writer_taken.load(Ordering::Acquire) {
             drop(self.take_writer()?);
