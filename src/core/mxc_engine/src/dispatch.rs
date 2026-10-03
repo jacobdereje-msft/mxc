@@ -24,7 +24,7 @@
 use wxc_common::logger::Logger;
 use wxc_common::models::{ContainmentBackend, ExecutionRequest, ScriptResponse};
 use wxc_common::mxc_error::MxcError;
-use wxc_common::sandbox_process::{PtySize, SandboxProcess};
+use wxc_common::sandbox_process::{PtySize, SandboxProcess, StdioMode};
 
 /// `Err` when the host OS has no MXC sandbox backend. Checked before backend
 /// selection so an unsupported platform reports a clear message rather than a
