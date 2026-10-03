@@ -50,7 +50,7 @@ Configure a Windows ProcessContainer with
 `Containment::ProcessContainer(ProcessContainer::default())`.
 `ProcessContainer` controls learning mode, capabilities,
 BaseProcessContainer UI isolation, proxy peer identity, and denial capture.
-Schema 0.8 directional networking is available through
+Supported schema 0.9+ directional networking is available through
 `NetworkSection::{egress, ingress, runtime_config}`.
 
 The new ProcessContainer and directional-network configuration types are
