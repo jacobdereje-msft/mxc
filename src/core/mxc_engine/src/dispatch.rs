@@ -148,7 +148,7 @@ fn spawn_bubblewrap_with_stdio(
     logger: &mut Logger,
     stdio: StdioMode,
 ) -> Result<Box<dyn SandboxProcess>, MxcError> {
-    use wxc_common::sandbox_process::{SandboxBackend, StdioMode};
+    use wxc_common::sandbox_process::SandboxBackend;
     let mut runner = bwrap_common::bwrap_runner::BubblewrapScriptRunner::new();
     runner
         .spawn(request, logger, stdio)

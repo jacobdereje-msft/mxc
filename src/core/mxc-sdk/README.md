@@ -681,7 +681,8 @@ It never fails: any unreadable or unrecognized value reads back as
 
 `v1::spawn_with_pty` and `v1::container::spawn_in_container_with_pty` allocate
 a backend-owned pseudo-terminal and return a caller-controlled
-`MxcPtyProcess`. IsolationSession is currently the only supporting backend.
+`MxcPtyProcess`. IsolationSession and Linux Bubblewrap support one-shot PTY
+spawning; existing-container PTY spawning is specific to IsolationSession.
 Untaken terminal input is closed by `wait()`, and untaken merged output is
 drained and discarded without waiting indefinitely for descendants that keep
 the terminal open.
