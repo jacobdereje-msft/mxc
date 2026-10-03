@@ -475,10 +475,12 @@ The native unit must be built with isolation-session support or execution return
 
 ### Network proxy
 
-The V1 `SandboxPolicy` in `Microsoft.Mxc.Sdk.V1` does not expose legacy one-shot proxy
-settings. Consumers that need an older exact proxy contract must use the raw
-executor configuration path. WSLC state-aware exec exposes its supported
-proxy-only runtime override through `WslcExecOptions.RuntimeConfig`.
+The V1 `SandboxPolicy` uses directional `Network.Egress` / `Network.Ingress`
+and `Network.RuntimeConfig.NetworkProxy` for supported one-shot proxy requests.
+Use deny-by-default egress and the backend-specific ingress posture shown
+below; retired `network.proxy` fields are not accepted by raw configuration
+either. WSLC state-aware exec exposes its supported proxy-only runtime
+override through `WslcExecOptions.RuntimeConfig`.
 
 ### Directional networking (supported schema 0.9+)
 

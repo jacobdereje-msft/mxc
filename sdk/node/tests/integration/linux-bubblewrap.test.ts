@@ -150,8 +150,8 @@ describe('Linux Bubblewrap network proxy (v1 SDK policy)', {
       networkProxy: `http://127.0.0.1:${port}`,
     };
 
-    // No allowTestingFeatures: the v1 policy names a caller-supplied endpoint,
-    // not the testing-only built-in proxy.
+    // The v1 policy names a caller-supplied endpoint, so no testing-only
+    // executor flag is needed.
     const result = await spawnFromConfigAsync(config, { ...debugSpawnOptions, experimental: true });
     assert.strictEqual(result.exitCode, 0, `v1 proxy run failed: ${result.stdout}`);
     assert.ok(result.stdout.includes('PROXY_V1_OK'), `missing PROXY_V1_OK in: ${result.stdout}`);
