@@ -198,7 +198,7 @@ fn spawn_seatbelt_with_stdio(
     logger: &mut Logger,
     stdio: StdioMode,
 ) -> Result<Box<dyn SandboxProcess>, MxcError> {
-    use wxc_common::sandbox_process::{SandboxBackend, StdioMode};
+    use wxc_common::sandbox_process::SandboxBackend;
     let mut runner = seatbelt_common::seatbelt_runner::SeatbeltScriptRunner::new();
     runner
         .spawn(request, logger, stdio)
