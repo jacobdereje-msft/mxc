@@ -58,8 +58,8 @@ Node.js 26.8.0 or later is recommended.
 
 **High-level policy target:** The v1 `SandboxPolicy` API has no caller-supplied
 schema version. This SDK emits exact contract `1.0.0` when building a config.
-Use `ContainerConfig` when a caller must select a raw historical or development
-contract.
+Use `ContainerConfig` when a caller must select a registered raw published or
+development contract.
 
 **Raw config schema versions:**
 
@@ -79,24 +79,27 @@ Hyperlight require `1.1.0-alpha`; Seatbelt configs require `0.9.0-alpha` or late
 > **Network host allow/block lists are not implemented on Windows.** Exact
 > v0.9/v1.0/v1.1 requests use `network.egress` / `network.ingress` for directional
 > posture and, where supported, `runtimeConfig.networkProxy` for proxy
-> configuration. Historical contracts retain their registered legacy fields.
+> configuration. Pre-v0.9 schema files remain immutable history, but their
+> contracts are retired and cannot be executed.
 
 <a id="schema-080-networking"></a>
 
 **Directional networking:** `createConfigFromPolicy` accepts
 `network.egress` / `network.ingress`, `runtimeConfig.networkProxy`, and
 `processContainer.network.allowedProxyPeer`. Legacy network authoring is not
-part of the v1 high-level API; use a raw `ContainerConfig` only when replaying
-an immutable historical contract. Omitting all network fields leaves the
+accepted by any registered exact contract, including raw `ContainerConfig`.
+Omitting all network fields leaves the
 `network` block out of the generated config; the native parser interprets that
 as directional default-deny for egress, ingress, and host loopback. See the
-[Sandbox Policy 0.8.0 specification](https://github.com/microsoft/mxc/blob/main/docs/sandbox-policy/0.8.0/policy.md)
-for the complete cross-platform authoring shape.
+[current schema guide](https://github.com/microsoft/mxc/blob/main/docs/schema.md)
+for the supported cross-platform authoring shape.
 
 Legacy network members such as `allowOutbound`, `allowedHosts`, and
-`removeRulesOnExit` are available only through the executor-backed raw
-`ContainerConfig` API targeting an immutable historical contract. The stable
-in-process mapper rejects these fields instead of silently dropping them.
+`removeRulesOnExit` remain in the TypeScript type for source compatibility,
+but the stable in-process mapper and the raw exact parser both reject them.
+Migrate to directional networking, a backend-supported runtime proxy, or
+`lifecycle.preservePolicy` as appropriate; hostname rules have no direct
+CIDR equivalent.
 It also rejects retired containment and section spellings and backend-local
 names such as `processContainer.name` and `lxc.containerName`; use canonical
 containment names and top-level `containerId` instead.
@@ -146,9 +149,9 @@ spawnSandboxFromConfig(proxyConfig);
 
 These are example configurations rather than universal backend recipes.
 ProcessContainer proxy configurations have additional criteria; see the
-[ProcessContainer 0.8 proxy example](https://github.com/microsoft/mxc/blob/main/docs/process-container/examples/0.8.0-schema.md).
-See the [networking specification](https://github.com/microsoft/mxc/blob/main/docs/sandbox-policy/0.8.0/networking/networking.md)
-for all three connectivity modes and backend-specific support.
+[current ProcessContainer proxy deployment guide](https://github.com/microsoft/mxc/blob/main/docs/process-container/networking.md#proxy-deployment-choices).
+See the [supported schema guide](https://github.com/microsoft/mxc/blob/main/docs/schema.md)
+and backend guides for connectivity modes and their enforcement limits.
 
 **Platforms:**
 
@@ -298,8 +301,8 @@ implicitly copies `process.env` into the child.
 
 The stable in-process one-shot mapper requires `process.env` entries in
 `NAME=value` form (`NAME=` for an empty value). It rejects bare names instead
-of silently dropping them. Executor-backed raw historical configs retain
-their existing behavior.
+of silently dropping them. Executor-backed raw configs must declare a
+registered exact contract and are validated against that contract.
 
 ### 3. `spawnSandboxAsync(script, policy, ...)` — promise-style
 
@@ -361,10 +364,9 @@ intents, require a raw exact `ContainerConfig`.
 | `wslc` | (concrete only) | Windows | `0.9.0-alpha` | Stable | [`docs/wsl/wsl-container-getting-started.md`](https://github.com/microsoft/mxc/blob/main/docs/wsl/wsl-container-getting-started.md) |
 | `isolation_session` | (concrete only) | Windows | `0.9.0-alpha` | Stable | [`docs/isolation-session/oneshot.md`](https://github.com/microsoft/mxc/blob/main/docs/isolation-session/oneshot.md) |
 
-For historical raw configs, the abstract `process` intent requires
-`0.9.0-alpha` on macOS, where it resolves to Seatbelt, but retains the
-`0.9.0-alpha` floor on Windows and Linux. The high-level v1 API always emits
-`1.0.0` on every platform.
+For supported raw configs, the abstract `process` intent starts at
+`0.9.0-alpha` on every platform; it resolves to Seatbelt on macOS. The
+high-level v1 API always emits `1.0.0` on every platform.
 
 Experimental backends are available only through raw exact `ContainerConfig`
 spawns today and require `{ experimental: true }` in `SandboxSpawnOptions`:
@@ -779,7 +781,7 @@ and the consent prompt. An unreadable or missing `policy` field reads back as
 - [`docs/versioning.md`](https://github.com/microsoft/mxc/blob/main/docs/versioning.md) — schema versioning model and experimental-feature lifecycle
 - [`docs/examples.md`](https://github.com/microsoft/mxc/blob/main/docs/examples.md) — annotated configuration examples
 - [Sandbox policy 0.8.0](https://github.com/microsoft/mxc/blob/main/docs/sandbox-policy/0.8.0/policy.md)
-  — policy specification
+  — historical design reference (retired contract)
 - Backend-specific guides linked in the [Choosing a Backend](#choosing-a-backend) section above.
 
 ---
