@@ -2127,14 +2127,6 @@ impl SandboxProcess for AppContainerSandboxProcess {
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
-        if crate::process_timeout_elapsed(self.started_at, self.timeout_ms) {
-            self.kill_for_timeout()?;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "sandbox execution timed out",
-            ));
-        }
-
         match unsafe { WaitForSingleObject(self.process.get(), 0) } {
             WAIT_OBJECT_0 => {
                 let mut code: u32 = 0;
@@ -2149,6 +2141,13 @@ impl SandboxProcess for AppContainerSandboxProcess {
                 } else {
                     Ok(Some(code as i32))
                 }
+            }
+            WAIT_TIMEOUT if crate::process_timeout_elapsed(self.started_at, self.timeout_ms) => {
+                self.kill_for_timeout()?;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "sandbox execution timed out",
+                ))
             }
             WAIT_TIMEOUT => Ok(None),
             _ => Err(std::io::Error::other("WaitForSingleObject failed")),
