@@ -10,6 +10,8 @@
 
 #![cfg(target_os = "macos")]
 
+mod unix_pty_contract;
+
 use mxc_sdk::v1::{build_request, spawn_sandbox, SandboxPolicy, SandboxRequest};
 use mxc_sdk::WaitOutcome;
 
@@ -57,6 +59,22 @@ fn streaming_double_take_returns_none() {
 
     proc.kill().expect("kill");
     let _ = proc.wait();
+}
+
+#[test]
+fn seatbelt_pty_supports_io_resize_and_merged_output() {
+    unix_pty_contract::assert_round_trip(seatbelt_request(
+        unix_pty_contract::ROUND_TRIP_COMMAND,
+        30_000,
+    ));
+}
+
+#[test]
+fn seatbelt_pty_enforces_script_timeout() {
+    unix_pty_contract::assert_timeout(
+        seatbelt_request(unix_pty_contract::TIMEOUT_COMMAND, 1_000),
+        std::time::Duration::from_secs(15),
+    );
 }
 
 #[cfg(target_os = "macos")]

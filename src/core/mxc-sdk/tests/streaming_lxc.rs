@@ -14,6 +14,8 @@
 
 #![cfg(target_os = "linux")]
 
+mod unix_pty_contract;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
@@ -105,6 +107,35 @@ fn assert_container_released(name: &str) {
         !container_is_defined(name),
         "container {name} is still defined, so the sandbox leaked it"
     );
+}
+
+#[test]
+fn lxc_pty_supports_io_resize_and_merged_output() {
+    if !lxc_ready() {
+        return;
+    }
+    let _guard = exclusive();
+    let name = container_name("pty-contract");
+    unix_pty_contract::assert_round_trip(lxc_request(
+        unix_pty_contract::ROUND_TRIP_COMMAND,
+        &name,
+        LIVE_TIMEOUT_MS,
+    ));
+    assert_container_released(&name);
+}
+
+#[test]
+fn lxc_pty_enforces_script_timeout_and_tears_down() {
+    if !lxc_ready() {
+        return;
+    }
+    let _guard = exclusive();
+    let name = container_name("pty-timeout");
+    unix_pty_contract::assert_timeout(
+        lxc_request(unix_pty_contract::TIMEOUT_COMMAND, &name, 2_000),
+        LIVE_TIMEOUT,
+    );
+    assert_container_released(&name);
 }
 
 /// Whether `lxc-ls` still lists `name` as started. Mirrors the backend's own
