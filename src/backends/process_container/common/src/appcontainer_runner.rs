@@ -2212,7 +2212,8 @@ impl SandboxProcess for AppContainerSandboxProcess {
         let stdout_thread = spawn_discard(self.stdout.take());
         let stderr_thread = spawn_discard(self.stderr.take());
 
-        let result = match unsafe { WaitForSingleObject(self.process.get(), self.timeout_ms) } {
+        let wait_ms = crate::process_timeout_remaining_ms(self.started_at, self.timeout_ms);
+        let result = match unsafe { WaitForSingleObject(self.process.get(), wait_ms) } {
             WAIT_OBJECT_0 => {
                 let mut code: u32 = 0;
                 if unsafe { GetExitCodeProcess(self.process.get(), &mut code) }.is_err() {

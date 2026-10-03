@@ -63,8 +63,20 @@ pub use secenv::{
 
 #[cfg(target_os = "windows")]
 pub(crate) fn process_timeout_elapsed(started_at: std::time::Instant, timeout_ms: u32) -> bool {
-    timeout_ms != u32::MAX
-        && started_at.elapsed() >= std::time::Duration::from_millis(u64::from(timeout_ms))
+    process_timeout_remaining_ms(started_at, timeout_ms) == 0
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn process_timeout_remaining_ms(started_at: std::time::Instant, timeout_ms: u32) -> u32 {
+    if timeout_ms == u32::MAX {
+        return u32::MAX;
+    }
+    let elapsed_ms = started_at.elapsed().as_millis();
+    if elapsed_ms >= u128::from(timeout_ms) {
+        0
+    } else {
+        timeout_ms - elapsed_ms as u32
+    }
 }
 
 /// Working-directory resolution for both Windows launch paths. Deliberately
@@ -98,5 +110,18 @@ mod tests {
         let started_at = Instant::now() - Duration::from_secs(1);
 
         assert!(!super::process_timeout_elapsed(started_at, u32::MAX));
+        assert_eq!(
+            super::process_timeout_remaining_ms(started_at, u32::MAX),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn remaining_process_timeout_uses_the_original_deadline() {
+        let started_at = Instant::now() - Duration::from_millis(10);
+
+        assert_eq!(super::process_timeout_remaining_ms(started_at, 5), 0);
+        let remaining = super::process_timeout_remaining_ms(started_at, 50);
+        assert!((1..=40).contains(&remaining), "remaining: {remaining}");
     }
 }

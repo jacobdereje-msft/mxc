@@ -10,7 +10,7 @@ use windows::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
 };
 
-use wxc_common::process_util::{create_std_pipes, SendOwnedHandle};
+use wxc_common::process_util::{create_local_pipe, SendOwnedHandle};
 use wxc_common::sandbox_process::{NativeStdio, PtySize};
 
 pub(crate) struct PseudoConsole {
@@ -26,10 +26,8 @@ unsafe impl Send for PseudoConsole {}
 impl PseudoConsole {
     pub(crate) fn new(size: PtySize) -> std::io::Result<Self> {
         let coord = coord(size)?;
-        let (input_read, mut input_write) =
-            create_std_pipes(false).map_err(std::io::Error::other)?;
-        let (mut output_read, output_write) =
-            create_std_pipes(true).map_err(std::io::Error::other)?;
+        let (input_read, mut input_write) = create_local_pipe().map_err(std::io::Error::other)?;
+        let (mut output_read, output_write) = create_local_pipe().map_err(std::io::Error::other)?;
         let handle = unsafe { CreatePseudoConsole(coord, input_read.get(), output_write.get(), 0) }
             .map_err(std::io::Error::other)?;
 
