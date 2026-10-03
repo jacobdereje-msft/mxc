@@ -315,9 +315,16 @@ impl SendOwnedHandle {
     }
 
     pub fn try_clone_owned_handle(&self) -> std::io::Result<StdOwnedHandle> {
+        let handle = self.get();
+        if handle.is_invalid() || handle == HANDLE::default() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cannot clone an invalid Windows handle",
+            ));
+        }
         // SAFETY: this wrapper owns a valid process-wide handle for the
         // duration of the borrow; `try_clone_to_owned` duplicates it.
-        let borrowed = unsafe { BorrowedHandle::borrow_raw(self.get().0) };
+        let borrowed = unsafe { BorrowedHandle::borrow_raw(handle.0) };
         borrowed.try_clone_to_owned()
     }
 
@@ -668,6 +675,18 @@ mod tests {
             "resolved module does not exist: {}",
             path.display()
         );
+    }
+
+    #[test]
+    fn send_owned_handle_rejects_cloning_invalid_handle() {
+        let mut invalid = OwnedHandle::new(HANDLE::default());
+        let handle = SendOwnedHandle::take(&mut invalid);
+
+        let error = handle
+            .try_clone_owned_handle()
+            .expect_err("invalid handles must be rejected before borrowing");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]
