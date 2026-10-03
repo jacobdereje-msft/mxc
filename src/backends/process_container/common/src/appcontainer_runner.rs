@@ -3,6 +3,7 @@
 
 use std::ptr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DISABLED_BY_POLICY, ERROR_ALREADY_EXISTS,
@@ -1756,7 +1757,6 @@ impl SandboxBackend for AppContainerScriptRunner {
     ) -> Result<Box<dyn SandboxProcess>, ScriptResponse> {
         use wxc_common::validator::validate_common;
 
-        crate::validate_process_container_stdio(stdio)?;
         validate_common(request)?;
         self.validate(request)?;
 
@@ -1817,6 +1817,7 @@ struct AppContainerSandboxProcess {
     filesystem_mode: FilesystemMode,
     preserve_policy: bool,
     timeout_ms: u32,
+    started_at: Instant,
     // Retained here, in addition to the optional engine telemetry wrapper, so
     // callers still receive timeout classification when telemetry is disabled.
     timeout_requested: bool,
@@ -1889,6 +1890,7 @@ impl AppContainerSandboxProcess {
             filesystem_mode,
             preserve_policy: request.lifecycle.preserve_policy,
             timeout_ms: child.timeout_ms,
+            started_at: Instant::now(),
             timeout_requested: false,
             teardown_result: None,
             capture_session: child.capture_session.take(),
@@ -2125,6 +2127,14 @@ impl SandboxProcess for AppContainerSandboxProcess {
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
+        if crate::process_timeout_elapsed(self.started_at, self.timeout_ms) {
+            self.kill_for_timeout()?;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "sandbox execution timed out",
+            ));
+        }
+
         match unsafe { WaitForSingleObject(self.process.get(), 0) } {
             WAIT_OBJECT_0 => {
                 let mut code: u32 = 0;
