@@ -332,29 +332,9 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn diagnose_pty_processes(leader: u32, descendant: u32) {
-    let pids = format!("{leader},{descendant}");
-    let _ = std::process::Command::new("/bin/ps")
-        .args(["-o", "pid,ppid,pgid,sess,state,wchan,command", "-p", &pids])
-        .status();
-    let _ = std::process::Command::new("/usr/bin/sample")
-        .arg(leader.to_string())
-        .args(["1", "1"])
-        .status();
-}
-
-#[cfg(target_os = "macos")]
-fn assert_pty_job_control_tree_is_killed(
-    timeout_ms: u32,
-    explicit_kill: bool,
-    stage: Option<&std::sync::atomic::AtomicUsize>,
-) {
+fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
     use std::io::{BufRead, BufReader};
-    use std::sync::atomic::Ordering;
 
-    if let Some(stage) = stage {
-        stage.store(1, Ordering::Release);
-    }
     let terminal = spawn_with_pty(
         seatbelt_request(
             "exec /bin/bash -c 'set -m; trap \"\" HUP; sleep 300 & echo CHILD=$!; wait'",
@@ -363,9 +343,6 @@ fn assert_pty_job_control_tree_is_killed(
         MxcPtySize::default(),
     )
     .expect("spawn PTY job-control shell");
-    if let Some(stage) = stage {
-        stage.store(2, Ordering::Release);
-    }
     let reader = terminal.try_clone_reader().expect("PTY reader");
     let closer = terminal.stdout_closer().expect("PTY reader closer");
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -418,10 +395,6 @@ fn assert_pty_job_control_tree_is_killed(
             panic!("timed out waiting for PTY job-control readiness: {error}");
         }
     };
-    if let Some(stage) = stage {
-        stage.store(3, Ordering::Release);
-    }
-
     // SAFETY: `getpgid` only queries the process identified by `descendant`.
     let descendant_group = unsafe { libc::getpgid(descendant as libc::pid_t) };
     assert!(descendant_group > 0, "descendant process group");
@@ -430,10 +403,6 @@ fn assert_pty_job_control_tree_is_killed(
         terminal.id(),
         "job control must place the descendant outside the shell's process group"
     );
-    if let Some(stage) = stage {
-        stage.store(4, Ordering::Release);
-    }
-
     let terminal = std::sync::Arc::new(terminal);
     let leader = terminal.id();
     let waiter = {
@@ -445,9 +414,6 @@ fn assert_pty_job_control_tree_is_killed(
             terminal.wait()
         })
     };
-    if let Some(stage) = stage {
-        stage.store(5, Ordering::Release);
-    }
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let _ = sender.send(waiter.join());
@@ -457,7 +423,6 @@ fn assert_pty_job_control_tree_is_killed(
         Ok(Ok(Err(error))) => {
             closer.close();
             reader_thread.join().expect("PTY reader thread");
-            diagnose_pty_processes(leader, descendant);
             panic!("PTY termination failed: {error}");
         }
         Ok(Err(_)) => {
@@ -479,9 +444,6 @@ fn assert_pty_job_control_tree_is_killed(
     };
     closer.close();
     reader_thread.join().expect("PTY reader thread");
-    if let Some(stage) = stage {
-        stage.store(6, Ordering::Release);
-    }
     if explicit_kill {
         assert_ne!(outcome, WaitOutcome::Exited(0));
     } else {
@@ -490,14 +452,10 @@ fn assert_pty_job_control_tree_is_killed(
 
     for _ in 0..60 {
         if !pid_alive(leader) && !pid_alive(descendant) {
-            if let Some(stage) = stage {
-                stage.store(7, Ordering::Release);
-            }
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    diagnose_pty_processes(leader, descendant);
     panic!(
         "PTY termination left processes alive: leader={leader} alive={}, descendant={descendant} \
          alive={}",
@@ -509,45 +467,13 @@ fn assert_pty_job_control_tree_is_killed(
 #[cfg(target_os = "macos")]
 #[test]
 fn seatbelt_pty_kill_terminates_job_control_groups() {
-    assert_pty_job_control_tree_is_killed(0, true, None);
+    assert_pty_job_control_tree_is_killed(0, true);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn seatbelt_pty_timeout_terminates_job_control_groups() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
-    let stage = Arc::new(AtomicUsize::new(0));
-    let watchdog_stage = Arc::clone(&stage);
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(30));
-        if watchdog_stage.load(Ordering::Acquire) == 7 {
-            return;
-        }
-        let message = format!(
-            "Seatbelt PTY timeout watchdog fired at stage {}\n",
-            watchdog_stage.load(Ordering::Acquire)
-        );
-        // SAFETY: stderr is open for the test process, and `message` remains
-        // valid for the duration of this best-effort diagnostic write.
-        unsafe {
-            libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len());
-        }
-        let sample = std::process::Command::new("/usr/bin/sample")
-            .arg(std::process::id().to_string())
-            .args(["1", "1"])
-            .status();
-        if let Err(error) = sample {
-            let message = format!("failed to sample hung test: {error}\n");
-            // SAFETY: same best-effort direct diagnostic write as above.
-            unsafe {
-                libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len());
-            }
-        }
-        std::process::abort();
-    });
-    assert_pty_job_control_tree_is_killed(1_000, false, Some(&stage));
+    assert_pty_job_control_tree_is_killed(1_000, false);
 }
 
 #[cfg(target_os = "macos")]
