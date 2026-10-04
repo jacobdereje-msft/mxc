@@ -660,6 +660,7 @@ struct PtyWriter {
     writer: Option<std::fs::File>,
     eof: PtyEof,
     eof_sent: bool,
+    canonical_line_pending: bool,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -669,6 +670,7 @@ impl PtyWriter {
             writer: Some(writer),
             eof,
             eof_sent: false,
+            canonical_line_pending: false,
         }
     }
 
@@ -681,42 +683,51 @@ impl PtyWriter {
             .writer
             .as_mut()
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
-        write_all_until_shutdown(writer, buffer, shutdown)
+        write_all_until_shutdown(writer, buffer, shutdown)?;
+        self.track_canonical_input(buffer);
+        Ok(())
     }
 
     fn send_eof_until_shutdown(&mut self, shutdown: &BridgeShutdown) -> std::io::Result<()> {
-        let Some(eof) = self.take_eof_byte() else {
+        let Some((eof, count)) = self.take_eof() else {
             return Ok(());
         };
         let writer = self
             .writer
             .as_mut()
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
-        write_all_until_shutdown(writer, &[eof, eof], shutdown)?;
+        write_all_until_shutdown(writer, &[eof, eof][..count], shutdown)?;
         writer.flush()
     }
 
     fn send_eof(&mut self) -> std::io::Result<()> {
-        let Some(eof) = self.take_eof_byte() else {
+        let Some((eof, count)) = self.take_eof() else {
             return Ok(());
         };
-        self.write_all(&[eof, eof])?;
+        self.write_all(&[eof, eof][..count])?;
         self.flush()
     }
 
-    fn take_eof_byte(&mut self) -> Option<u8> {
+    fn take_eof(&mut self) -> Option<(u8, usize)> {
         if self.eof_sent {
             return None;
         }
         self.eof_sent = true;
-        match self.eof {
+        let eof = match self.eof {
             PtyEof::CurrentCanonical => self.writer.as_ref().and_then(terminal_eof_byte),
             PtyEof::Forwarded(eof) => Some(eof),
-        }
+        }?;
+        Some((eof, if self.canonical_line_pending { 2 } else { 1 }))
     }
 
     fn abandon_eof(&mut self) {
         self.eof_sent = true;
+    }
+
+    fn track_canonical_input(&mut self, buffer: &[u8]) {
+        for byte in buffer {
+            self.canonical_line_pending = !matches!(byte, b'\n' | b'\r');
+        }
     }
 }
 
@@ -744,7 +755,11 @@ impl Write for PtyWriter {
                         }
                     }
                 }
-                result => return result,
+                Ok(count) => {
+                    self.track_canonical_input(&buffer[..count]);
+                    return Ok(count);
+                }
+                Err(error) => return Err(error),
             }
         }
     }
@@ -1269,6 +1284,28 @@ mod tests {
         let mut output = String::new();
         reader.read_to_string(&mut output).expect("read output");
         assert!(output.contains("terminal-eof-observed"), "got: {output:?}");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn dropping_untouched_writer_does_not_wait_for_an_input_reader() {
+        let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("sleep 30");
+        let terminal = LivePty::attach(&mut command, PtySize::default(), &[]).expect("attach PTY");
+        let mut child = command.spawn().expect("spawn child");
+        drop(command);
+        let _reader = terminal.try_clone_reader().expect("clone reader");
+
+        let started = std::time::Instant::now();
+        drop(terminal.take_writer().expect("take writer"));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "closing untouched canonical input blocked without a reader"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
