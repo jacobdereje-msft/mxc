@@ -78,6 +78,32 @@ fn session_kill(child: &mut std::process::Child, session_id: libc::pid_t) -> std
     leader_result.and(session_result)
 }
 
+fn terminate_session_and_reap(
+    child: &mut std::process::Child,
+    session_id: libc::pid_t,
+    timeout: Duration,
+) -> std::io::Result<()> {
+    const RETRY_INTERVAL: Duration = Duration::from_millis(10);
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut last_error = session_kill(child, session_id).err();
+        match child.try_wait() {
+            Ok(Some(_)) => return last_error.map_or(Ok(()), Err),
+            Ok(None) => {}
+            Err(error) => last_error = Some(error),
+        }
+        if Instant::now() >= deadline {
+            return Err(last_error.unwrap_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Seatbelt: killed process did not become reapable before the deadline",
+                )
+            }));
+        }
+        std::thread::sleep(RETRY_INTERVAL);
+    }
+}
+
 fn kill_session_members(session_id: libc::pid_t) -> std::io::Result<()> {
     const SESSION_SWEEPS: usize = 3;
 
@@ -734,16 +760,14 @@ impl SandboxProcess for SeatbeltSandboxProcess {
             .is_some_and(|timeout| self.started.elapsed() >= timeout)
         {
             self.timed_out = true;
-            let terminated = self.kill_for_timeout();
+            self.kill_for_timeout().map_err(|error| {
+                std::io::Error::other(format!(
+                    "Seatbelt: process timed out, but its session could not be terminated: {error}"
+                ))
+            })?;
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                match terminated {
-                    Ok(()) => "Seatbelt: process timed out".to_string(),
-                    Err(error) => format!(
-                        "Seatbelt: process timed out, and the process group could not be \
-                         terminated: {error}"
-                    ),
-                },
+                "Seatbelt: process timed out",
             ));
         }
         Ok(None)
@@ -779,6 +803,9 @@ impl SandboxProcess for SeatbeltSandboxProcess {
         const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
         self.timed_out = true;
+        if let Some(session_id) = self.session_id {
+            return terminate_session_and_reap(&mut self.child, session_id, REAP_TIMEOUT);
+        }
         self.kill()?;
         match wait_with_timeout(&mut self.child, Some(REAP_TIMEOUT)) {
             Ok(_) => Ok(()),
@@ -824,20 +851,25 @@ impl SandboxProcess for SeatbeltSandboxProcess {
                 Ok(status) => Ok(status.code().unwrap_or(-1)),
                 Err(WaitError::Timeout) => {
                     self.timed_out = true;
-                    // Timed out — terminate now (`kill()` SIGKILLs the group or the
-                    // lone child) and reap the zombie.
-                    let _ = self.kill();
-                    let _ = self.child.wait();
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "Seatbelt: process timed out",
-                    ))
+                    self.kill_for_timeout().map_or_else(
+                        |error| {
+                            Err(std::io::Error::other(format!(
+                                "Seatbelt: process timed out, but teardown failed: {error}"
+                            )))
+                        },
+                        |()| {
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "Seatbelt: process timed out",
+                            ))
+                        },
+                    )
                 }
                 Err(WaitError::Io(error)) => {
                     // The child may still be running: kill+reap it (don't orphan
                     // the sandbox) before returning.
                     let _ = self.kill();
-                    let _ = self.child.wait();
+                    let _ = wait_with_timeout(&mut self.child, Some(Duration::from_secs(5)));
                     Err(std::io::Error::other(format!("wait failed: {error}")))
                 }
             }
@@ -857,11 +889,15 @@ impl SandboxProcess for SeatbeltSandboxProcess {
 impl Drop for SeatbeltSandboxProcess {
     fn drop(&mut self) {
         // Don't leak a running sandboxed process (and its group) or a zombie if
-        // the handle is dropped without `wait()`, and remove any temp files.
-        // `kill()` is idempotent (its `try_wait` guard no-ops once the child has
-        // exited).
-        let _ = self.kill();
-        let _ = self.child.wait();
+        // the handle is dropped without `wait()`, but never block destruction
+        // indefinitely when macOS does not make a signalled child reapable.
+        const DROP_REAP_TIMEOUT: Duration = Duration::from_secs(5);
+        if let Some(session_id) = self.session_id {
+            let _ = terminate_session_and_reap(&mut self.child, session_id, DROP_REAP_TIMEOUT);
+        } else {
+            let _ = self.kill();
+            let _ = wait_with_timeout(&mut self.child, Some(DROP_REAP_TIMEOUT));
+        }
         self.run_cleanup();
     }
 }
