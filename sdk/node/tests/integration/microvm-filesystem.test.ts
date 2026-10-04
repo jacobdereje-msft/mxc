@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'os';
 import { execSync } from 'child_process';
 import { runConfigForTest } from './test-helpers.js';
-import type { ContainerConfig } from '../../dist/v1/types.js';
+import type { ContainerConfig } from './node_modules/@microsoft/mxc-sdk/dist/v1/types.js';
 
 function isWhpAvailable(): boolean {
   if (os.platform() !== 'win32') return false;

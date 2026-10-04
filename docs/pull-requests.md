@@ -9,6 +9,19 @@ it fans out to the reusable `Build.Windows.Job.yml`, `Build.Linux.Job.yml`, and
 x64/arm64, Linux x64/arm64, and macOS arm64 hosts, then runs the lint,
 versioning, and SDK jobs.
 
+### Local Node SDK package validation
+
+From `sdk/node`, run `npm run typecheck` before pushing SDK changes. It builds
+the SDK and unit tests, packs the SDK, installs it into an isolated temporary
+integration project, and compiles every integration test. To repeat only the
+packed-package check after building the SDK, run `npm run typecheck:integration`.
+Neither command runs sandbox workloads.
+
+The integration jobs install a packed SDK rather than building `sdk/node/dist`
+in the checkout. Test-only private type imports must resolve from the installed
+package, matching the runtime helpers. The isolated check prevents local
+checkout build output from hiding missing package imports.
+
 ### Linux LXC dispatch coverage
 
 The primary Linux build runs pinned LXC discovery, engine dispatch, exact-JSON

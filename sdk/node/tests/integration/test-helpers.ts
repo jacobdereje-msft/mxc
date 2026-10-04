@@ -11,8 +11,8 @@ import semver from 'semver';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import * as sdkV1Namespace from '@microsoft/mxc-sdk/v1';
-import type { OneShotRequest } from '../../dist/generated/v1_0_0/wire.js';
-import type { ContainerConfig } from '../../dist/v1/types.js';
+import type { OneShotRequest } from './node_modules/@microsoft/mxc-sdk/dist/generated/v1_0_0/wire.js';
+import type { ContainerConfig } from './node_modules/@microsoft/mxc-sdk/dist/v1/types.js';
 import {
   MxcError,
 } from '@microsoft/mxc-sdk/v1';
@@ -38,13 +38,13 @@ const require = createRequire(import.meta.url);
 
 const { runOneShotJsonAsync } = await import(pathToFileURL(
   path.join(getSdkPackageRoot(), 'dist', 'bindings', 'run.js'),
-).href) as typeof import('../../dist/bindings/run.js');
+).href) as typeof import('./node_modules/@microsoft/mxc-sdk/dist/bindings/run.js');
 const { prepareOneShotRequest } = await import(pathToFileURL(
   path.join(getSdkPackageRoot(), 'dist', 'bindings', 'one-shot.js'),
-).href) as typeof import('../../dist/bindings/one-shot.js');
+).href) as typeof import('./node_modules/@microsoft/mxc-sdk/dist/bindings/one-shot.js');
 const { createConfigFromRequest } = await import(pathToFileURL(
   path.join(getSdkPackageRoot(), 'dist', 'v1', 'container.js'),
-).href) as typeof import('../../dist/v1/container.js');
+).href) as typeof import('./node_modules/@microsoft/mxc-sdk/dist/v1/container.js');
 
 /** Test-only exact-config path for backend contract tests; always calls mxc_ffi. */
 export function runConfigForTest(

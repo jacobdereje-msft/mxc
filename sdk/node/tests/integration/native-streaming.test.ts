@@ -9,7 +9,7 @@ import { describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
 import semver from 'semver';
-import type { ContainerConfig } from '../../dist/v1/types.js';
+import type { ContainerConfig } from './node_modules/@microsoft/mxc-sdk/dist/v1/types.js';
 import {
   getSdkPackageRoot,
   isLinuxBubblewrap,
