@@ -332,9 +332,17 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
+fn assert_pty_job_control_tree_is_killed(
+    timeout_ms: u32,
+    explicit_kill: bool,
+    stage: Option<&std::sync::atomic::AtomicUsize>,
+) {
     use std::io::{BufRead, BufReader};
+    use std::sync::atomic::Ordering;
 
+    if let Some(stage) = stage {
+        stage.store(1, Ordering::Release);
+    }
     let terminal = spawn_with_pty(
         seatbelt_request(
             "exec /bin/bash -c 'set -m; trap \"\" HUP; sleep 300 & echo CHILD=$!; wait'",
@@ -343,6 +351,9 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
         MxcPtySize::default(),
     )
     .expect("spawn PTY job-control shell");
+    if let Some(stage) = stage {
+        stage.store(2, Ordering::Release);
+    }
     let reader = terminal.try_clone_reader().expect("PTY reader");
     let closer = terminal.stdout_closer().expect("PTY reader closer");
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -390,6 +401,9 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
             panic!("timed out waiting for PTY job-control readiness: {error}");
         }
     };
+    if let Some(stage) = stage {
+        stage.store(3, Ordering::Release);
+    }
 
     // SAFETY: `getpgid` only queries the process identified by `descendant`.
     let descendant_group = unsafe { libc::getpgid(descendant as libc::pid_t) };
@@ -399,6 +413,9 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
         terminal.id(),
         "job control must place the descendant outside the shell's process group"
     );
+    if let Some(stage) = stage {
+        stage.store(4, Ordering::Release);
+    }
 
     let terminal = std::sync::Arc::new(terminal);
     let leader = terminal.id();
@@ -411,6 +428,9 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
             terminal.wait()
         })
     };
+    if let Some(stage) = stage {
+        stage.store(5, Ordering::Release);
+    }
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let _ = sender.send(waiter.join());
@@ -429,6 +449,9 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
             panic!("PTY termination did not complete within 20 seconds: {error}");
         }
     };
+    if let Some(stage) = stage {
+        stage.store(6, Ordering::Release);
+    }
     if explicit_kill {
         assert_ne!(outcome, WaitOutcome::Exited(0));
     } else {
@@ -437,6 +460,9 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
 
     for _ in 0..60 {
         if !pid_alive(leader) && !pid_alive(descendant) {
+            if let Some(stage) = stage {
+                stage.store(7, Ordering::Release);
+            }
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -452,13 +478,41 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
 #[cfg(target_os = "macos")]
 #[test]
 fn seatbelt_pty_kill_terminates_job_control_groups() {
-    assert_pty_job_control_tree_is_killed(0, true);
+    assert_pty_job_control_tree_is_killed(0, true, None);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn seatbelt_pty_timeout_terminates_job_control_groups() {
-    assert_pty_job_control_tree_is_killed(1_000, false);
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let stage = Arc::new(AtomicUsize::new(0));
+    let watchdog_stage = Arc::clone(&stage);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        if watchdog_stage.load(Ordering::Acquire) == 7 {
+            return;
+        }
+        let sample = std::process::Command::new("/usr/bin/sample")
+            .arg(std::process::id().to_string())
+            .args(["1", "1"])
+            .output();
+        eprintln!(
+            "Seatbelt PTY timeout watchdog fired at stage {}",
+            watchdog_stage.load(Ordering::Acquire)
+        );
+        match sample {
+            Ok(sample) => eprintln!(
+                "macOS process sample:\n{}\n{}",
+                String::from_utf8_lossy(&sample.stdout),
+                String::from_utf8_lossy(&sample.stderr)
+            ),
+            Err(error) => eprintln!("failed to sample hung test: {error}"),
+        }
+        std::process::abort();
+    });
+    assert_pty_job_control_tree_is_killed(1_000, false, Some(&stage));
 }
 
 #[cfg(target_os = "macos")]
