@@ -409,6 +409,15 @@ impl LivePty {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Return whether the terminal secondary is in canonical input mode.
+    pub fn is_canonical_mode(&self) -> std::io::Result<bool> {
+        use nix::sys::termios::{self, LocalFlags};
+
+        termios::tcgetattr(&self.primary)
+            .map(|settings| settings.local_flags.contains(LocalFlags::ICANON))
+            .map_err(std::io::Error::from)
+    }
+
     /// Claim a reader for internal draining only when no caller has cloned one.
     pub fn take_unclaimed_reader(
         &self,

@@ -733,9 +733,49 @@ impl LxcContainer {
             self.attach_command(command, working_directory, env, force_clear_env, firewall);
         let pty = mxc_pty::LivePty::attach(&mut cmd, size, UNBLOCK)
             .map_err(|error| format!("Failed to allocate lxc-attach PTY: {error}"))?;
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|error| format!("Failed to run lxc-attach: {error}"))?;
+
+        // lxc-attach switches the host terminal to noncanonical mode with
+        // TCSAFLUSH before starting its forwarding loop. Returning earlier can
+        // let callers write input that lxc-attach then discards during setup.
+        const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        const READY_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+        let deadline = std::time::Instant::now() + READY_TIMEOUT;
+        loop {
+            match pty.is_canonical_mode() {
+                Ok(false) => break,
+                Ok(true) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "Failed to inspect lxc-attach terminal readiness: {error}"
+                    ));
+                }
+            }
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "Failed to poll lxc-attach terminal readiness: {error}"
+                    ));
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "lxc-attach terminal forwarding was not ready within {}ms",
+                    READY_TIMEOUT.as_millis()
+                ));
+            }
+            std::thread::sleep(READY_POLL);
+        }
         Ok((child, pty))
     }
 

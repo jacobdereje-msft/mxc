@@ -1202,6 +1202,7 @@ impl LxcScriptRunner {
 
         // The `true` forces `--clear-env`, without which an empty env list lets
         // `lxc-attach` inherit the host environment and its proxy credentials.
+        let started = Instant::now();
         let launched = match stdio {
             StdioMode::Pipes => prepared
                 .container
@@ -1276,7 +1277,6 @@ impl LxcScriptRunner {
             }
         };
 
-        let started = Instant::now();
         Ok(Box::new(LxcSandboxProcess::new(LxcChild {
             child,
             stdin,
