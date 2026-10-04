@@ -494,21 +494,25 @@ fn seatbelt_pty_timeout_terminates_job_control_groups() {
         if watchdog_stage.load(Ordering::Acquire) == 7 {
             return;
         }
+        let message = format!(
+            "Seatbelt PTY timeout watchdog fired at stage {}\n",
+            watchdog_stage.load(Ordering::Acquire)
+        );
+        // SAFETY: stderr is open for the test process, and `message` remains
+        // valid for the duration of this best-effort diagnostic write.
+        unsafe {
+            libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len());
+        }
         let sample = std::process::Command::new("/usr/bin/sample")
             .arg(std::process::id().to_string())
             .args(["1", "1"])
-            .output();
-        eprintln!(
-            "Seatbelt PTY timeout watchdog fired at stage {}",
-            watchdog_stage.load(Ordering::Acquire)
-        );
-        match sample {
-            Ok(sample) => eprintln!(
-                "macOS process sample:\n{}\n{}",
-                String::from_utf8_lossy(&sample.stdout),
-                String::from_utf8_lossy(&sample.stderr)
-            ),
-            Err(error) => eprintln!("failed to sample hung test: {error}"),
+            .status();
+        if let Err(error) = sample {
+            let message = format!("failed to sample hung test: {error}\n");
+            // SAFETY: same best-effort direct diagnostic write as above.
+            unsafe {
+                libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len());
+            }
         }
         std::process::abort();
     });
