@@ -1543,12 +1543,18 @@ impl SandboxProcess for LxcSandboxProcess {
     }
 
     fn kill_for_timeout(&mut self) -> std::io::Result<()> {
+        const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+
         self.inner.timed_out = true;
         self.kill()?;
-        if self.inner.child.try_wait()?.is_none() {
-            self.inner.child.wait()?;
+        match wait_with_timeout(&mut self.inner.child, Some(REAP_TIMEOUT)) {
+            Ok(_) => Ok(()),
+            Err(WaitError::Timeout) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "LXC: killed attach process did not become reapable within 5 seconds",
+            )),
+            Err(WaitError::Io(error)) => Err(error),
         }
-        Ok(())
     }
 
     fn wait(&mut self) -> std::io::Result<i32> {

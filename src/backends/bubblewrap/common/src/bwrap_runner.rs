@@ -41,8 +41,8 @@ use wxc_common::logger::Logger;
 use wxc_common::models::{ExecutionRequest, ScriptResponse};
 use wxc_common::sandbox_process::{
     boxed_closer, cancel_and_join_discard, duplicate_and_take_native_stdio, group_kill,
-    spawn_discard, take_boxed_read, take_boxed_write, NativeStdio, PtySize, SandboxBackend,
-    SandboxProcess, StdioMode, StreamCloser,
+    spawn_discard, take_boxed_read, take_boxed_write, wait_with_timeout, NativeStdio, PtySize,
+    SandboxBackend, SandboxProcess, StdioMode, StreamCloser, WaitError,
 };
 use wxc_common::unix_proxy_coordinator::UnixProxyCoordinator;
 use wxc_common::validator::{
@@ -1046,13 +1046,19 @@ impl SandboxProcess for BubblewrapSandboxProcess {
     }
 
     fn kill_for_timeout(&mut self) -> std::io::Result<()> {
+        const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+
         self.inner.timed_out = true;
         self.kill()?;
         let mut child = self.inner.lock_child();
-        if child.try_wait()?.is_none() {
-            child.wait()?;
+        match wait_with_timeout(&mut child, Some(REAP_TIMEOUT)) {
+            Ok(_) => Ok(()),
+            Err(WaitError::Timeout) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Bubblewrap: killed process did not become reapable within 5 seconds",
+            )),
+            Err(WaitError::Io(error)) => Err(error),
         }
-        Ok(())
     }
 
     fn wait(&mut self) -> std::io::Result<i32> {

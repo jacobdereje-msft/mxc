@@ -436,12 +436,17 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
     }
 
     for _ in 0..60 {
-        if !pid_alive(descendant) {
+        if !pid_alive(leader) && !pid_alive(descendant) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    panic!("job-control descendant {descendant} survived PTY termination");
+    panic!(
+        "PTY termination left processes alive: leader={leader} alive={}, descendant={descendant} \
+         alive={}",
+        pid_alive(leader),
+        pid_alive(descendant)
+    );
 }
 
 #[cfg(target_os = "macos")]
