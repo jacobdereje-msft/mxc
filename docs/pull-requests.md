@@ -26,6 +26,10 @@ does not run as root. It triggers on PRs targeting `main`, so a PR stacked on
 another branch gets no LXC gating until it is retargeted — dispatch it manually
 for a stacked head.
 
+The Linux .NET SDK job also installs LXC and runs the public V1
+`MxcContainerLxcE2ETests` as root. Keep its test filter aligned with the class
+name; the job rejects an empty selection or a run without passing tests.
+
 ### Local Windows SDK proxy checks
 
 The Node, .NET, and Rust SDK tests can exercise ProcessContainer with an external
