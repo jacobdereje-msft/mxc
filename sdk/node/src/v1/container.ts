@@ -327,24 +327,6 @@ function createContainerConfig(request: ContainerRequest): ContainerConfig {
 
 export const createConfigFromRequest = createContainerConfig;
 
-function appendDiagnosticLine(output: string, line: string): string {
-  const prefix = output.length === 0 || output.endsWith('\n') ? output : `${output}\n`;
-  return `${prefix}${line}\n`;
-}
-
-function bufferedStderr(result: BindingRunResult): string {
-  let stderr = result.stderr;
-  for (const warning of result.warnings) {
-    stderr = appendDiagnosticLine(stderr, warning);
-  }
-
-  const captureDenials = result.outputMetadata?.captureDenials;
-  if (captureDenials !== undefined) {
-    stderr = appendDiagnosticLine(stderr, JSON.stringify(captureDenials));
-  }
-  return stderr;
-}
-
 function containerConfig(request: ContainerRequest): ContainerConfig {
   if (request === null || typeof request !== 'object') {
     throw new MxcError('malformed_request', 'container request must be an object');
@@ -426,7 +408,7 @@ function validateOperationOptions(
 function toExecutionResult(result: BindingRunResult): ExecutionResult {
   const output: ExecutionResult = {
     stdout: result.stdout,
-    stderr: bufferedStderr(result),
+    stderr: result.stderr,
     exitCode: result.exitCode,
     timedOut: result.timedOut,
     warnings: result.warnings,

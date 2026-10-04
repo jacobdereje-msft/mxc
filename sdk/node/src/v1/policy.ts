@@ -121,17 +121,17 @@ function environmentValue(environment: { [key: string]: string | undefined }, na
     return key === undefined ? undefined : environment[key];
 }
 
-function getWindowsDirectory(environment: { [key: string]: string | undefined }): string {
-    return environmentValue(environment, 'WINDIR') || 'C:\\Windows';
+function getWindowsDirectory(): string {
+    return process.env['WINDIR'] || process.env['windir'] || 'C:\\Windows';
 }
 
 /**
  * Returns `true` if the path resides under system-critical locations.
  * On Windows: under %WINDIR%. On Linux: /bin, /sbin, /boot, /proc, /sys, /dev, etc.
  */
-function isSystemCriticalPath(dirPath: string, environment: { [key: string]: string | undefined }): boolean {
+function isSystemCriticalPath(dirPath: string): boolean {
     if (os.platform() === 'win32') {
-        const winDir = getWindowsDirectory(environment).toLowerCase();
+        const winDir = getWindowsDirectory().toLowerCase();
         const normalized = path.resolve(dirPath).toLowerCase();
         return normalized === winDir || normalized.startsWith(winDir + '\\');
     }
@@ -307,7 +307,7 @@ export function getAvailableToolsPolicy(
         if (!directoryExists(dirPath)) {
             return false;
         }
-        if (isSystemCriticalPath(dirPath, environment)) {
+        if (isSystemCriticalPath(dirPath)) {
             return false;
         }
         if (options?.containerType === 'processcontainer' && hasAllApplicationPackagesAccess(dirPath)) {

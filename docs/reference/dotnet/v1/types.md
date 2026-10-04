@@ -594,13 +594,13 @@ public static class MxcLifecycle
         ProvisionRequest request,
         ProvisionOptions? options = null);
 
-    public static void ValidateProvision(
+    public static ValidationResult ValidateProvision(
         ProvisionRequest request,
         ProvisionOptions? options = null);
 
     public static LifecycleResult StartContainer(ContainerId id, StartOptions? options = null);
 
-    public static void ValidateStart(ContainerId id, StartOptions? options = null);
+    public static ValidationResult ValidateStart(ContainerId id, StartOptions? options = null);
 
     public static MxcProcess SpawnInContainer(
         ContainerId id,
@@ -618,7 +618,7 @@ public static class MxcLifecycle
         ExecutionRequest request,
         SpawnInContainerWithPtyOptions? options = null);
 
-    public static void ValidateProcess(
+    public static ValidationResult ValidateProcess(
         ContainerId id,
         ExecutionRequest request,
         SpawnInContainerOptions? options = null);
@@ -636,13 +636,13 @@ public static class MxcLifecycle
 
     public static LifecycleResult StopContainer(ContainerId id, StopOptions? options = null);
 
-    public static void ValidateStop(ContainerId id, StopOptions? options = null);
+    public static ValidationResult ValidateStop(ContainerId id, StopOptions? options = null);
 
     public static LifecycleResult DeprovisionContainer(
         ContainerId id,
         DeprovisionOptions? options = null);
 
-    public static void ValidateDeprovision(
+    public static ValidationResult ValidateDeprovision(
         ContainerId id,
         DeprovisionOptions? options = null);
 }

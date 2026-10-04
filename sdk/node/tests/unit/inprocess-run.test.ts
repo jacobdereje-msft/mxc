@@ -230,8 +230,8 @@ describe('in-process asynchronous run routing', () => {
     );
   });
 
-  it('preserves buffered diagnostics and metadata', async () => {
-    _setBindingRunAsyncImplementation(async () => ({
+  it('preserves captured stderr verbatim while returning diagnostics separately', async () => {
+    const nativeResult = {
       stdout: '',
       stderr: 'native stderr',
       exitCode: 0,
@@ -243,17 +243,29 @@ describe('in-process asynchronous run routing', () => {
           totalDenials: 3, deniedResourcesTruncated: false,
         },
       },
+    } as const;
+    _setBindingRunImplementation(() => ({
+      ...nativeResult, warnings: [...nativeResult.warnings],
+    }));
+    _setBindingRunAsyncImplementation(async () => ({
+      ...nativeResult, warnings: [...nativeResult.warnings],
     }));
 
-    const result = await runAsync({ command: 'echo hello' });
-    assert.match(result.stderr, /native stderr/);
-    assert.deepStrictEqual(result.warnings, ['policy was relaxed']);
-    assert.deepStrictEqual(result.outputMetadata, {
-      captureDenials: {
-        type: 'captureDenials', outputPath: 'denials.json', exitCode: 0,
-        totalDenials: 3, deniedResourcesTruncated: false,
-      },
-    });
+    for (const result of [
+      run({ command: 'echo hello' }),
+      await runAsync({ command: 'echo hello' }),
+    ]) {
+      assert.strictEqual(result.stderr, nativeResult.stderr);
+      assert.deepStrictEqual(result.warnings, ['policy was relaxed']);
+      assert.deepStrictEqual(result.outputMetadata, nativeResult.outputMetadata);
+    }
+  });
+
+  it('does not manufacture stderr when a workload emits none', async () => {
+    _setBindingRunAsyncImplementation(async () => ({
+      stdout: '', stderr: '', exitCode: 0, timedOut: false, warnings: ['warning'],
+    }));
+    assert.strictEqual((await runAsync({ command: 'echo hello' })).stderr, '');
   });
 
   it('preserves timeout results and typed native errors', async () => {

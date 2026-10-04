@@ -225,6 +225,8 @@ for complete signatures and types.
 Native errors are surfaced as `MxcError` with a typed error code and optional
 operation, native status, and remediation. Security and operational warnings
 are returned in `ExecutionResult.warnings` and `MxcProcess.warnings`.
+Captured `stdout` and `stderr` are workload output; warnings and structured
+denial-capture metadata are not appended to those streams.
 Validation warnings are returned in `ValidationResult.warnings`.
 Provision warnings are returned in `ProvisionResult.warnings`; start, stop,
 and deprovision return `LifecycleResult.warnings`. Omitted native warnings

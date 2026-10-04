@@ -10,6 +10,20 @@ namespace Microsoft.Mxc.Sdk.Tests.V1;
 public class FilesystemPoliciesTests
 {
     [Fact]
+    public void ToolsPolicy_DiscoveryMapCannotOverrideHostWindowsSafetyExclusion()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows safety filtering");
+        var hostWindows = Environment.GetEnvironmentVariable("WINDIR")
+            ?? Environment.GetEnvironmentVariable("windir") ?? @"C:\Windows";
+        foreach (var windir in new string?[] { null, "", @"C:\SpoofedWindows" })
+        {
+            var result = FilesystemPolicies.GetAvailableToolsPolicy(
+                new Dictionary<string, string?> { ["PATH"] = hostWindows, ["WINDIR"] = windir });
+            Assert.Empty(result.ReadonlyPaths);
+        }
+    }
+
+    [Fact]
     public void ExplicitlyEmptyEnvironment_DoesNotDiscoverHostToolsOrProfile()
     {
         var environment = new Dictionary<string, string?>();

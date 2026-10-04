@@ -196,15 +196,17 @@ fn deduplicate_paths(paths: &[String]) -> Vec<String> {
 }
 
 /// Whether `dir` is under a system-critical location that must not be exposed.
-fn is_system_critical_path(dir: &str, environment: &[(String, String)]) -> bool {
+fn is_system_critical_path(dir: &str) -> bool {
     let normalized = resolve_path(dir);
     if is_windows() {
         // A set-but-empty `WINDIR` must not disable the filter: treat empty as
         // unset and fall back (the same `WINDIR` handling `powershell_policy`
         // uses).
-        let win_dir = env_get(environment, "WINDIR")
+        let win_dir = std::env::var("WINDIR")
+            .ok()
+            .or_else(|| std::env::var("windir").ok())
             .filter(|s| !s.is_empty())
-            .unwrap_or("C:\\Windows")
+            .unwrap_or_else(|| "C:\\Windows".to_string())
             .to_lowercase();
         // Strip a verbatim (`\\?\`, `\\?\UNC\`) prefix so a path supplied in
         // that form still matches the plain `C:\Windows` comparison.
@@ -363,7 +365,7 @@ pub fn available_tools_policy(
 
     let filtered: Vec<String> = deduplicate_paths(&collected)
         .into_iter()
-        .filter(|dir| directory_exists(dir) && !is_system_critical_path(dir, env))
+        .filter(|dir| directory_exists(dir) && !is_system_critical_path(dir))
         .filter(|dir| {
             options.container_type != Some(ToolsPolicyContainerType::ProcessContainer)
                 || !has_all_application_packages_access(dir)
@@ -893,6 +895,25 @@ pub(crate) fn prepare_creation_request(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn discovery_map_cannot_override_host_windows_safety_exclusion() {
+        let host_windows = std::env::var("WINDIR")
+            .or_else(|_| std::env::var("windir"))
+            .unwrap_or_else(|_| r"C:\Windows".to_string());
+        for windir in ["", r"C:\SpoofedWindows"] {
+            let environment = vec![
+                ("PATH".to_string(), host_windows.clone()),
+                ("WINDIR".to_string(), windir.to_string()),
+            ];
+            let result = super::available_tools_policy(
+                Some(&environment),
+                super::ToolsPolicyOptions::default(),
+            );
+            assert!(result.readonly_paths.is_empty());
+        }
+    }
+
     const TEST_COMMAND: &str = "echo hello";
 
     #[test]

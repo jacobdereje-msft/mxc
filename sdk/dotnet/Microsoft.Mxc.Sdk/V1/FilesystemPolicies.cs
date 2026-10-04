@@ -103,7 +103,7 @@ public static class FilesystemPolicies
 
         var readonlyPaths = DeduplicatePaths(collected)
             .Where(Directory.Exists)
-            .Where(path => !IsSystemCriticalPath(path, env))
+            .Where(path => !IsSystemCriticalPath(path))
             .Where(path => options?.ContainerType != ToolsPolicyContainerType.ProcessContainer
                 || !HasAllApplicationPackagesAccess(path))
             .ToList();
@@ -318,14 +318,13 @@ public static class FilesystemPolicies
         }
     }
 
-    private static bool IsSystemCriticalPath(
-        string path,
-        IReadOnlyDictionary<string, string?> environment)
+    private static bool IsSystemCriticalPath(string path)
     {
         var normalized = Path.GetFullPath(path);
         if (OperatingSystem.IsWindows())
         {
-            var windowsDirectory = GetEnvironmentValue(environment, "WINDIR")
+            var windowsDirectory = Environment.GetEnvironmentVariable("WINDIR")
+                ?? Environment.GetEnvironmentVariable("windir")
                 ?? @"C:\Windows";
             var normalizedWindows = Path.GetFullPath(windowsDirectory);
             return IsSameOrDescendant(normalized, normalizedWindows, StringComparison.OrdinalIgnoreCase);

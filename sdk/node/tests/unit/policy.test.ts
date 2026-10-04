@@ -16,6 +16,18 @@ import * as path from 'path';
 const isLinux = process.platform === 'linux';
 
 describe('filesystem helper environment and options', () => {
+    it('cannot override host Windows safety exclusions through the discovery map', {
+        skip: process.platform !== 'win32',
+    }, () => {
+        const hostWindows = process.env['WINDIR'] || process.env['windir'] || 'C:\\Windows';
+        for (const WINDIR of [undefined, '', 'C:\\SpoofedWindows']) {
+            assert.deepStrictEqual(
+                getAvailableToolsPolicy({ PATH: hostWindows, WINDIR }).readonlyPaths,
+                [],
+            );
+        }
+    });
+
     it('does not substitute the host environment for an empty map', () => {
         assert.deepStrictEqual(getAvailableToolsPolicy({}), { readonlyPaths: [], readwritePaths: [] });
         assert.deepStrictEqual(getUserProfilePolicy({}), { readonlyPaths: [], readwritePaths: [] });
