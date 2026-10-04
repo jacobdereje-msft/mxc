@@ -153,6 +153,40 @@ fn lxc_pty_transfers_native_stdio() {
     assert_container_released(&name);
 }
 
+#[test]
+fn lxc_pty_closing_input_sends_canonical_eof() {
+    if !lxc_ready() {
+        return;
+    }
+    let _guard = exclusive();
+    let name = container_name("pty-eof");
+    let terminal = mxc_sdk::v1::spawn_with_pty(
+        lxc_request(
+            "cat >/dev/null; printf 'eof-observed\\n'",
+            &name,
+            LIVE_TIMEOUT_MS,
+        ),
+        mxc_sdk::MxcPtySize::default(),
+    )
+    .expect("spawn_with_pty");
+    let mut reader = terminal.try_clone_reader().expect("reader");
+    let reader_thread = std::thread::spawn(move || {
+        let mut output = String::new();
+        reader.read_to_string(&mut output).expect("read output");
+        output
+    });
+    let mut writer = terminal.take_writer().expect("writer");
+    writer
+        .write_all(b"input before eof\n")
+        .expect("write input");
+    drop(writer);
+
+    assert_eq!(terminal.wait().expect("wait"), WaitOutcome::Exited(0));
+    let output = reader_thread.join().expect("reader thread");
+    assert!(output.contains("eof-observed"), "got: {output:?}");
+    assert_container_released(&name);
+}
+
 /// Whether `lxc-ls` still lists `name` as started. Mirrors the backend's own
 /// `LxcContainer::is_running`, so the test cannot disagree with it about what
 /// running means.

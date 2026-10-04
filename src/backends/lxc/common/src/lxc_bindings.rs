@@ -731,7 +731,7 @@ impl LxcContainer {
 
         let mut cmd =
             self.attach_command(command, working_directory, env, force_clear_env, firewall);
-        let pty = mxc_pty::LivePty::attach(&mut cmd, size, UNBLOCK)
+        let pty = mxc_pty::LivePty::attach_forwarded(&mut cmd, size, UNBLOCK)
             .map_err(|error| format!("Failed to allocate lxc-attach PTY: {error}"))?;
         let mut child = cmd
             .spawn()

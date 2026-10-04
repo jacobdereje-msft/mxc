@@ -990,6 +990,12 @@ impl SandboxProcess for BubblewrapSandboxProcess {
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
+        if self.inner.timed_out {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Bubblewrap: script timed out",
+            ));
+        }
         if let Some(status) = self.inner.lock_child().try_wait()? {
             return Ok(Some(status.code().unwrap_or(-1)));
         }

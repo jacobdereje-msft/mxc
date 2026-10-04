@@ -61,6 +61,17 @@ pub fn assert_timeout(request: SandboxRequest, maximum: Duration) {
     let terminal =
         spawn_with_pty(request, MxcPtySize::default()).expect("spawn_with_pty for timeout");
     let started = Instant::now();
+    loop {
+        match terminal.try_wait() {
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => break,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            result => panic!("unexpected PTY timeout poll result: {result:?}"),
+        }
+    }
+    let repeated = terminal
+        .try_wait()
+        .expect_err("timeout classification must remain latched");
+    assert_eq!(repeated.kind(), std::io::ErrorKind::TimedOut);
     assert_eq!(terminal.wait().expect("wait"), WaitOutcome::TimedOut);
     assert!(
         started.elapsed() < maximum,

@@ -16,7 +16,11 @@ use std::time::Duration;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::{Read, Write};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::sync::Mutex;
+use std::os::fd::AsRawFd;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::{Arc, Mutex};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use nix::sys::signal::Signal;
@@ -108,6 +112,7 @@ pub struct LivePty {
     primary: std::fs::File,
     access: Mutex<PtyAccess>,
     size: Mutex<PtySize>,
+    eof: PtyEof,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -121,6 +126,8 @@ struct PtyAccess {
 struct NativeBridge {
     input_canceller: ReadCanceller,
     output_canceller: ReadCanceller,
+    input_shutdown: BridgeShutdown,
+    output_shutdown: BridgeShutdown,
     input_thread: std::thread::JoinHandle<()>,
     output_thread: std::thread::JoinHandle<()>,
 }
@@ -130,9 +137,110 @@ impl NativeBridge {
     fn shutdown(self) {
         self.input_canceller.close();
         self.output_canceller.close();
+        self.input_shutdown.cancel();
+        self.output_shutdown.cancel();
         let _ = self.input_thread.join();
         let _ = self.output_thread.join();
     }
+
+    fn finish(self) {
+        const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+        const OUTPUT_DRAIN_POLL: Duration = Duration::from_millis(10);
+
+        self.input_canceller.close();
+        self.input_shutdown.cancel();
+        let _ = self.input_thread.join();
+
+        let deadline = std::time::Instant::now() + OUTPUT_DRAIN_TIMEOUT;
+        while !self.output_thread.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(OUTPUT_DRAIN_POLL);
+        }
+        if !self.output_thread.is_finished() {
+            self.output_canceller.close();
+            self.output_shutdown.cancel();
+        }
+        let _ = self.output_thread.join();
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone)]
+struct BridgeShutdown {
+    state: Arc<BridgeShutdownState>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct BridgeShutdownState {
+    cancelled: AtomicBool,
+    wake_read: std::os::fd::OwnedFd,
+    wake_write: std::os::fd::OwnedFd,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl BridgeShutdown {
+    fn new() -> std::io::Result<Self> {
+        let (wake_read, wake_write) = create_pipe()?;
+        set_nonblocking(wake_write.as_raw_fd())?;
+        Ok(Self {
+            state: Arc::new(BridgeShutdownState {
+                cancelled: AtomicBool::new(false),
+                wake_read,
+                wake_write,
+            }),
+        })
+    }
+
+    fn cancel(&self) {
+        if !self.state.cancelled.swap(true, Ordering::AcqRel) {
+            let byte = [1_u8];
+            // SAFETY: the write descriptor is owned by `state`, and `byte` is valid.
+            let _ = unsafe {
+                libc::write(
+                    self.state.wake_write.as_raw_fd(),
+                    byte.as_ptr().cast(),
+                    byte.len(),
+                )
+            };
+        }
+    }
+
+    fn wait_writable(&self, fd: std::os::fd::RawFd) -> std::io::Result<bool> {
+        if self.state.cancelled.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        loop {
+            let mut poll_fds = [
+                libc::pollfd {
+                    fd,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: self.state.wake_read.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: `poll_fds` contains two live descriptors for this call.
+            let result = unsafe { libc::poll(poll_fds.as_mut_ptr(), 2, -1) };
+            if result >= 0 {
+                return Ok(
+                    !self.state.cancelled.load(Ordering::Acquire) && poll_fds[1].revents == 0
+                );
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Copy)]
+enum PtyEof {
+    CurrentCanonical,
+    Forwarded(u8),
 }
 
 /// Owned native pipes bridged to a pseudo-terminal.
@@ -193,6 +301,28 @@ impl LivePty {
         size: PtySize,
         unblock_signals: &'static [Signal],
     ) -> std::io::Result<Self> {
+        Self::attach_with_eof(command, size, unblock_signals, false)
+    }
+
+    /// Attach a terminal-forwarding process to a newly allocated PTY.
+    ///
+    /// Input close forwards the PTY's initial `VEOF` byte through the
+    /// forwarding process even after that process switches the outer terminal
+    /// to raw mode.
+    pub fn attach_forwarded(
+        command: &mut Command,
+        size: PtySize,
+        unblock_signals: &'static [Signal],
+    ) -> std::io::Result<Self> {
+        Self::attach_with_eof(command, size, unblock_signals, true)
+    }
+
+    fn attach_with_eof(
+        command: &mut Command,
+        size: PtySize,
+        unblock_signals: &'static [Signal],
+        forward_eof: bool,
+    ) -> std::io::Result<Self> {
         use std::os::fd::AsRawFd;
         use std::process::Stdio;
 
@@ -205,6 +335,11 @@ impl LivePty {
             ws_ypixel: size.pixel_height,
         });
         let pair = openpty(winsize.as_ref(), None).map_err(std::io::Error::from)?;
+        let eof = if forward_eof {
+            PtyEof::Forwarded(configured_eof_byte(&pair.slave)?)
+        } else {
+            PtyEof::CurrentCanonical
+        };
 
         use nix::fcntl::{fcntl, FcntlArg, FdFlag};
         for fd in [pair.master.as_raw_fd(), pair.slave.as_raw_fd()] {
@@ -247,6 +382,7 @@ impl LivePty {
                 native_bridge: None,
             }),
             size: Mutex::new(size),
+            eof,
         })
     }
 
@@ -282,7 +418,7 @@ impl LivePty {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .writer
             .take()
-            .map(|writer| Box::new(PtyWriter(Some(writer))) as Box<dyn Write + Send>)
+            .map(|writer| Box::new(PtyWriter::new(writer, self.eof)) as Box<dyn Write + Send>)
             .ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -299,7 +435,9 @@ impl LivePty {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .writer
             .take();
-        drop(PtyWriter(writer));
+        if let Some(writer) = writer {
+            drop(PtyWriter::new(writer, self.eof));
+        }
     }
 
     /// Transfer native pipe endpoints bridged to terminal input and output.
@@ -310,10 +448,13 @@ impl LivePty {
         let (input_read_fd, input_write_fd) = create_pipe()?;
         let input_reader = InterruptibleReader::new(input_read_fd)?;
         let input_canceller = input_reader.canceller();
+        let input_shutdown = BridgeShutdown::new()?;
 
         let output_primary = self.primary.try_clone()?;
         let (output_reader, output_canceller) = Self::reader_from_file(output_primary)?;
         let (output_read_fd, output_write_fd) = create_pipe()?;
+        set_nonblocking(output_write_fd.as_raw_fd())?;
+        let output_shutdown = BridgeShutdown::new()?;
 
         let mut access = self
             .access
@@ -328,21 +469,52 @@ impl LivePty {
 
         let output_thread = std::thread::Builder::new()
             .name("mxc-pty-output-bridge".to_string())
-            .spawn(move || {
-                let mut reader = output_reader;
-                let mut writer = File::from(output_write_fd);
-                let _ = std::io::copy(&mut reader, &mut writer);
+            .spawn({
+                let output_shutdown = output_shutdown.clone();
+                move || {
+                    let mut reader = output_reader;
+                    let mut writer = File::from(output_write_fd);
+                    let mut buffer = [0_u8; 8192];
+                    loop {
+                        let count = match reader.read(&mut buffer) {
+                            Ok(0) | Err(_) => return,
+                            Ok(count) => count,
+                        };
+                        if write_all_until_shutdown(&mut writer, &buffer[..count], &output_shutdown)
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
             })?;
         let input_thread = match std::thread::Builder::new()
             .name("mxc-pty-input-bridge".to_string())
-            .spawn(move || {
-                let mut reader = input_reader;
-                let mut writer = PtyWriter(Some(input_primary));
-                let _ = std::io::copy(&mut reader, &mut writer);
+            .spawn({
+                let input_shutdown = input_shutdown.clone();
+                let eof = self.eof;
+                move || {
+                    let mut reader = input_reader;
+                    let mut writer = PtyWriter::new(input_primary, eof);
+                    let mut buffer = [0_u8; 8192];
+                    loop {
+                        let count = match reader.read(&mut buffer) {
+                            Ok(0) | Err(_) => return,
+                            Ok(count) => count,
+                        };
+                        if writer
+                            .write_all_until_shutdown(&buffer[..count], &input_shutdown)
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
             }) {
             Ok(thread) => thread,
             Err(error) => {
                 output_canceller.close();
+                output_shutdown.cancel();
                 let _ = output_thread.join();
                 return Err(error);
             }
@@ -353,6 +525,8 @@ impl LivePty {
         access.native_bridge = Some(NativeBridge {
             input_canceller,
             output_canceller: output_canceller.0.clone(),
+            input_shutdown,
+            output_shutdown,
             input_thread,
             output_thread,
         });
@@ -371,7 +545,7 @@ impl LivePty {
             .native_bridge
             .take();
         if let Some(bridge) = bridge {
-            bridge.shutdown();
+            bridge.finish();
         }
     }
 
@@ -448,7 +622,15 @@ impl LivePty {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for LivePty {
     fn drop(&mut self) {
-        self.finish_native_bridge();
+        let bridge = self
+            .access
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .native_bridge
+            .take();
+        if let Some(bridge) = bridge {
+            bridge.shutdown();
+        }
     }
 }
 
@@ -466,15 +648,38 @@ impl Read for PtyReader {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-struct PtyWriter(Option<std::fs::File>);
+struct PtyWriter {
+    writer: Option<std::fs::File>,
+    eof: PtyEof,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl PtyWriter {
+    fn new(writer: std::fs::File, eof: PtyEof) -> Self {
+        Self {
+            writer: Some(writer),
+            eof,
+        }
+    }
+
+    fn write_all_until_shutdown(
+        &mut self,
+        buffer: &[u8],
+        shutdown: &BridgeShutdown,
+    ) -> std::io::Result<()> {
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        write_all_until_shutdown(writer, buffer, shutdown)
+    }
+}
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Write for PtyWriter {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        use std::os::fd::AsRawFd;
-
         let writer = self
-            .0
+            .writer
             .as_mut()
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
         loop {
@@ -500,7 +705,7 @@ impl Write for PtyWriter {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0
+        self.writer
             .as_mut()
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?
             .flush()
@@ -510,13 +715,39 @@ impl Write for PtyWriter {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for PtyWriter {
     fn drop(&mut self) {
-        let Some(mut writer) = self.0.take() else {
+        let Some(mut writer) = self.writer.take() else {
             return;
         };
-        if terminal_eof_byte(&writer).is_some_and(|eof| writer.write_all(&[eof]).is_ok()) {
+        let eof = match self.eof {
+            PtyEof::CurrentCanonical => terminal_eof_byte(&writer),
+            PtyEof::Forwarded(eof) => Some(eof),
+        };
+        if eof.is_some_and(|eof| writer.write_all(&[eof]).is_ok()) {
             let _ = writer.flush();
         }
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn write_all_until_shutdown(
+    writer: &mut std::fs::File,
+    mut buffer: &[u8],
+    shutdown: &BridgeShutdown,
+) -> std::io::Result<()> {
+    while !buffer.is_empty() {
+        match writer.write(buffer) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(count) => buffer = &buffer[count..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if !shutdown.wait_writable(writer.as_raw_fd())? {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -531,9 +762,16 @@ fn terminal_eof_byte(file: &std::fs::File) -> Option<u8> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn create_pipe() -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
-    use std::os::fd::AsRawFd;
+fn configured_eof_byte(fd: &impl std::os::fd::AsFd) -> std::io::Result<u8> {
+    use nix::sys::termios::{self, SpecialCharacterIndices};
 
+    termios::tcgetattr(fd)
+        .map(|settings| settings.control_chars[SpecialCharacterIndices::VEOF as usize])
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn create_pipe() -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
     use nix::fcntl::{fcntl, FcntlArg, FdFlag};
 
     let (read, write) = nix::unistd::pipe().map_err(std::io::Error::from)?;
@@ -543,6 +781,20 @@ fn create_pipe() -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)
         fcntl(fd.as_raw_fd(), FcntlArg::F_SETFD(flags)).map_err(std::io::Error::from)?;
     }
     Ok((read, write))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn set_nonblocking(fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    // SAFETY: `fd` is a valid open descriptor; these commands only update its flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` remains open and `flags | O_NONBLOCK` is valid for F_SETFL.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Spawn `command` attached to a freshly-allocated pty pair and bridge
@@ -1084,6 +1336,110 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
+    fn native_bridge_preserves_fast_multichunk_output() {
+        let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("head -c 262144 /dev/zero; printf 'complete-output\\n'");
+        let terminal = LivePty::attach(&mut command, PtySize::default(), &[]).expect("attach PTY");
+        let mut child = command.spawn().expect("spawn child");
+        drop(command);
+        let stdio = terminal.take_native_stdio().expect("take native stdio");
+        drop(stdio.stdin);
+
+        let output_thread = std::thread::spawn(move || {
+            let mut output = std::fs::File::from(stdio.stdout);
+            let mut bytes = Vec::new();
+            output.read_to_end(&mut bytes).expect("read output");
+            bytes
+        });
+        assert!(child.wait().expect("wait child").success());
+        terminal.finish_native_bridge();
+
+        let output = output_thread.join().expect("output thread");
+        assert!(output.len() >= 262_144, "output was truncated");
+        assert!(
+            output.ends_with(b"complete-output\r\n"),
+            "final output marker was truncated"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn native_bridge_cancels_blocked_input_write() {
+        let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("(trap '' HUP; sleep 30) & exit 0");
+        let terminal = LivePty::attach(&mut command, PtySize::default(), &[]).expect("attach PTY");
+        let mut child = command.spawn().expect("spawn child");
+        drop(command);
+        let stdio = terminal.take_native_stdio().expect("take native stdio");
+        drop(stdio.stdout);
+
+        let input_thread = std::thread::spawn(move || {
+            let mut input = std::fs::File::from(stdio.stdin);
+            let buffer = vec![b'x'; 1024 * 1024];
+            let _ = input.write_all(&buffer);
+        });
+        assert!(child.wait().expect("wait child").success());
+
+        let start = std::time::Instant::now();
+        terminal.finish_native_bridge();
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "blocked input bridge did not cancel promptly"
+        );
+        input_thread.join().expect("input thread");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_bridge_cancels_full_output_pipe() {
+        let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("read ready; head -c 8192 /dev/zero");
+        let terminal = LivePty::attach(&mut command, PtySize::default(), &[]).expect("attach PTY");
+        let mut child = command.spawn().expect("spawn child");
+        drop(command);
+        let stdio = terminal.take_native_stdio().expect("take native stdio");
+
+        // SAFETY: this lowers the capacity of the live output pipe so the
+        // bridge predictably parks in its cancellable write path.
+        assert!(
+            unsafe { libc::fcntl(stdio.stdout.as_raw_fd(), libc::F_SETPIPE_SZ, 4096) } >= 0,
+            "set output pipe capacity: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut input = std::fs::File::from(stdio.stdin);
+        input.write_all(b"go\n").expect("write input");
+        drop(input);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().expect("poll child") {
+                assert!(status.success());
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child blocked before filling the native output pipe");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let start = std::time::Instant::now();
+        terminal.finish_native_bridge();
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "full output bridge did not cancel promptly"
+        );
+        drop(stdio.stdout);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
     fn echo_runs_under_pty() {
         let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut cmd = Command::new("/bin/sh");
@@ -1153,90 +1509,82 @@ mod tests {
     /// fd number stays open as a second secondary reference unless CLOEXEC
     /// trims it at `execve` time.
     ///
-    /// The child enumerates its own open fds and reports any inherited
-    /// pty fd via a sentinel-prefixed log file. Linux uses
-    /// `/proc/$$/fd` + `readlink` (no external tool deps). macOS uses
-    /// `/usr/sbin/lsof` because `readlink` on `/dev/fd/N` returns
-    /// `EINVAL` (fdescfs entries aren't symlinks) and lsof is bundled
-    /// with the OS at a fixed path. The sentinel makes the test fail
-    /// loudly when neither probe is available instead of silently
-    /// passing on empty input.
+    /// The parent inspects the blocked child's descriptor table so the probe
+    /// cannot create transient shell descriptors and mistake them for leaks.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn pty_fds_do_not_leak_into_child_across_exec() {
         let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let inherited = process_pty_fds(std::process::id())
+            .expect("inspect parent descriptors")
+            .into_iter()
+            .map(|(fd, _)| fd)
+            .collect::<std::collections::HashSet<_>>();
 
-        let tmp_path = std::env::temp_dir()
-            .join(format!("mxc_pty_leak_test_{}.log", std::process::id()))
-            .to_string_lossy()
-            .to_string();
-        let _ = std::fs::remove_file(&tmp_path);
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("30");
+        let terminal = LivePty::attach(&mut cmd, PtySize::default(), &[]).expect("attach PTY");
+        let mut child = cmd.spawn().expect("spawn child");
+        drop(cmd);
 
-        let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c").arg(format!(
-            // After `exec` the inner shell should hold only fds 0/1/2
-            // (the secondary wired in as stdio). Any extra fd pointing at a
-            // pty device — primary (`/dev/ptmx`), macOS secondary
-            // (`/dev/ttysNNN`), or Linux secondary (`/dev/pts/N`) — is a
-            // CLOEXEC regression. fd 255 is excluded because some shells
-            // dup the script onto it for job control.
-            r#"
-            exec 3> "{path}"
-            if [ -d /proc/$$/fd ]; then
-                echo "PROC_OK" >&3
-                for fd_link in /proc/$$/fd/*; do
-                    fd=${{fd_link##*/}}
-                    case "$fd" in
-                        0|1|2|255) continue ;;
-                    esac
-                    target=$(readlink "$fd_link" 2>/dev/null) || continue
-                    case "$target" in
-                        /dev/ptmx|/dev/pts/*)
-                            echo "LEAK fd=$fd target=$target" >&3
-                            ;;
-                    esac
-                done
-            elif [ -x /usr/sbin/lsof ]; then
-                echo "LSOF_OK" >&3
-                /usr/sbin/lsof -p $$ 2>/dev/null \
-                  | awk 'NR > 1 && $NF ~ /^\/dev\/(ptmx|ttys[0-9]+|pts\/[0-9]+)$/ {{
-                        fd = $4
-                        sub(/[a-zA-Z]+$/, "", fd)
-                        n = fd + 0
-                        if (n > 2 && n != 255) print "LEAK fd=" $4 " target=" $NF
-                    }}' \
-                  >&3
-            else
-                echo "PROBE_MISSING" >&3
-            fi
-            "#,
-            path = tmp_path,
-        ));
+        std::thread::sleep(Duration::from_millis(50));
+        let leaks = process_pty_fds(child.id())
+            .expect("inspect child descriptors")
+            .into_iter()
+            .filter(|(fd, _)| !inherited.contains(fd))
+            .map(|(fd, target)| format!("LEAK fd={fd} target={target}"))
+            .collect::<Vec<_>>();
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(terminal);
 
-        let outcome = run_with_pty(cmd, PtyOptions::default()).expect("bridge spawns");
-        assert!(matches!(outcome, PtyOutcome::Exited(_)));
-
-        let contents = std::fs::read_to_string(&tmp_path).unwrap_or_default();
-        let _ = std::fs::remove_file(&tmp_path);
-
-        if contents.trim_end() == "PROBE_MISSING" {
-            eprintln!(
-                "skipping pty leak assertion: no usable fd probe (no /proc and no /usr/sbin/lsof)"
-            );
-            return;
-        }
-        assert!(
-            contents.starts_with("PROC_OK") || contents.starts_with("LSOF_OK"),
-            "shell probe did not record a sentinel; got: {contents:?}",
-        );
-        let leaks = contents
-            .lines()
-            .filter(|l| l.starts_with("LEAK"))
-            .collect::<Vec<_>>()
-            .join("\n");
         assert!(
             leaks.is_empty(),
-            "child inherited pty fd(s) across exec:\n{leaks}",
+            "child inherited pty fd(s) across exec:\n{}",
+            leaks.join("\n"),
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_pty_fds(pid: u32) -> std::io::Result<Vec<(String, String)>> {
+        let mut pty_fds = Vec::new();
+        for entry in std::fs::read_dir(format!("/proc/{pid}/fd"))? {
+            let entry = entry?;
+            let fd = entry.file_name().to_string_lossy().into_owned();
+            if matches!(fd.as_str(), "0" | "1" | "2") {
+                continue;
+            }
+            let Ok(target) = std::fs::read_link(entry.path()) else {
+                continue;
+            };
+            let target = target.to_string_lossy();
+            if target == "/dev/ptmx" || target.starts_with("/dev/pts/") {
+                pty_fds.push((fd, target.into_owned()));
+            }
+        }
+        Ok(pty_fds)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_pty_fds(pid: u32) -> std::io::Result<Vec<(String, String)>> {
+        let output = Command::new("/usr/sbin/lsof")
+            .args(["-p", &pid.to_string()])
+            .output()?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let columns = line.split_whitespace().collect::<Vec<_>>();
+                let fd = columns.get(3)?;
+                let target = columns.last()?;
+                let fd_number =
+                    fd.trim_end_matches(|character: char| character.is_ascii_alphabetic());
+                (fd_number.parse::<u32>().ok()? > 2
+                    && (target.starts_with("/dev/ttys")
+                        || target.starts_with("/dev/pts/")
+                        || *target == "/dev/ptmx"))
+                    .then(|| (fd_number.to_string(), (*target).to_string()))
+            })
+            .collect())
     }
 }
