@@ -343,13 +343,51 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
         MxcPtySize::default(),
     )
     .expect("spawn PTY job-control shell");
-    let mut reader = BufReader::new(terminal.try_clone_reader().expect("PTY reader"));
-    let mut line = String::new();
-    let descendant = loop {
-        line.clear();
-        reader.read_line(&mut line).expect("read descendant pid");
-        if let Some(value) = line.trim().strip_prefix("CHILD=") {
-            break value.parse::<u32>().expect("descendant pid");
+    let reader = terminal.try_clone_reader().expect("PTY reader");
+    let closer = terminal.stdout_closer().expect("PTY reader closer");
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let reader_thread = std::thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    let _ = sender.send(Err("PTY output ended before CHILD=<pid>".to_string()));
+                    return;
+                }
+                Ok(_) => {
+                    if let Some(value) = line.trim().strip_prefix("CHILD=") {
+                        let _ = sender.send(
+                            value
+                                .parse::<u32>()
+                                .map_err(|error| format!("invalid descendant pid: {error}")),
+                        );
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(format!("failed to read descendant pid: {error}")));
+                    return;
+                }
+            }
+        }
+    });
+    let descendant = match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(descendant)) => {
+            reader_thread.join().expect("PTY reader thread");
+            descendant
+        }
+        Ok(Err(error)) => {
+            reader_thread.join().expect("PTY reader thread");
+            let _ = terminal.kill();
+            panic!("{error}");
+        }
+        Err(error) => {
+            closer.close();
+            let _ = terminal.kill();
+            reader_thread.join().expect("PTY reader thread");
+            panic!("timed out waiting for PTY job-control readiness: {error}");
         }
     };
 

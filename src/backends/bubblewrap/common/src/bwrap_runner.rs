@@ -1048,7 +1048,9 @@ impl SandboxProcess for BubblewrapSandboxProcess {
 
     fn kill_for_timeout(&mut self) -> std::io::Result<()> {
         self.inner.timed_out = true;
-        self.kill()
+        self.kill()?;
+        self.inner.lock_child().wait()?;
+        Ok(())
     }
 
     fn wait(&mut self) -> std::io::Result<i32> {

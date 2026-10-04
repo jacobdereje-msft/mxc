@@ -396,7 +396,7 @@ fn spawn_exec(
         started,
         timed_out: false,
         group: new_session || new_group || stdio != StdioMode::Inherit,
-        session: new_session,
+        session: new_session || matches!(stdio, StdioMode::Pty(_)),
         cleanup: Vec::new(),
         proxy,
     }))
@@ -773,7 +773,9 @@ impl SandboxProcess for SeatbeltSandboxProcess {
 
     fn kill_for_timeout(&mut self) -> std::io::Result<()> {
         self.timed_out = true;
-        self.kill()
+        self.kill()?;
+        self.child.wait()?;
+        Ok(())
     }
 
     fn wait(&mut self) -> std::io::Result<i32> {
