@@ -778,7 +778,9 @@ impl SandboxProcess for SeatbeltSandboxProcess {
     fn kill_for_timeout(&mut self) -> std::io::Result<()> {
         self.timed_out = true;
         self.kill()?;
-        self.child.wait()?;
+        if self.child.try_wait()?.is_none() {
+            self.child.wait()?;
+        }
         Ok(())
     }
 
