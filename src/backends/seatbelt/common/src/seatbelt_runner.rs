@@ -83,24 +83,14 @@ fn terminate_session_and_reap(
     session_id: libc::pid_t,
     timeout: Duration,
 ) -> std::io::Result<()> {
-    const RETRY_INTERVAL: Duration = Duration::from_millis(10);
-    let deadline = Instant::now() + timeout;
-    loop {
-        let mut last_error = session_kill(child, session_id).err();
-        match child.try_wait() {
-            Ok(Some(_)) => return last_error.map_or(Ok(()), Err),
-            Ok(None) => {}
-            Err(error) => last_error = Some(error),
-        }
-        if Instant::now() >= deadline {
-            return Err(last_error.unwrap_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "Seatbelt: killed process did not become reapable before the deadline",
-                )
-            }));
-        }
-        std::thread::sleep(RETRY_INTERVAL);
+    session_kill(child, session_id)?;
+    match wait_with_timeout(child, Some(timeout)) {
+        Ok(_) => Ok(()),
+        Err(WaitError::Timeout) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "Seatbelt: killed process did not become reapable before the deadline",
+        )),
+        Err(WaitError::Io(error)) => Err(error),
     }
 }
 

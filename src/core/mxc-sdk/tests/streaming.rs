@@ -372,38 +372,43 @@ fn assert_pty_job_control_tree_is_killed(
     let reader_thread = std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
+        let mut readiness_sent = false;
         loop {
             line.clear();
             match reader.read_line(&mut line) {
                 Ok(0) => {
-                    let _ = sender.send(Err("PTY output ended before CHILD=<pid>".to_string()));
+                    if !readiness_sent {
+                        let _ = sender.send(Err("PTY output ended before CHILD=<pid>".to_string()));
+                    }
                     return;
                 }
                 Ok(_) => {
-                    if let Some(value) = line.trim().strip_prefix("CHILD=") {
-                        let _ = sender.send(
-                            value
-                                .parse::<u32>()
-                                .map_err(|error| format!("invalid descendant pid: {error}")),
-                        );
-                        return;
+                    if !readiness_sent {
+                        if let Some(value) = line.trim().strip_prefix("CHILD=") {
+                            let _ = sender.send(
+                                value
+                                    .parse::<u32>()
+                                    .map_err(|error| format!("invalid descendant pid: {error}")),
+                            );
+                            readiness_sent = true;
+                        }
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(Err(format!("failed to read descendant pid: {error}")));
+                    if !readiness_sent {
+                        let _ = sender.send(Err(format!("failed to read descendant pid: {error}")));
+                    }
                     return;
                 }
             }
         }
     });
     let descendant = match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
-        Ok(Ok(descendant)) => {
-            reader_thread.join().expect("PTY reader thread");
-            descendant
-        }
+        Ok(Ok(descendant)) => descendant,
         Ok(Err(error)) => {
-            reader_thread.join().expect("PTY reader thread");
+            closer.close();
             let _ = terminal.kill();
+            reader_thread.join().expect("PTY reader thread");
             panic!("{error}");
         }
         Err(error) => {
@@ -450,10 +455,17 @@ fn assert_pty_job_control_tree_is_killed(
     let outcome = match receiver.recv_timeout(std::time::Duration::from_secs(20)) {
         Ok(Ok(Ok(outcome))) => outcome,
         Ok(Ok(Err(error))) => {
+            closer.close();
+            reader_thread.join().expect("PTY reader thread");
             diagnose_pty_processes(leader, descendant);
             panic!("PTY termination failed: {error}");
         }
-        Ok(Err(_)) => panic!("PTY termination thread panicked"),
+        Ok(Err(_)) => {
+            closer.close();
+            let _ = terminal.kill();
+            reader_thread.join().expect("PTY reader thread");
+            panic!("PTY termination thread panicked");
+        }
         Err(error) => {
             closer.close();
             // SAFETY: these are the two process IDs created and observed by this test.
@@ -461,9 +473,12 @@ fn assert_pty_job_control_tree_is_killed(
                 libc::kill(descendant as libc::pid_t, libc::SIGKILL);
                 libc::kill(leader as libc::pid_t, libc::SIGKILL);
             }
+            reader_thread.join().expect("PTY reader thread");
             panic!("PTY termination did not complete within 20 seconds: {error}");
         }
     };
+    closer.close();
+    reader_thread.join().expect("PTY reader thread");
     if let Some(stage) = stage {
         stage.store(6, Ordering::Release);
     }
