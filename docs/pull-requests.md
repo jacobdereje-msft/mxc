@@ -26,6 +26,30 @@ does not run as root. It triggers on PRs targeting `main`, so a PR stacked on
 another branch gets no LXC gating until it is retargeted — dispatch it manually
 for a stacked head.
 
+### Local Windows SDK proxy checks
+
+The Node, .NET, and Rust SDK tests can exercise ProcessContainer with an external
+unpackaged, non-AppContainer proxy. The client uses egress deny, ingress allow,
+and host loopback allow, with no `allowedProxyPeer`. WinHTTP uses the native
+per-container proxy configuration without a workload-side proxy override.
+
+Set `MXC_TEST_PROXY_ORIGIN_URL` to an HTTP origin reachable by the proxy and
+`MXC_TEST_PROXY_EXPECTED_BODY` to a nonempty substring of its response. Use a
+non-loopback origin for this WinHTTP scenario. Set
+`MXC_ENABLE_PROCESSCONTAINER_PROXY_TESTS=1` for Node and .NET. Node starts the
+package's `wxc-test-proxy.exe`; .NET and Rust require an already-running proxy at
+`MXC_TEST_PROXY_URL`. Keep that proxy alive until both suites finish.
+
+| Directory | Selector |
+| --- | --- |
+| `sdk/node/tests/integration` (after build) | `node --test --test-name-pattern="unpackaged proxy" dist/windows-process-container.test.js` |
+| `sdk/dotnet` | `dotnet test Microsoft.Mxc.Sdk.Tests/Microsoft.Mxc.Sdk.Tests.csproj --filter FullyQualifiedName~MxcContainerProxyE2ETests` |
+| `src` | `cargo test -p mxc-sdk --test streaming_processcontainer processcontainer_unpackaged_proxy_reaches_origin -- --ignored --test-threads=1` |
+
+Select the current native build using `MXC_FFI_DIR` for Node and the managed
+prebuilt-native MSBuild properties for .NET. These are opt-in host tests, not
+substitutes for the PR build matrix.
+
 ## Azure Pipelines (optional on PRs, required on `main`)
 
 The ADO pipeline (`MXC-PR-Build`) is the Azure version of the PR pipeline. The official

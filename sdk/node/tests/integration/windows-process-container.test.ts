@@ -17,13 +17,14 @@ import {
   startTestProxy,
   pythonCommand,
   pythonSkipReason,
-  runConfigForTest,
 } from './test-helpers.js';
 
+const proxyOriginUrl = process.env.MXC_TEST_PROXY_ORIGIN_URL;
+const proxyExpectedBody = process.env.MXC_TEST_PROXY_EXPECTED_BODY;
 const proxySkipReason = sandboxSkipReason ??
   (process.env.MXC_ENABLE_PROCESSCONTAINER_PROXY_TESTS === '1'
-    ? undefined
-    : 'ProcessContainer proxy tests require an interactive/elevated WinHTTP proxy shim; set MXC_ENABLE_PROCESSCONTAINER_PROXY_TESTS=1 to run them');
+    ? (proxyOriginUrl && proxyExpectedBody ? undefined : 'Set MXC_TEST_PROXY_ORIGIN_URL and MXC_TEST_PROXY_EXPECTED_BODY')
+    : 'Set MXC_ENABLE_PROCESSCONTAINER_PROXY_TESTS=1 to run ProcessContainer proxy tests');
 
 for (const schemaVersion of supportedVersions) {
 describe(`Windows Process Container (schema ${schemaVersion})`, {
@@ -193,38 +194,40 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
       }
     });
 
-    it('should route traffic through external proxy', async () => {
-      tempDir = createTempDir('mxc-proxy-test');
-      const { port, proxyProcess: proc } = startTestProxy(tempDir);
-      proxyProcess = proc;
+    for (const [name, operation] of [['run', sdk.run], ['runAsync', sdk.runAsync]] as const) {
+      it(`public ${name} routes traffic through an unpackaged proxy`, async () => {
+        assert.ok(proxyExpectedBody);
+        tempDir = createTempDir('mxc-proxy-test');
+        const { port, proxyProcess: proc } = startTestProxy(tempDir);
+        proxyProcess = proc;
 
-      const config = sdk.createConfigForTest(
-        withToolPaths({ ui: { disable: false } }),
-        'processcontainer',
-        `proxy-ext-${schemaVersion}`,
-      );
-      config.processContainer!.capabilities = ['internetClient'];
-      config.network = {
-        egress: { default: 'deny' },
-        ingress: { default: 'deny', hostLoopback: 'deny' },
-      };
-      config.runtimeConfig = {
-        ...(config.runtimeConfig ?? {}),
-        networkProxy: `http://127.0.0.1:${port}`,
-      };
-      const script =
-        `powershell.exe -NoProfile -Command "` +
-        `$h = New-Object -ComObject WinHttp.WinHttpRequest.5.1; ` +
-        `$h.Open('GET','https://api.github.com/zen',$false); ` +
-        `$h.Send(); ` +
-        `Write-Output ('PROXY_RESPONSE: ' + $h.ResponseText)"`;
-      config.process!.commandLine = script;
-      const result = await runConfigForTest(config, { experimental: true });
+        const script =
+          `powershell.exe -NoProfile -Command "` +
+          `$ErrorActionPreference = 'Stop'; ` +
+          `$h = New-Object -ComObject WinHttp.WinHttpRequest.5.1; ` +
+          `$h.SetTimeouts(5000,5000,5000,5000); ` +
+          `$h.Open('GET','${proxyOriginUrl}',$false); ` +
+          `$h.Send(); ` +
+          `if ($h.Status -ne 200) { throw ('HTTP status ' + $h.Status) }; ` +
+          `Write-Output ('PROXY_RESPONSE: ' + $h.ResponseText)"`;
+        const result = await operation({
+          command: script,
+          containment: { type: 'processcontainer' },
+          ui: { disable: false },
+          timeoutMs: 30000,
+          network: {
+            egress: { default: 'deny' },
+            ingress: { default: 'allow', hostLoopback: 'allow' },
+            runtimeConfig: { networkProxy: `http://127.0.0.1:${port}` },
+          },
+        });
 
-      assert.strictEqual(result.exitCode, 0, `[${schemaVersion}] Expected exit 0: ${result.stderr}`);
-      assert.ok(result.stdout.includes('PROXY_RESPONSE:'));
-      assert.ok(result.stdout.includes('Proxy policy active'));
-    });
+        assert.strictEqual(result.exitCode, 0, `[${schemaVersion}] Expected exit 0: ${result.stderr}`);
+        assert.strictEqual(result.timedOut, false);
+        assert.ok(result.stdout.includes('PROXY_RESPONSE: '), result.stdout);
+        assert.ok(result.stdout.includes(proxyExpectedBody), result.stdout);
+      });
+    }
   });
 });
 }
