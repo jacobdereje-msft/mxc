@@ -1374,6 +1374,7 @@ dependencies = [
  "flatbuffers",
  "learning_mode_core",
  "process_security_environment_spec",
+ "tempfile",
  "thiserror",
  "windows",
  "windows-core",

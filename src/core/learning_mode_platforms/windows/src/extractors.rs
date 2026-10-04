@@ -33,9 +33,10 @@
 //!   classified registry reads are actionable; writes and unknown registry
 //!   access are retained only as verbose diagnostics. Named Section,
 //!   SymbolicLink, and Timer objects are likewise verbose-only because MXC has
-//!   no corresponding policy grants.
-//!   Other object types are dropped until their access-mask vocabulary is
-//!   understood. The [`AccessType`] is derived from the
+//!   no corresponding policy grants. COM activation and interface-call checks
+//!   remain diagnostic, with their CLSID/IID retained in sanitized properties.
+//!   Other object types remain diagnostic until their access-mask vocabulary
+//!   is understood. The [`AccessType`] is derived from the
 //!   `AccessMask` field (see [`access_type_from_mask`]). Emitted under both
 //!   learning modes (`block` → `Mode="Normal"`, `allow` →
 //!   `Mode="Permissive"`).
@@ -76,6 +77,8 @@ pub(crate) const ACCESS_CHECK_EVENT_ID: u16 = 14;
 pub(crate) const LEARNING_MODE_VIOLATION_EVENT_ID: u16 = 27;
 pub(crate) const CAPABILITY_DENIAL_EVENT_ID: u16 = 28;
 pub(crate) const PRIVACY_ACCESS_CHECK_EVENT_ID: u16 = 4907;
+const COM_ACTIVATION_OBJECT_TYPE: &str = "ComActivationForClass";
+const COM_CALL_OBJECT_TYPE: &str = "ComCallOnInterface";
 
 /// Pre-decoded event payload handed to the extractors.
 ///
@@ -197,6 +200,9 @@ pub(crate) fn verbose_logging_classification(
                     ),
                     Some(ResourceType::Other),
                 ),
+                COM_ACTIVATION_OBJECT_TYPE | COM_CALL_OBJECT_TYPE => {
+                    (None, Some(ResourceType::Other))
+                }
                 "" => (Some(AccessType::Unknown), Some(ResourceType::Capability)),
                 _ => (None, None),
             }
@@ -251,9 +257,8 @@ pub(crate) fn effective_capability_event_pid(process_id: Option<&str>) -> Option
 
 /// Maps a raw ETW provider GUID to its symbolic verbose logging category.
 ///
-/// Returns `None` for providers outside the Learning Mode vocabulary; those
-/// events are ignored entirely (not aggregated), since they are unrelated
-/// host traffic rather than an excluded Learning Mode outcome.
+/// Returns `None` outside the actionable vocabulary. Verbose logging retains
+/// those events as `Other` after process scoping.
 pub(crate) fn verbose_logging_provider_for_guid(provider: GUID) -> Option<VerboseLoggingProvider> {
     if provider == KERNEL_GENERAL_PROVIDER {
         Some(VerboseLoggingProvider::KernelGeneral)
@@ -270,6 +275,7 @@ pub(crate) fn verbose_logging_provider_for_guid(provider: GUID) -> Option<Verbos
 /// personal data, so unlike account/user values they are never redacted.
 pub(crate) fn verbose_logging_provider_guid(provider: VerboseLoggingProvider) -> String {
     match provider {
+        VerboseLoggingProvider::Other => String::new(),
         VerboseLoggingProvider::KernelGeneral => {
             format_guid_braced_uppercase(KERNEL_GENERAL_PROVIDER)
         }
@@ -281,7 +287,7 @@ pub(crate) fn verbose_logging_provider_guid(provider: VerboseLoggingProvider) ->
 
 // Keep the serialized spelling independent of formatting changes in the
 // `windows` crate: verbose signatures require braces and uppercase hex.
-fn format_guid_braced_uppercase(guid: GUID) -> String {
+pub(crate) fn format_guid_braced_uppercase(guid: GUID) -> String {
     format!(
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
         guid.data1,
@@ -413,14 +419,16 @@ fn is_identity_property(name: &str) -> bool {
 
 fn looks_like_file_path_property(name: &str, value: &str, object_type: Option<&str>) -> bool {
     let normalized = NormalizedPropertyName(name);
-    if normalized.ends_with("path") || normalized.ends_with("filename") {
+    if normalized.ends_with("path")
+        || normalized.ends_with("filename")
+        || normalized.ends_with("filenamestring")
+    {
         return true;
     }
 
-    if !normalized.equals("objectname") && !normalized.equals("resource") {
-        return false;
-    }
-    if object_type.is_some_and(|object_type| object_type.eq_ignore_ascii_case("File")) {
+    if (normalized.equals("objectname") || normalized.equals("resource"))
+        && object_type.is_some_and(|object_type| object_type.eq_ignore_ascii_case("File"))
+    {
         return true;
     }
 
@@ -606,15 +614,16 @@ pub(crate) fn sanitize_properties(props: &[(String, String)]) -> Vec<(String, St
     bound_properties(sanitized.into_iter().collect())
 }
 
+/// Builds a denial from an access-check event.
 ///
 /// The `ObjectType` field selects the resource type: `File` and `Key`
 /// (registry) map to concrete resources, an **empty** `ObjectType` is a
 /// brokered-capability check, and the observed named-object types `Section`,
 /// `SymbolicLink`, and `Timer` map to [`ResourceType::Other`]. Only registry
-/// reads are actionable; other registry access and those named-object types are
-/// excluded because MXC has no corresponding policy grants. Other object types
-/// are dropped until their access-mask vocabulary is understood. An absent
-/// `ObjectType` field drops the event.
+/// reads are actionable; other registry access, named-object and COM checks
+/// are excluded because MXC has no corresponding policy grants. Other object
+/// types remain diagnostic until their access-mask vocabulary is understood.
+/// An absent `ObjectType` field excludes the event from actionable output.
 ///
 /// For file/registry resources the [`AccessType`] is derived from the
 /// event's `AccessMask` field (the desired access the caller was denied;
@@ -633,9 +642,11 @@ pub(crate) fn sanitize_properties(props: &[(String, String)]) -> Vec<(String, St
 /// [`VerboseLoggingOutcomeReason::MissingObjectName`]; capability: an
 /// unidentified brokered check,
 /// [`VerboseLoggingOutcomeReason::UnresolvedCapability`] — [`crate::capability_dacl`]
-/// may still recover it from the event's DACL payload), or a self-access,
-/// non-read registry, or recognized named-object check that isn't actionable
-/// ([`VerboseLoggingOutcomeReason::NotActionable`]).
+/// may still recover it from the event's DACL payload), a malformed COM
+/// identifier ([`VerboseLoggingOutcomeReason::EventPayloadMalformed`]), or a
+/// non-actionable check. Valid COM checks use their dedicated verbose reasons;
+/// self-access, non-read registry and named-object checks use
+/// [`VerboseLoggingOutcomeReason::NotActionable`].
 pub fn build_denial_from_access_check(
     parts: &DecodedEventParts,
     pid: u32,
@@ -652,6 +663,7 @@ pub fn build_denial_from_access_check(
         "Section" | "SymbolicLink" | "Timer" => ResourceType::Other,
         // A present-but-empty object type is a brokered-capability check.
         "" => ResourceType::Capability,
+        COM_ACTIVATION_OBJECT_TYPE | COM_CALL_OBJECT_TYPE => ResourceType::Other,
         _ => return Err(VerboseLoggingOutcomeReason::UnsupportedObjectType),
     };
 
@@ -667,6 +679,19 @@ pub fn build_denial_from_access_check(
         (_, None) => return Err(VerboseLoggingOutcomeReason::MissingObjectName),
         (_, Some(name)) => name,
     };
+
+    if is_com_object_type(object_type_str) && !is_guid_identifier(&object_name) {
+        return Err(VerboseLoggingOutcomeReason::EventPayloadMalformed);
+    }
+    match object_type_str {
+        COM_ACTIVATION_OBJECT_TYPE => {
+            return Err(VerboseLoggingOutcomeReason::ComActivation);
+        }
+        COM_CALL_OBJECT_TYPE => {
+            return Err(VerboseLoggingOutcomeReason::ComInterfaceCall);
+        }
+        _ => {}
+    }
 
     if resource_type == ResourceType::File {
         let app_path = find_prop(&parts.props, "AppPath")
@@ -1000,6 +1025,30 @@ fn named_object_access_type(object_type: &str, mask: u32) -> AccessType {
 
 fn find_prop<'a>(props: &'a [(String, String)], name: &str) -> Option<&'a String> {
     props.iter().find(|(k, _)| k == name).map(|(_, v)| v)
+}
+
+fn is_com_object_type(object_type: &str) -> bool {
+    matches!(
+        object_type,
+        COM_ACTIVATION_OBJECT_TYPE | COM_CALL_OBJECT_TYPE
+    )
+}
+
+fn is_guid_identifier(value: &str) -> bool {
+    let value = match (value.strip_prefix('{'), value.strip_suffix('}')) {
+        (Some(value), Some(_)) => &value[..value.len() - 1],
+        (None, None) => value,
+        _ => return false,
+    };
+
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
 }
 
 #[cfg(test)]
@@ -1348,6 +1397,84 @@ mod tests {
                 (Some(expected_access), Some(ResourceType::Other))
             );
         }
+    }
+
+    #[test]
+    fn access_check_com_denials_use_distinct_verbose_reasons() {
+        for (object_type, object_name, mode, expected_reason) in [
+            (
+                COM_ACTIVATION_OBJECT_TYPE,
+                "{A47979D2-C419-11D9-A5B4-001185AD2B89}",
+                "\"Normal\"",
+                VerboseLoggingOutcomeReason::ComActivation,
+            ),
+            (
+                COM_CALL_OBJECT_TYPE,
+                "{00000132-0000-0000-C000-000000000046}",
+                "\"Permissive\"",
+                VerboseLoggingOutcomeReason::ComInterfaceCall,
+            ),
+        ] {
+            let p = parts(
+                14,
+                &[
+                    ("Mode", mode),
+                    ("ObjectType", object_type),
+                    ("ObjectName", object_name),
+                    ("AccessMask", "0xffffffff"),
+                ],
+            );
+
+            assert_eq!(extract_denial(&p, 42, FIXED_FILETIME), Err(expected_reason));
+            assert_eq!(
+                verbose_logging_classification(&p),
+                (None, Some(ResourceType::Other))
+            );
+        }
+    }
+
+    #[test]
+    fn access_check_com_denials_require_guid_identifier() {
+        for (object_name, expected) in [
+            (None, VerboseLoggingOutcomeReason::MissingObjectName),
+            (Some("\"\""), VerboseLoggingOutcomeReason::MissingObjectName),
+            (
+                Some("\"not-a-guid\""),
+                VerboseLoggingOutcomeReason::EventPayloadMalformed,
+            ),
+            (
+                Some("\"{00000132-0000-0000-C000-000000000046\""),
+                VerboseLoggingOutcomeReason::EventPayloadMalformed,
+            ),
+        ] {
+            let mut properties = vec![("ObjectType", COM_CALL_OBJECT_TYPE)];
+            if let Some(object_name) = object_name {
+                properties.push(("ObjectName", object_name));
+            }
+            let p = parts(14, &properties);
+
+            assert_eq!(extract_denial(&p, 42, FIXED_FILETIME), Err(expected));
+            assert_eq!(
+                verbose_logging_classification(&p),
+                (None, Some(ResourceType::Other))
+            );
+        }
+    }
+
+    #[test]
+    fn access_check_rpc_interface_remains_unsupported() {
+        let p = parts(
+            14,
+            &[
+                ("ObjectType", "\"RPC Interface\""),
+                ("ObjectName", "\"f6beaff7-1e19-4fbb-9f8f-b89e2018337c\""),
+            ],
+        );
+        assert_eq!(
+            extract_denial(&p, 1, FIXED_FILETIME),
+            Err(VerboseLoggingOutcomeReason::UnsupportedObjectType)
+        );
+        assert_eq!(verbose_logging_classification(&p), (None, None));
     }
 
     #[test]
@@ -1800,6 +1927,19 @@ mod tests {
         let value_for = |name: &str| out.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
         assert_eq!(value_for("UserName"), Some(REDACTED_USER));
         assert_eq!(value_for("ObjectName"), Some(REDACTED_PATH));
+    }
+
+    #[test]
+    fn future_property_names_do_not_bypass_path_redaction() {
+        let properties = sanitize_properties(&[
+            ("FutureLocation".into(), r"C:\Users\private\file.txt".into()),
+            ("LogFileNameString".into(), "ReloggedFile.ETL".into()),
+            (
+                "UnrecognizedField".into(),
+                r"\\server\share\private.txt".into(),
+            ),
+        ]);
+        assert!(properties.iter().all(|(_, value)| value == REDACTED_PATH));
     }
 
     #[test]

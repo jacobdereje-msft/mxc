@@ -7,7 +7,8 @@ use std::io::Read;
 use std::path::Path;
 
 use learning_mode_core::{
-    verbose_logging_sibling_path, VerboseLoggingDocument, VerboseLoggingProvider,
+    verbose_logging_sibling_path, VerboseLoggingAggregate, VerboseLoggingDocument,
+    VerboseLoggingProvider,
 };
 use wxc_common::hashing::sha256_hex;
 use wxc_common::models::{ContainmentBackend, ScriptResponse};
@@ -145,16 +146,24 @@ fn prepare_document(path: &Path) -> Result<PreparedVerboseDocument, String> {
 }
 
 fn project_for_telemetry(mut document: VerboseLoggingDocument) -> VerboseLoggingDocument {
-    for aggregate in &mut document.signatures {
+    let mut groups = std::collections::BTreeMap::new();
+    for mut aggregate in document.signatures {
         aggregate.signature.provider_guid =
             canonical_provider_guid(aggregate.signature.provider).to_string();
         aggregate.signature.properties.clear();
+        let count = groups.entry(aggregate.signature).or_insert(0u64);
+        *count = count.saturating_add(aggregate.count);
     }
+    document.signatures = groups
+        .into_iter()
+        .map(|(signature, count)| VerboseLoggingAggregate { signature, count })
+        .collect();
     document
 }
 
 fn canonical_provider_guid(provider: VerboseLoggingProvider) -> &'static str {
     match provider {
+        VerboseLoggingProvider::Other => "",
         VerboseLoggingProvider::KernelGeneral => "{A68CA8B7-004F-D7B6-A698-07E2DE0F1F5D}",
         VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode => {
             "{811A1DDB-2E69-5F25-ADC0-4B186170E760}"
@@ -215,13 +224,17 @@ mod tests {
     };
     use wxc_common::models::{CaptureDenialsOutput, SandboxOutputMetadata};
 
-    fn aggregate(event_id: u16, value: &str) -> VerboseLoggingAggregate {
+    fn aggregate_with_reason(
+        event_id: u16,
+        value: &str,
+        reason: VerboseLoggingOutcomeReason,
+    ) -> VerboseLoggingAggregate {
         VerboseLoggingAggregate {
             signature: VerboseLoggingSignature {
                 provider: VerboseLoggingProvider::KernelGeneral,
                 provider_guid: "{a68ca8b7-004f-d7b6-a698-07e2de0f1f5d}".to_string(),
                 event_id,
-                reason: VerboseLoggingOutcomeReason::UnsupportedEventSchema,
+                reason,
                 pid: 42,
                 access_type: None,
                 resource_type: None,
@@ -229,6 +242,14 @@ mod tests {
             },
             count: 1,
         }
+    }
+
+    fn aggregate(event_id: u16, value: &str) -> VerboseLoggingAggregate {
+        aggregate_with_reason(
+            event_id,
+            value,
+            VerboseLoggingOutcomeReason::UnsupportedEventSchema,
+        )
     }
 
     fn document(signatures: Vec<VerboseLoggingAggregate>) -> VerboseLoggingDocument {
@@ -341,6 +362,28 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_preserves_com_reason_but_strips_clsid() {
+        let mut document = document(vec![aggregate_with_reason(
+            14,
+            "{A47979D2-C419-11D9-A5B4-001185AD2B89}",
+            VerboseLoggingOutcomeReason::ComActivation,
+        )]);
+        document.signatures[0].signature.resource_type =
+            Some(learning_mode_core::ResourceType::Other);
+
+        document = project_for_telemetry(document);
+
+        let signature = &document.signatures[0].signature;
+        assert_eq!(signature.reason, VerboseLoggingOutcomeReason::ComActivation);
+        assert_eq!(
+            signature.resource_type,
+            Some(learning_mode_core::ResourceType::Other)
+        );
+        assert!(signature.access_type.is_none());
+        assert!(signature.properties.is_empty());
+    }
+
+    #[test]
     fn malformed_artifact_never_falls_back_to_raw_bytes() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("denials.verbose.json");
@@ -366,5 +409,27 @@ mod tests {
             canonical_provider_guid(VerboseLoggingProvider::KernelGeneral)
         );
         assert!(projected.signatures[0].signature.properties.is_empty());
+    }
+
+    #[test]
+    fn telemetry_deduplicates_after_removing_unknown_provider_guids_and_properties() {
+        let mut first = aggregate(999, "first-secret");
+        first.signature.provider = VerboseLoggingProvider::Other;
+        first.signature.provider_guid = "first-provider".into();
+        first.count = 3;
+        let mut second = first.clone();
+        second.signature.provider_guid = "second-provider".into();
+        second.signature.properties[0].1 = "second-secret".into();
+        second.count = 4;
+        let mut input = document(vec![first, second]);
+        input.summary.total_occurrences = 7;
+
+        let projected = project_for_telemetry(input);
+
+        assert_eq!(projected.signatures.len(), 1);
+        assert_eq!(projected.signatures[0].count, 7);
+        assert!(projected.signatures[0].signature.provider_guid.is_empty());
+        assert!(projected.signatures[0].signature.properties.is_empty());
+        assert_eq!(projected.summary.total_occurrences, 7);
     }
 }
