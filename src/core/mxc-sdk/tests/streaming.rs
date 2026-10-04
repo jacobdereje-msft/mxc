@@ -400,17 +400,34 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
         "job control must place the descendant outside the shell's process group"
     );
 
+    let terminal = std::sync::Arc::new(terminal);
+    let waiter = {
+        let terminal = std::sync::Arc::clone(&terminal);
+        std::thread::spawn(move || {
+            if explicit_kill {
+                terminal.kill().expect("kill PTY session");
+            }
+            terminal.wait()
+        })
+    };
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(waiter.join());
+    });
+    let outcome = match receiver.recv_timeout(std::time::Duration::from_secs(20)) {
+        Ok(Ok(Ok(outcome))) => outcome,
+        Ok(Ok(Err(error))) => panic!("PTY termination failed: {error}"),
+        Ok(Err(_)) => panic!("PTY termination thread panicked"),
+        Err(error) => {
+            closer.close();
+            let _ = terminal.kill();
+            panic!("PTY termination did not complete within 20 seconds: {error}");
+        }
+    };
     if explicit_kill {
-        terminal.kill().expect("kill PTY session");
-        assert_ne!(
-            terminal.wait().expect("wait after kill"),
-            WaitOutcome::Exited(0)
-        );
+        assert_ne!(outcome, WaitOutcome::Exited(0));
     } else {
-        assert_eq!(
-            terminal.wait().expect("wait for timeout"),
-            WaitOutcome::TimedOut
-        );
+        assert_eq!(outcome, WaitOutcome::TimedOut);
     }
 
     for _ in 0..60 {
@@ -432,6 +449,49 @@ fn seatbelt_pty_kill_terminates_job_control_groups() {
 #[test]
 fn seatbelt_pty_timeout_terminates_job_control_groups() {
     assert_pty_job_control_tree_is_killed(1_000, false);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_pty_kill_sweeps_session_after_leader_exit() {
+    use std::io::{BufRead, BufReader};
+
+    let terminal = spawn_with_pty(
+        seatbelt_request(
+            "exec /bin/bash -c 'set -m; trap \"\" HUP; sleep 300 & echo CHILD=$!; exit 0'",
+            0,
+        ),
+        MxcPtySize::default(),
+    )
+    .expect("spawn PTY job-control shell");
+    let mut reader = BufReader::new(terminal.try_clone_reader().expect("PTY reader"));
+    let mut line = String::new();
+    let descendant = loop {
+        line.clear();
+        reader.read_line(&mut line).expect("read descendant pid");
+        if let Some(value) = line.trim().strip_prefix("CHILD=") {
+            break value.parse::<u32>().expect("descendant pid");
+        }
+    };
+    for _ in 0..100 {
+        if terminal.try_wait().expect("poll leader").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        terminal.try_wait().expect("confirm leader exit").is_some(),
+        "PTY leader did not exit"
+    );
+
+    terminal.kill().expect("sweep surviving PTY session");
+    for _ in 0..60 {
+        if !pid_alive(descendant) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("job-control descendant {descendant} survived leader exit and kill");
 }
 
 #[cfg(target_os = "macos")]

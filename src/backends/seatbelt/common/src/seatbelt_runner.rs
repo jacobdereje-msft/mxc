@@ -69,11 +69,13 @@ const PROXY_ENV_KEYS: &[&str] = &[
     "no_proxy",
 ];
 
-fn session_kill(child: &mut std::process::Child) -> std::io::Result<()> {
-    let session_id = child.id() as libc::pid_t;
-    let group_result = group_kill(child);
+fn session_kill(child: &mut std::process::Child, session_id: libc::pid_t) -> std::io::Result<()> {
+    let leader_result = match child.try_wait()? {
+        Some(_) => Ok(()),
+        None => child.kill(),
+    };
     let session_result = kill_session_members(session_id);
-    group_result.and(session_result)
+    leader_result.and(session_result)
 }
 
 fn kill_session_members(session_id: libc::pid_t) -> std::io::Result<()> {
@@ -396,7 +398,8 @@ fn spawn_exec(
         started,
         timed_out: false,
         group: new_session || new_group || stdio != StdioMode::Inherit,
-        session: new_session || matches!(stdio, StdioMode::Pty(_)),
+        session_id: (new_session || matches!(stdio, StdioMode::Pty(_)))
+            .then_some(child.id() as libc::pid_t),
         cleanup: Vec::new(),
         proxy,
     }))
@@ -553,7 +556,7 @@ fn spawn_open(
         started,
         timed_out: false,
         group: false,
-        session: false,
+        session_id: None,
         cleanup: vec![profile_path, helper_path, command_path],
         proxy,
     }))
@@ -586,7 +589,7 @@ struct SeatbeltSandboxProcess {
     group: bool,
     /// The child leads an owned session, so job-control descendants in other
     /// process groups can be terminated without touching the host session.
-    session: bool,
+    session_id: Option<libc::pid_t>,
     /// Temp files to remove once the child exits (Open mode); empty otherwise.
     cleanup: Vec<String>,
     /// The per-run cooperative network proxy. Inactive (a no-op on teardown)
@@ -751,15 +754,16 @@ impl SandboxProcess for SeatbeltSandboxProcess {
     }
 
     fn kill(&mut self) -> std::io::Result<()> {
+        if let Some(session_id) = self.session_id {
+            return session_kill(&mut self.child, session_id);
+        }
         // No-op once the child has exited and been reaped: its pid/pgid can be
         // recycled, so signaling it could hit an unrelated process (group). A
         // reaped `Child` returns its cached status here without a syscall.
         if self.child.try_wait()?.is_some() {
             return Ok(());
         }
-        if self.session {
-            session_kill(&mut self.child)
-        } else if self.group {
+        if self.group {
             // The child leads its own process group — signal the whole group so
             // sandboxed descendants are terminated too.
             group_kill(&mut self.child)

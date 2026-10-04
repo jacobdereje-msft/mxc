@@ -240,7 +240,25 @@ impl BridgeShutdown {
 #[derive(Clone, Copy)]
 enum PtyEof {
     CurrentCanonical,
-    Forwarded(u8),
+    Forwarded(PtyDiscipline),
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Copy)]
+struct PtyDiscipline {
+    canonical: bool,
+    extended: bool,
+    ignore_cr: bool,
+    cr_to_nl: bool,
+    nl_to_cr: bool,
+    strip_high_bit: bool,
+    eof: u8,
+    eol: u8,
+    eol2: u8,
+    erase: u8,
+    kill: u8,
+    word_erase: u8,
+    literal_next: u8,
 }
 
 /// Owned native pipes bridged to a pseudo-terminal.
@@ -336,7 +354,7 @@ impl LivePty {
         });
         let pair = openpty(winsize.as_ref(), None).map_err(std::io::Error::from)?;
         let eof = if forward_eof {
-            PtyEof::Forwarded(configured_eof_byte(&pair.slave)?)
+            PtyEof::Forwarded(terminal_discipline(&pair.slave)?)
         } else {
             PtyEof::CurrentCanonical
         };
@@ -660,7 +678,8 @@ struct PtyWriter {
     writer: Option<std::fs::File>,
     eof: PtyEof,
     eof_sent: bool,
-    canonical_line_pending: bool,
+    canonical_line: Vec<u8>,
+    literal_next: bool,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -670,7 +689,8 @@ impl PtyWriter {
             writer: Some(writer),
             eof,
             eof_sent: false,
-            canonical_line_pending: false,
+            canonical_line: Vec::new(),
+            literal_next: false,
         }
     }
 
@@ -715,9 +735,9 @@ impl PtyWriter {
         self.eof_sent = true;
         let eof = match self.eof {
             PtyEof::CurrentCanonical => self.writer.as_ref().and_then(terminal_eof_byte),
-            PtyEof::Forwarded(eof) => Some(eof),
+            PtyEof::Forwarded(discipline) => Some(discipline.eof),
         }?;
-        Some((eof, if self.canonical_line_pending { 2 } else { 1 }))
+        Some((eof, if self.canonical_line.is_empty() { 1 } else { 2 }))
     }
 
     fn abandon_eof(&mut self) {
@@ -725,8 +745,77 @@ impl PtyWriter {
     }
 
     fn track_canonical_input(&mut self, buffer: &[u8]) {
-        for byte in buffer {
-            self.canonical_line_pending = !matches!(byte, b'\n' | b'\r');
+        let discipline = match self.eof {
+            PtyEof::CurrentCanonical => self
+                .writer
+                .as_ref()
+                .and_then(|writer| terminal_discipline(writer).ok()),
+            PtyEof::Forwarded(discipline) => Some(discipline),
+        };
+        let Some(discipline) = discipline.filter(|discipline| discipline.canonical) else {
+            return;
+        };
+
+        for raw_byte in buffer {
+            let mut byte = *raw_byte;
+            if discipline.strip_high_bit {
+                byte &= 0x7f;
+            }
+            if byte == b'\r' {
+                if discipline.ignore_cr {
+                    continue;
+                }
+                if discipline.cr_to_nl {
+                    byte = b'\n';
+                }
+            } else if byte == b'\n' && discipline.nl_to_cr {
+                byte = b'\r';
+            }
+
+            if self.literal_next {
+                self.literal_next = false;
+                self.canonical_line.push(byte);
+                continue;
+            }
+            if discipline.extended && control_matches(byte, discipline.literal_next) {
+                self.literal_next = true;
+                continue;
+            }
+            if control_matches(byte, discipline.kill) {
+                self.canonical_line.clear();
+                continue;
+            }
+            if control_matches(byte, discipline.erase) {
+                self.canonical_line.pop();
+                continue;
+            }
+            if discipline.extended && control_matches(byte, discipline.word_erase) {
+                while self
+                    .canonical_line
+                    .last()
+                    .is_some_and(|byte| byte.is_ascii_whitespace())
+                {
+                    self.canonical_line.pop();
+                }
+                while self
+                    .canonical_line
+                    .last()
+                    .is_some_and(|byte| !byte.is_ascii_whitespace())
+                {
+                    self.canonical_line.pop();
+                }
+                continue;
+            }
+            if byte == b'\n'
+                || control_matches(byte, discipline.eol)
+                || control_matches(byte, discipline.eol2)
+            {
+                self.canonical_line.clear();
+                continue;
+            }
+            if !control_matches(byte, discipline.eof) {
+                self.canonical_line.push(byte);
+            }
         }
     }
 }
@@ -803,22 +892,38 @@ fn write_all_until_shutdown(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn terminal_eof_byte(file: &std::fs::File) -> Option<u8> {
-    use nix::sys::termios::{self, LocalFlags, SpecialCharacterIndices};
-
-    let settings = termios::tcgetattr(file).ok()?;
-    settings
-        .local_flags
-        .contains(LocalFlags::ICANON)
-        .then(|| settings.control_chars[SpecialCharacterIndices::VEOF as usize])
+    terminal_discipline(file)
+        .ok()
+        .filter(|discipline| discipline.canonical)
+        .map(|discipline| discipline.eof)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn configured_eof_byte(fd: &impl std::os::fd::AsFd) -> std::io::Result<u8> {
-    use nix::sys::termios::{self, SpecialCharacterIndices};
+fn terminal_discipline(fd: &impl std::os::fd::AsFd) -> std::io::Result<PtyDiscipline> {
+    use nix::sys::termios::{self, InputFlags, LocalFlags, SpecialCharacterIndices};
 
-    termios::tcgetattr(fd)
-        .map(|settings| settings.control_chars[SpecialCharacterIndices::VEOF as usize])
-        .map_err(std::io::Error::from)
+    let settings = termios::tcgetattr(fd).map_err(std::io::Error::from)?;
+    let control = |index| settings.control_chars[index as usize];
+    Ok(PtyDiscipline {
+        canonical: settings.local_flags.contains(LocalFlags::ICANON),
+        extended: settings.local_flags.contains(LocalFlags::IEXTEN),
+        ignore_cr: settings.input_flags.contains(InputFlags::IGNCR),
+        cr_to_nl: settings.input_flags.contains(InputFlags::ICRNL),
+        nl_to_cr: settings.input_flags.contains(InputFlags::INLCR),
+        strip_high_bit: settings.input_flags.contains(InputFlags::ISTRIP),
+        eof: control(SpecialCharacterIndices::VEOF),
+        eol: control(SpecialCharacterIndices::VEOL),
+        eol2: control(SpecialCharacterIndices::VEOL2),
+        erase: control(SpecialCharacterIndices::VERASE),
+        kill: control(SpecialCharacterIndices::VKILL),
+        word_erase: control(SpecialCharacterIndices::VWERASE),
+        literal_next: control(SpecialCharacterIndices::VLNEXT),
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn control_matches(byte: u8, control: u8) -> bool {
+    control != 0 && control != u8::MAX && byte == control
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1306,6 +1411,82 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn assert_canonical_eof_after_input(setup: &str, input: &[u8], native: bool) {
+        let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(format!(
+            "{setup}; printf ready; cat >/dev/null; printf terminal-eof-observed"
+        ));
+        let terminal = LivePty::attach(&mut command, PtySize::default(), &[]).expect("attach PTY");
+        let mut child = command.spawn().expect("spawn child");
+        drop(command);
+
+        let mut output: Box<dyn Read> = if native {
+            let stdio = terminal.take_native_stdio().expect("take native stdio");
+            let mut output = std::fs::File::from(stdio.stdout);
+            let mut ready = [0_u8; 5];
+            output.read_exact(&mut ready).expect("read readiness");
+            assert_eq!(&ready, b"ready");
+            let mut writer = std::fs::File::from(stdio.stdin);
+            writer.write_all(input).expect("write terminal input");
+            drop(writer);
+            Box::new(output)
+        } else {
+            let mut output = terminal.try_clone_reader().expect("clone reader");
+            let mut ready = [0_u8; 5];
+            output.read_exact(&mut ready).expect("read readiness");
+            assert_eq!(&ready, b"ready");
+            let mut writer = terminal.take_writer().expect("take writer");
+            writer.write_all(input).expect("write terminal input");
+            drop(writer);
+            output
+        };
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().expect("poll child") {
+                assert!(status.success());
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not observe canonical terminal EOF");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        terminal.finish_native_bridge();
+
+        let mut text = String::new();
+        output.read_to_string(&mut text).expect("read output");
+        assert!(text.contains("terminal-eof-observed"), "got: {text:?}");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn boxed_writer_tracks_cr_without_icrnl_as_partial_input() {
+        assert_canonical_eof_after_input("stty -echo -icrnl", b"hello\r", false);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn native_writer_tracks_cr_without_icrnl_as_partial_input() {
+        assert_canonical_eof_after_input("stty -echo -icrnl", b"hello\r", true);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn boxed_writer_tracks_kill_character_as_empty_input() {
+        assert_canonical_eof_after_input("stty -echo", b"abc\x15", false);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn native_writer_tracks_kill_character_as_empty_input() {
+        assert_canonical_eof_after_input("stty -echo", b"abc\x15", true);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
