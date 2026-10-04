@@ -282,7 +282,7 @@ describe('lxc-exec --available-backends contract', {
     // them rather than re-probing keeps the comparison exact: a second live
     // walk could legitimately disagree by exhausting its pre-flight budget.
     const platform = await import(
-      pathToFileURL(path.join(getSdkPackageRoot(), 'dist', 'platform.js')).href
+      pathToFileURL(path.join(getSdkPackageRoot(), 'dist', 'v1', 'platform.js')).href
     ) as {
       getPlatformSupport(): { bubblewrapNetwork?: { proxyEnforcement: string; warnings: string[] } };
       _setLinuxProbeRunner(runner: (() => string) | null): void;

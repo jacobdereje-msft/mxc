@@ -7,7 +7,6 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { MxcError } from '@microsoft/mxc-sdk/v1';
 import {
   sdk,
   NETWORK_TEST_URL,
@@ -196,26 +195,15 @@ describe('macOS Seatbelt Container', {
     const policy = {
       timeoutMs: 2000,
     };
-    // On timeout the runner emits a structured `backend_error` envelope.
-    await assert.rejects(
-      () =>
-        sdk.runRequestForTest(
-          'sleep 30',
-          policy,
-          {},
-          undefined,
-          'seatbelt-timeout',
-        ),
-      (err: unknown) => {
-        assert.ok(err instanceof MxcError, `Expected MxcError, got: ${err}`);
-        assert.strictEqual(err.code, 'backend_error');
-        assert.ok(
-          err.message.includes('timed out'),
-          `Expected timeout message, got: ${err.message}`,
-        );
-        return true;
-      },
+    const result = await sdk.runRequestForTest(
+      'sleep 30',
+      policy,
+      {},
+      undefined,
+      'seatbelt-timeout',
     );
+    assert.strictEqual(result.timedOut, true);
+    assert.strictEqual(result.exitCode, -1);
   });
 
   it('should apply profile override from seatbelt config', { timeout: 30_000 }, async () => {
