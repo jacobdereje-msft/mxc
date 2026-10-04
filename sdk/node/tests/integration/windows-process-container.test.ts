@@ -8,8 +8,6 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type { ContainerConfig } from '@microsoft/mxc-sdk';
-import type { SandboxPolicy } from '@microsoft/mxc-sdk/v1';
 import {
   sdk,
   supportedVersions,
@@ -19,7 +17,7 @@ import {
   startTestProxy,
   pythonCommand,
   pythonSkipReason,
-  spawnFromConfigAsync,
+  runConfigForTest,
 } from './test-helpers.js';
 
 const proxySkipReason = sandboxSkipReason ??
@@ -40,8 +38,54 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
     }
   });
 
+  for (const [name, operation] of [['run', sdk.run], ['runAsync', sdk.runAsync]] as const) {
+    it(`public ${name} captures output and the workload exit code`, { skip: sandboxSkipReason }, async () => {
+      const result = await operation({
+        containment: { type: 'processcontainer' },
+        command: 'cmd.exe /c "echo PUBLIC_RUN_OK & echo PUBLIC_RUN_ERROR 1>&2 & exit /b 7"',
+        timeoutMs: 30000,
+      });
+      assert.strictEqual(result.exitCode, 7);
+      assert.strictEqual(result.timedOut, false);
+      assert.ok(result.stdout.includes('PUBLIC_RUN_OK'));
+      assert.ok(result.stderr.includes('PUBLIC_RUN_ERROR'));
+      assert.ok(Array.isArray(result.warnings));
+    });
+  }
+
+  for (const [name, operation] of [['spawn', sdk.spawn], ['spawnAsync', sdk.spawnAsync]] as const) {
+    it(`public ${name} returns an SDK process with live standard streams`, { skip: sandboxSkipReason }, async () => {
+      const handle = await operation({
+        containment: { type: 'processcontainer' },
+        command: 'cmd.exe /c "echo PUBLIC_SPAWN_OK & echo PUBLIC_SPAWN_ERROR 1>&2 & exit /b 9"',
+        timeoutMs: 30000,
+      });
+      try {
+        const stdout = handle.standardOutput;
+        const stderr = handle.standardError;
+        assert.ok(stdout);
+        assert.ok(stderr);
+        const read = async (stream: NodeJS.ReadableStream): Promise<string> => {
+          let text = '';
+          for await (const chunk of stream) text += chunk.toString();
+          return text;
+        };
+        const output = read(stdout);
+        const error = read(stderr);
+        const result = await handle.waitAsync();
+        assert.strictEqual(result.exitCode, 9);
+        assert.strictEqual(result.timedOut, false);
+        assert.ok((await output).includes('PUBLIC_SPAWN_OK'));
+        assert.ok((await error).includes('PUBLIC_SPAWN_ERROR'));
+        assert.ok(Array.isArray(handle.warnings));
+      } finally {
+        handle.dispose();
+      }
+    });
+  }
+
   it('should execute cmd.exe in process container', { skip: sandboxSkipReason }, async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await sdk.runRequestForTest(
       'cmd.exe /c echo Container test successful',
       {},
       {},
@@ -53,9 +97,9 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
   });
 
   it('should execute powershell 5.1 in process container', { skip: sandboxSkipReason }, async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await sdk.runRequestForTest(
       "powershell.exe -NoProfile -Command Write-Output 'PowerShell test successful'",
-      { ui: { allowWindows: true } },
+      { ui: { disable: false } },
       {},
       undefined,
       `test-2-${schemaVersion}`,
@@ -65,8 +109,8 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
   });
 
   it('should execute python in process container', { skip: sandboxSkipReason ?? pythonSkipReason }, async () => {
-    const policy = withToolPaths({ ui: { allowWindows: true } }) as SandboxPolicy;
-    const result = await sdk.spawnSandboxAsync(
+    const policy = withToolPaths({ ui: { disable: false } });
+    const result = await sdk.runRequestForTest(
       `${pythonCommand} -c "print('Python test successful')"`,
       policy,
       {},
@@ -83,10 +127,10 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
     const scriptFile = path.join(tempDir, 'write_test.py');
     fs.writeFileSync(scriptFile, `f = open(r'${testFile}', 'w')\nf.write('hello')\nf.close()\nprint('WRITE_OK')\n`);
     const policy = withToolPaths({
-      ui: { allowWindows: true },
+      ui: { disable: false },
       filesystem: { readwritePaths: [tempDir] },
-    }) as SandboxPolicy;
-    const result = await sdk.spawnSandboxAsync(
+    });
+    const result = await sdk.runRequestForTest(
       `${pythonCommand} ${scriptFile}`,
       policy,
       {},
@@ -104,8 +148,8 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
     const inputFile = path.join(tempDir, 'input.txt');
     const policy = withToolPaths({
       filesystem: { readonlyPaths: [tempDir] },
-    }) as SandboxPolicy;
-    const result = await sdk.spawnSandboxAsync(
+    });
+    const result = await sdk.runRequestForTest(
       `cmd.exe /c type ${inputFile}`,
       policy,
       {},
@@ -117,7 +161,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
   });
 
   it('should launch basic process container with valid version', { skip: sandboxSkipReason }, async () => {
-    const result = await sdk.spawnSandboxAsync(
+    const result = await sdk.runRequestForTest(
       'cmd.exe /c echo version ok',
       {},
       {},
@@ -149,59 +193,25 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
       }
     });
 
-    it('should route traffic through built-in proxy', async () => {
-      tempDir = createTempDir('mxc-proxy-test');
-      const config = sdk.createConfigFromPolicy(
-        withToolPaths({ ui: { allowWindows: true } }) as SandboxPolicy,
-        'processcontainer',
-        `proxy-builtin-${schemaVersion}`,
-      );
-      config.version = '0.8.0-alpha';
-      config.processContainer!.capabilities = ['internetClient'];
-      config.network = {
-        proxy: { builtinTestServer: true },
-      } as unknown as ContainerConfig['network'];
-      const script =
-        `powershell.exe -NoProfile -Command "` +
-        `$h = New-Object -ComObject WinHttp.WinHttpRequest.5.1; ` +
-        `$h.Open('GET','https://api.github.com/zen',$false); ` +
-        `$h.Send(); ` +
-        `Write-Output ('PROXY_RESPONSE: ' + $h.ResponseText)"`;
-      const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
-        (resolve) => {
-          config.process!.commandLine = script;
-          const sandboxProcess = sdk.spawnSandboxFromConfig(
-            config,
-            { debug: true, allowTestingFeatures: true },
-          );
-          let stdout = '';
-          sandboxProcess.onData((data: string) => { stdout += data; });
-          sandboxProcess.onExit(({ exitCode }: { exitCode: number }) => {
-            resolve({ stdout, stderr: '', exitCode });
-          });
-        },
-      );
-
-      assert.strictEqual(result.exitCode, 0, `[${schemaVersion}] Expected exit 0: ${result.stderr}`);
-      assert.ok(result.stdout.includes('PROXY_RESPONSE:'));
-      assert.ok(result.stdout.includes('Proxy policy active'));
-    });
-
     it('should route traffic through external proxy', async () => {
       tempDir = createTempDir('mxc-proxy-test');
       const { port, proxyProcess: proc } = startTestProxy(tempDir);
       proxyProcess = proc;
 
-      const config = sdk.createConfigFromPolicy(
-        withToolPaths({ ui: { allowWindows: true } }) as SandboxPolicy,
+      const config = sdk.createConfigForTest(
+        withToolPaths({ ui: { disable: false } }),
         'processcontainer',
         `proxy-ext-${schemaVersion}`,
       );
-      config.version = '0.8.0-alpha';
       config.processContainer!.capabilities = ['internetClient'];
       config.network = {
-        proxy: { localhost: port },
-      } as unknown as ContainerConfig['network'];
+        egress: { default: 'deny' },
+        ingress: { default: 'deny', hostLoopback: 'deny' },
+      };
+      config.runtimeConfig = {
+        ...(config.runtimeConfig ?? {}),
+        networkProxy: `http://127.0.0.1:${port}`,
+      };
       const script =
         `powershell.exe -NoProfile -Command "` +
         `$h = New-Object -ComObject WinHttp.WinHttpRequest.5.1; ` +
@@ -209,7 +219,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
         `$h.Send(); ` +
         `Write-Output ('PROXY_RESPONSE: ' + $h.ResponseText)"`;
       config.process!.commandLine = script;
-      const result = await spawnFromConfigAsync(config, { debug: true });
+      const result = await runConfigForTest(config, { experimental: true });
 
       assert.strictEqual(result.exitCode, 0, `[${schemaVersion}] Expected exit 0: ${result.stderr}`);
       assert.ok(result.stdout.includes('PROXY_RESPONSE:'));

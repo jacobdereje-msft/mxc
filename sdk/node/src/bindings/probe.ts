@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import koffi from 'koffi';
-import { MxcError } from '../errors.js';
+import { MxcError } from '../v1/errors.js';
 import { loadMxcFfi } from '../native-library.js';
 import {
   AbiErrorDetailType,

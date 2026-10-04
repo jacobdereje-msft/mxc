@@ -12,7 +12,7 @@ import {
   _resetTelemetryFailureReporting,
   _setTelemetryPlatform,
   type TelemetryConsentPrompt,
-} from '../../src/telemetry.js';
+} from '../../src/v1/telemetry.js';
 import {
   _setBindingTelemetryAsyncImplementation,
   TELEMETRY_CONSENT_DECISION_YES,
@@ -25,7 +25,7 @@ import {
   type TelemetryRequestWorkerData,
   type TelemetryRequestWorkerMessage,
 } from '../../src/bindings/telemetry-request-worker.js';
-import { MxcError } from '../../src/errors.js';
+import { MxcError } from '../../src/v1/errors.js';
 
 class FakeWorker extends EventEmitter implements BindingTelemetryWorkerLike {
   reply(message: TelemetryRequestWorkerMessage): void {

@@ -28,7 +28,7 @@ import {
   findWxcExecutable,
   _resetWxcExecutableCache,
   _setWxcExecutableVerifier,
-} from '../../src/platform.js';
+} from '../../src/v1/platform.js';
 
 const isWindows = os.platform() === 'win32';
 

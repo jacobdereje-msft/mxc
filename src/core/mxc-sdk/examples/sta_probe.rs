@@ -48,13 +48,13 @@ fn teardown(id: &str, who: &str) {
         println!("    [{who}] tearing down {id}");
         let _ = std::io::stdout().flush();
         let stop = format!(r#"{{"version":"0.9.0-alpha","phase":"stop","sandboxId":"{id}"}}"#);
-        match mxc_sdk::run_state_aware_json(&stop, false, true) {
+        match mxc_sdk::v1::run_lifecycle_json(&stop, false, true) {
             Ok(_) => println!("    [{who}] stopped"),
             Err(e) => println!("    [{who}] stop failed: {e:?}"),
         }
         let deprovision =
             format!(r#"{{"version":"0.9.0-alpha","phase":"deprovision","sandboxId":"{id}"}}"#);
-        match mxc_sdk::run_state_aware_json(&deprovision, false, true) {
+        match mxc_sdk::v1::run_lifecycle_json(&deprovision, false, true) {
             Ok(_) => println!("    [{who}] deprovisioned"),
             Err(e) => println!("    [{who}] WARNING: deprovision failed, account may leak: {e:?}"),
         }
@@ -136,7 +136,7 @@ fn main() {
         let _ = std::io::stdout().flush();
 
         checkpoint("available_backends()");
-        let backends = mxc_sdk::available_backends();
+        let backends = mxc_sdk::v1::available_backends();
         let supported = backends.iter().any(|b| b.backend == "isolation_session");
         println!("    isolation_session available: {supported}");
         if !supported {
@@ -147,7 +147,7 @@ fn main() {
         checkpoint("provision — the first async join");
         let provision = r#"{"version":"0.9.0-alpha","phase":"provision","containment":"isolation_session",
             "network":{"egress":{"default":"allow"},"ingress":{"default":"allow","hostLoopback":"allow"}}}"#;
-        let response = match mxc_sdk::run_state_aware_json(provision, false, true) {
+        let response = match mxc_sdk::v1::run_lifecycle_json(provision, false, true) {
             Ok(r) => r,
             Err(e) => {
                 println!("\nRESULT: FAILED (not hung) at provision");
@@ -172,7 +172,7 @@ fn main() {
         let _teardown = Teardown(sandbox_id.clone());
 
         checkpoint("start — a second async join, on a live session");
-        if let Err(e) = mxc_sdk::run_state_aware_json(
+        if let Err(e) = mxc_sdk::v1::run_lifecycle_json(
             &format!(r#"{{"version":"0.9.0-alpha","phase":"start","sandboxId":"{sandbox_id}"}}"#),
             false,
             true,
@@ -191,7 +191,7 @@ fn main() {
                 "process":{{"commandLine":"cmd.exe /c echo sta-probe-marker","timeout":30000}}}}"#
         );
         let mut exec_ok = false;
-        match mxc_sdk::exec_sandbox(&exec, true) {
+        match mxc_sdk::v1::execute_lifecycle(&exec, true) {
             Ok(mut sandbox) => {
                 let out = sandbox.take_stdout();
                 let reader = std::thread::spawn(move || {
@@ -261,7 +261,7 @@ fn measure_handle_outliving_its_thread() {
     let worker = std::thread::spawn(move || {
         let provision = r#"{"version":"0.9.0-alpha","phase":"provision","containment":"isolation_session",
             "network":{"egress":{"default":"allow"},"ingress":{"default":"allow","hostLoopback":"allow"}}}"#;
-        let response = match mxc_sdk::run_state_aware_json(provision, false, true) {
+        let response = match mxc_sdk::v1::run_lifecycle_json(provision, false, true) {
             Ok(r) => r,
             Err(e) => {
                 let _ = tx.send(Err(format!("provision failed: {e:?}")));
@@ -284,7 +284,7 @@ fn measure_handle_outliving_its_thread() {
 
         let start =
             format!(r#"{{"version":"0.9.0-alpha","phase":"start","sandboxId":"{sandbox_id}"}}"#);
-        if let Err(e) = mxc_sdk::run_state_aware_json(&start, false, true) {
+        if let Err(e) = mxc_sdk::v1::run_lifecycle_json(&start, false, true) {
             let _ = exec_tx.send(Err(format!("start failed: {e:?}")));
             return;
         }
@@ -296,7 +296,7 @@ fn measure_handle_outliving_its_thread() {
             r#"{{"version":"0.9.0-alpha","phase":"exec","sandboxId":"{sandbox_id}",
                 "process":{{"commandLine":"cmd.exe /c echo marker-before && ping -n 4 127.0.0.1","timeout":120000}}}}"#
         );
-        match mxc_sdk::exec_sandbox(&exec, true) {
+        match mxc_sdk::v1::execute_lifecycle(&exec, true) {
             Ok(sandbox) => {
                 let _ = exec_tx.send(Ok(sandbox));
             }

@@ -19,7 +19,7 @@ pub enum CaptureDenialsMode {
 /// Its presence enables capture: the runner records the sandboxed process's
 /// ungranted access attempts and writes a JSON denials document, reported
 /// through
-/// [`SandboxOutputMetadata::capture_denials`](wxc_common::models::SandboxOutputMetadata).
+/// [`ExecutionMetadata::capture_denials`](crate::v1::ExecutionMetadata).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CaptureDenials {
@@ -39,7 +39,7 @@ pub struct CaptureDenials {
 /// ProcessContainer settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct ProcessContainer {
+pub struct ProcessContainerConfig {
     /// Enable least-privilege process creation.
     pub least_privilege: bool,
     /// Enable deny-and-record AppContainer learning mode.
@@ -56,7 +56,7 @@ pub struct ProcessContainer {
     pub network: Option<ProcessContainerNetwork>,
 }
 
-impl Default for ProcessContainer {
+impl Default for ProcessContainerConfig {
     fn default() -> Self {
         Self {
             least_privilege: false,
@@ -141,8 +141,8 @@ pub enum ProcessContainerUiIsolation {
 mod tests {
     use super::*;
     use crate::policy::{
-        build_request_with_containment, Containment, NetworkAction, NetworkEgressSection,
-        NetworkIngressSection, NetworkSection, RuntimeConfigSection, SandboxPolicy,
+        build_request_with_containment, ContainerPolicy, Containment, NetworkAction,
+        NetworkEgressPolicy, NetworkIngressPolicy, NetworkPolicy, NetworkRuntimeConfig,
     };
     use wxc_common::models::{
         CaptureDenialsMode as RuntimeCaptureDenialsMode, ContainmentBackend,
@@ -151,10 +151,10 @@ mod tests {
 
     const TEST_COMMAND: &str = "echo hello";
 
-    fn policy_with_network(network: Option<NetworkSection>) -> SandboxPolicy {
-        SandboxPolicy {
+    fn policy_with_network(network: Option<NetworkPolicy>) -> ContainerPolicy {
+        ContainerPolicy {
             network,
-            ..SandboxPolicy::default()
+            ..ContainerPolicy::default()
         }
     }
 
@@ -164,7 +164,7 @@ mod tests {
             .join("mxc-phase13-process-container-denials.json")
             .to_string_lossy()
             .into_owned();
-        let process_container = ProcessContainer {
+        let process_container = ProcessContainerConfig {
             least_privilege: true,
             learning_mode: true,
             capabilities: vec!["registryRead".to_string()],
@@ -247,21 +247,20 @@ mod tests {
 
     #[test]
     fn maps_directional_network_config() {
-        let network = NetworkSection {
-            egress: Some(NetworkEgressSection {
+        let network = NetworkPolicy {
+            egress: Some(NetworkEgressPolicy {
                 default: Some(NetworkAction::Deny),
                 ..Default::default()
             }),
-            ingress: Some(NetworkIngressSection {
+            ingress: Some(NetworkIngressPolicy {
                 default: Some(NetworkAction::Allow),
                 host_loopback: Some(NetworkAction::Deny),
             }),
-            runtime_config: Some(RuntimeConfigSection {
+            runtime_config: Some(NetworkRuntimeConfig {
                 network_proxy: Some("http://127.0.0.1:8080".to_string()),
             }),
-            ..Default::default()
         };
-        let process_container = ProcessContainer {
+        let process_container = ProcessContainerConfig {
             network: Some(ProcessContainerNetwork {
                 allowed_proxy_peer: Some("Contoso.Proxy_123".to_string()),
             }),
@@ -319,12 +318,12 @@ mod tests {
     /// an SDK-emitted exact document share one derivation.
     #[test]
     fn directional_network_leaves_capability_derivation_to_the_backend() {
-        let network = NetworkSection {
-            egress: Some(NetworkEgressSection {
+        let network = NetworkPolicy {
+            egress: Some(NetworkEgressPolicy {
                 default: Some(NetworkAction::Allow),
                 ..Default::default()
             }),
-            ingress: Some(NetworkIngressSection {
+            ingress: Some(NetworkIngressPolicy {
                 default: Some(NetworkAction::Allow),
                 ..Default::default()
             }),
@@ -333,9 +332,9 @@ mod tests {
 
         let request = build_request_with_containment(
             &policy_with_network(Some(network)),
-            &Containment::ProcessContainer(ProcessContainer {
+            &Containment::ProcessContainer(ProcessContainerConfig {
                 capabilities: vec!["registryRead".to_string()],
-                ..ProcessContainer::default()
+                ..ProcessContainerConfig::default()
             }),
             TEST_COMMAND,
             None,
@@ -349,7 +348,7 @@ mod tests {
 
     #[test]
     fn maps_capture_defaults_without_manufacturing_optional_values() {
-        let process_container = ProcessContainer {
+        let process_container = ProcessContainerConfig {
             capture_denials: Some(CaptureDenials::default()),
             ..Default::default()
         };

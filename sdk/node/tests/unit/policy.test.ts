@@ -3,7 +3,8 @@
 
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { getAvailableToolsPolicy } from '../../src/policy.js';
+import { getAvailableToolsPolicy, getUserProfilePolicy, getTemporaryFilesPolicy } from '../../src/v1/policy.js';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -13,6 +14,55 @@ import * as path from 'path';
 // process.platform to 'win32' and must be skipped on Linux until the root cause
 // is understood.
 const isLinux = process.platform === 'linux';
+
+describe('filesystem helper environment and options', () => {
+    it('does not substitute the host environment for an empty map', () => {
+        assert.deepStrictEqual(getAvailableToolsPolicy({}), { readonlyPaths: [], readwritePaths: [] });
+        assert.deepStrictEqual(getUserProfilePolicy({}), { readonlyPaths: [], readwritePaths: [] });
+    });
+
+    it('discovers profile directories from the supplied environment', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mxc-profile-'));
+        try {
+            const expected = process.platform === 'win32'
+                ? path.join(root, 'Programs', 'Tool') : path.join(root, '.local', 'bin');
+            fs.mkdirSync(expected, { recursive: true });
+            const environment = process.platform === 'win32' ? { localappdata: root } : { HOME: root };
+            assert.deepStrictEqual(getUserProfilePolicy(environment), {
+                readonlyPaths: [expected], readwritePaths: [],
+            });
+        } finally {
+            fs.rmSync(root, { recursive: true });
+        }
+    });
+
+    it('uses existing temporary storage without creating a directory', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mxc-temp-'));
+        try {
+            const environment = process.platform === 'win32' ? { temp: root } : { TMPDIR: root };
+            assert.deepStrictEqual(getTemporaryFilesPolicy(environment), {
+                readonlyPaths: [], readwritePaths: [root],
+            });
+            assert.deepStrictEqual(fs.readdirSync(root), []);
+        } finally {
+            fs.rmSync(root, { recursive: true });
+        }
+    });
+
+    it('filters ALL APPLICATION PACKAGES only when requested', { skip: process.platform !== 'win32' }, () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mxc-tools & paths-'));
+        try {
+            execFileSync('icacls.exe', [root, '/grant', '*S-1-15-2-1:(OI)(CI)(RX)'], { windowsHide: true });
+            const environment = { path: root };
+            assert.deepStrictEqual(getAvailableToolsPolicy(environment).readonlyPaths, [root]);
+            assert.deepStrictEqual(
+                getAvailableToolsPolicy(environment, { containerType: 'processcontainer' }).readonlyPaths, [],
+            );
+        } finally {
+            fs.rmSync(root, { recursive: true });
+        }
+    });
+});
 
 describe('getAvailableToolsPolicy - PowerShell discovery', () => {
     let originalPlatform: PropertyDescriptor | undefined;

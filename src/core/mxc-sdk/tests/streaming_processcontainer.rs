@@ -9,24 +9,27 @@
 
 #![cfg(target_os = "windows")]
 
-use mxc_sdk::v1::{build_request, spawn_sandbox, SandboxPolicy};
-use mxc_sdk::WaitOutcome;
+use mxc_sdk::v1::configs::ProcessContainerConfig;
+use mxc_sdk::v1::WaitResult;
+use mxc_sdk::v1::{spawn, ContainerRequest, Containment, FilesystemPolicy};
 
 #[test]
 #[ignore = "requires an elevated, host-prepped Windows host (see docs/host-prep.md)"]
 fn streaming_processcontainer_bidirectional_stdio() {
     use std::io::{Read, Write};
 
-    let mut policy = SandboxPolicy::default();
-    policy.filesystem = Some(mxc_sdk::v1::policy::FilesystemSection {
-        readwrite_paths: vec!["C:\\Windows\\Temp".to_string()],
-        readonly_paths: vec![],
-        denied_paths: vec![],
-        clear_policy_on_exit: None,
-    });
+    let request = ContainerRequest {
+        filesystem: Some(FilesystemPolicy {
+            readwrite_paths: vec!["C:\\Windows\\Temp".to_string()],
+            readonly_paths: vec![],
+            denied_paths: vec![],
+            clear_policy_on_exit: None,
+        }),
+        containment: Containment::ProcessContainer(ProcessContainerConfig::default()),
+        ..ContainerRequest::new("cmd /c more")
+    };
     // `cmd /c more` echoes stdin to stdout until EOF, then exits.
-    let request = build_request(&policy, "cmd /c more", None).expect("build_request");
-    let mut proc = spawn_sandbox(request).expect("spawn");
+    let mut proc = spawn(request, Default::default()).expect("spawn");
 
     let mut stdin = proc.take_stdin().expect("stdin available");
     let mut stdout = proc.take_stdout().expect("stdout available");
@@ -38,5 +41,5 @@ fn streaming_processcontainer_bidirectional_stdio() {
     stdout.read_to_string(&mut out).expect("read stdout");
     assert!(out.contains("ping-pong"), "got: {:?}", out);
 
-    assert_eq!(proc.wait().expect("wait"), WaitOutcome::Exited(0));
+    assert_eq!(proc.wait().expect("wait"), WaitResult::Exited(0));
 }
