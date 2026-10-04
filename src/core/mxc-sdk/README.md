@@ -6,7 +6,7 @@ them in-process through the native engine. The versioned public API is under
 network, and UI restrictions; its typed containment value selects and
 configures the backend.
 
-## One-shot execution
+## Run to completion and spawn
 
 Build a `ContainerRequest` directly, then choose captured output with `run` or
 live pipes with `spawn`:
@@ -45,7 +45,7 @@ features without changing the SDK-owned wire contract.
 Set the request's typed `Containment` when a specific backend is required.
 Shared restrictions remain on `ContainerRequest`; backend-specific settings
 are carried by the selected containment variant. These types are documented in
-the [`v1` API](src/lib.rs) and the [schema reference](../../../docs/schema.md).
+the [SDK API reference](https://github.com/microsoft/mxc/blob/main/docs/reference/README.md).
 
 `UiPolicy.disable` defaults to `true`; clipboard and input-injection
 permissions are authored separately.
@@ -61,10 +61,9 @@ whether that environment can be launched by the selected backend.
 Runtime network settings are nested under `network.runtime_config`, alongside
 directional policy. For existing-container execution, `ExecutionRequest.network`
 is a runtime-only `ProcessNetworkPolicy`; it cannot change provision-time
-policy. Both adapters map the proxy value to the unchanged wire-level
-`runtimeConfig.networkProxy`.
+policy.
 
-## Existing containers
+## Lifecycle API
 
 Typed lifecycle operations are available under `v1`. `ProvisionRequest`
 selects the backend; the returned opaque `ContainerId` is supplied to later
@@ -105,8 +104,8 @@ Use `spawn_in_container` for live piped execution.
 terminal; PTY support is currently available for IsolationSession.
 Attached execution is not exposed by the Rust SDK. Lifecycle operations and
 existing-container execution are synchronous in Rust. Backend support and phase-specific requirements are described in the
-[IsolationSession](../../../docs/isolation-session/state-aware-rust.md) and
-[WSLC](../../../docs/wsl/wslc-state-aware.md) guides.
+[IsolationSession](https://github.com/microsoft/mxc/blob/main/docs/isolation-session/state-aware-rust.md) and
+[WSLC](https://github.com/microsoft/mxc/blob/main/docs/wsl/wslc-state-aware.md) guides.
 
 Lifecycle calls use distinct `ProvisionOptions`, `StartOptions`, `StopOptions`,
 and `DeprovisionOptions`. Existing-container execution uses
@@ -121,7 +120,7 @@ operation options and return no execution output.
 
 | Purpose | Rust type |
 | --- | --- |
-| One-shot workload and cross-backend restrictions | `v1::ContainerRequest` |
+| Creation workload and cross-backend restrictions | `v1::ContainerRequest` |
 | Persistent container identity | `v1::ContainerId` |
 | Persistent container provision input | `v1::ProvisionRequest` |
 | Backend authoring configuration | `v1::configs::ProcessContainerConfig`, `LxcConfig`, `SeatbeltConfig`, `WslcConfig` |
@@ -132,8 +131,9 @@ operation options and return no execution output.
 | Captured execution | `v1::ExecutionResult` |
 | Terminal process outcome | `v1::WaitResult` |
 
-`v1::spawn_with_pty` provides the one-shot PTY entry point. PTY support is
-available for IsolationSession and supported Windows ProcessContainer requests. For host discovery, use
+`v1::spawn_with_pty` creates a container with a caller-controlled terminal.
+PTY support is available only for IsolationSession on supported Windows hosts.
+For host discovery, use
 `mxc_sdk::v1::platform_support` and `mxc_sdk::v1::available_backends`. Errors are
 returned as `mxc_sdk::v1::Error` with an `ErrorCode`.
 Telemetry and policy helpers are also under `v1`; the crate root exposes only
@@ -143,7 +143,8 @@ that versioned module.
 
 Backend availability depends on the target OS, host configuration, and crate
 features. WSLC and IsolationSession support require their respective build
-features. See the backend documentation under [`docs/`](../../../docs/) for
+features. See the backend documentation under
+[`docs/`](https://github.com/microsoft/mxc/tree/main/docs) for
 host prerequisites and enforcement details.
 
 Creation telemetry is supplied through `telemetry: Option<TelemetryConfig>` on `RunOptions`,

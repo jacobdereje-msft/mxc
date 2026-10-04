@@ -310,7 +310,8 @@ public static class FilesystemPolicies
             return output.Contains("ALL APPLICATION PACKAGES", StringComparison.Ordinal)
                 || output.Contains("S-1-15-2-1", StringComparison.Ordinal);
         }
-        catch (Exception exception) when (exception is Win32Exception or IOException)
+        catch (Exception exception) when (
+            exception is Win32Exception or IOException or InvalidOperationException)
         {
             Trace.TraceWarning($"Tool-policy ACL inspection failed; retaining directory: {exception.Message}");
             return false;

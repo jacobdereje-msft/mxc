@@ -75,6 +75,9 @@ public static ExecutionResult Run(ContainerRequest request, RunOptions? options 
 
 Run a complete request asynchronously and capture its output.
 
+Cancellation stops awaiting the result, not native execution. Use the request
+timeout to bound execution.
+
 ```csharp
 public static Task<ExecutionResult> RunAsync(
     ContainerRequest request,

@@ -240,13 +240,20 @@ public static class MxcContainer
     }
 
     /// <summary>Run a complete request asynchronously and capture its output.</summary>
+    /// <remarks>
+    /// Cancellation stops awaiting the result, not the native execution.
+    /// Use the request timeout to bound execution.
+    /// </remarks>
     public static Task<ExecutionResult> RunAsync(
         ContainerRequest request,
         RunOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        return Task.Run(() => Run(request, options), cancellationToken);
+        return MxcLifecycle.RunBlockingOperationAsync(
+            () => Run(request, options),
+            _ => { },
+            cancellationToken);
     }
 
     /// <summary>Spawn a container request and return its live process handle.</summary>

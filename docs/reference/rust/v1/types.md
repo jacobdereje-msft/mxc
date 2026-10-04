@@ -140,7 +140,8 @@ impl ContainerRequest {
 
 ## `mxc_sdk::v1::Containment`, `mxc_sdk::v1::policy::Containment`
 
-The containment backend [build_request_with_containment] targets — the Rust analogue of the SDK's ContainmentType | ContainmentBackend argument to createConfigFromPolicy.
+The closed backend choice carried by `ContainerRequest`. Select a variant with
+its typed configuration; the native engine validates backend and policy support.
 
 ```rust
 pub enum Containment {

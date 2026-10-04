@@ -67,6 +67,17 @@ describe('public SDK namespace exports', () => {
 });
 
 describe('in-process asynchronous run routing', () => {
+  it('rejects any supplied dryRun option before native execution', async () => {
+    for (const dryRun of [true, false, undefined]) {
+      const options = { dryRun } as never;
+      assert.throws(() => run({ command: 'echo hello' }, options), /does not support dryRun/);
+      assert.throws(() => spawn({ command: 'echo hello' }, options), /does not support dryRun/);
+      assert.throws(() => v1Sdk.spawnWithPty({ command: 'echo hello' }, options), /does not support dryRun/);
+      await assert.rejects(runAsync({ command: 'echo hello' }, options), /does not support dryRun/);
+      await assert.rejects(spawnAsync({ command: 'echo hello' }, options), /does not support dryRun/);
+    }
+  });
+
   it('rejects malformed creation telemetry before native execution', async () => {
     for (const telemetry of [null, true, [], { enabled: 'true' }, { ignored: true }]) {
       const options = { telemetry } as never;

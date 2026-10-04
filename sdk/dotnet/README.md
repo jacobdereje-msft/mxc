@@ -6,7 +6,7 @@ versioned public API is in `Microsoft.Mxc.Sdk.V1`. All request and policy types
 in this API use the owned V1 contract rather than exposing a wire-version
 selector.
 
-## One-shot execution
+## Run to completion
 
 ```csharp
 using Microsoft.Mxc.Sdk.V1;
@@ -24,9 +24,28 @@ ExecutionResult output = await MxcContainer.RunAsync(request);
 Console.WriteLine($"exit={output.ExitCode} stdout={output.Stdout}");
 ```
 
-Use `MxcContainer.Run` / `RunAsync` for captured output or `Spawn` / `SpawnAsync` for a live
-`MxcProcess` with separate stdin, stdout, and stderr streams. `MxcProcess`
-provides wait, termination, and disposal operations. Shared filesystem,
+Use `MxcContainer.Run` / `RunAsync` for captured output.
+Cancelling `RunAsync` stops awaiting the result; native execution continues
+until completion or the request timeout.
+
+## Spawn with streaming output
+
+```csharp
+using Microsoft.Mxc.Sdk.V1;
+
+using var process = await MxcContainer.SpawnAsync(
+    new ContainerRequest("cmd /c echo hello from container") { TimeoutMs = 30_000 });
+Task stdout = process.StandardOutput is { } output
+    ? output.CopyToAsync(Console.OpenStandardOutput()) : Task.CompletedTask;
+Task stderr = process.StandardError is { } error
+    ? error.CopyToAsync(Console.OpenStandardError()) : Task.CompletedTask;
+WaitResult result = await process.WaitAsync();
+await Task.WhenAll(stdout, stderr);
+Console.WriteLine($"exit={result.ExitCode}");
+```
+
+`Spawn` / `SpawnAsync` return a live `MxcProcess` with separate stdin, stdout,
+and stderr streams, plus wait, termination, and disposal operations. Shared filesystem,
 network, and UI restrictions are authored directly on `ContainerRequest`,
 alongside the selected backend configuration. The SDK owns the exact wire
 contract; requests do not accept a caller-selected schema version.
@@ -45,11 +64,46 @@ choose initial dimensions; it defaults to 24 rows by 80 columns. Async cancellat
 tokens come last. `Experimental` authorizes native experimental features
 without changing the SDK-owned wire contract.
 
-`MxcContainer.SpawnWithPty(request, options?)` starts a one-shot request with a
-caller-controlled terminal and returns an `MxcPtyProcess`. PTY support is
-available for IsolationSession and supported Windows ProcessContainer requests.
+## Spawn with an IsolationSession terminal
 
-## Existing containers
+PTY execution is available only for IsolationSession on a supported Windows
+host with the native `isolation_session` feature enabled. IsolationSession
+requires explicit unrestricted networking because it cannot enforce network
+restrictions.
+
+```csharp
+using System.Text;
+using Microsoft.Mxc.Sdk.V1;
+
+using var terminal = MxcContainer.SpawnWithPty(
+    new ContainerRequest("cmd.exe")
+    {
+        Containment = new Containment.IsolationSession(),
+        Network = new NetworkPolicy
+        {
+            Egress = new NetworkEgressPolicy { Default = NetworkAction.Allow },
+            Ingress = new NetworkIngressPolicy
+            {
+                Default = NetworkAction.Allow,
+                HostLoopback = NetworkAction.Allow,
+            },
+        },
+        TimeoutMs = 30_000,
+    },
+    new SpawnWithPtyOptions { Size = new MxcPtySize(24, 80) });
+Task output = terminal.Output.CopyToAsync(Console.OpenStandardOutput());
+await terminal.Input.WriteAsync(
+    Encoding.UTF8.GetBytes("echo hello from terminal\r\nexit\r\n"));
+terminal.Input.Dispose();
+WaitResult result = await terminal.WaitAsync();
+await output;
+Console.WriteLine($"exit={result.ExitCode}");
+```
+
+`SpawnWithPty` returns an `MxcPtyProcess` with merged terminal output and
+resizing support. Initial dimensions default to 24 rows by 80 columns.
+
+## Lifecycle API
 
 `ProvisionResult.Metadata` is an optional `ProvisionMetadata` value. For
 IsolationSession, pattern-match `IsolationSessionProvisionMetadata` to read the
@@ -64,24 +118,43 @@ subsequent operations rather than parsing it.
 using Microsoft.Mxc.Sdk.V1;
 
 var provisioned = MxcLifecycle.ProvisionContainer(
-    new WslcProvisionRequest { Image = "alpine:latest" });
+    new IsolationSessionProvisionRequest(new NetworkPolicy
+    {
+        Egress = new NetworkEgressPolicy { Default = NetworkAction.Allow },
+        Ingress = new NetworkIngressPolicy
+        {
+            Default = NetworkAction.Allow,
+            HostLoopback = NetworkAction.Allow,
+        },
+    }));
 ContainerId id = provisioned.ContainerId;
 
-MxcLifecycle.StartContainer(id);
-ExecutionResult output = await MxcLifecycle.RunInContainerAsync(
-    id,
-    new ExecutionRequest("echo hello"));
-Console.WriteLine(output.Stdout);
-MxcLifecycle.StopContainer(id);
-MxcLifecycle.DeprovisionContainer(id);
+try
+{
+    MxcLifecycle.StartContainer(id);
+    try
+    {
+        ExecutionResult output = await MxcLifecycle.RunInContainerAsync(
+            id, new ExecutionRequest("echo hello from lifecycle") { TimeoutMs = 30_000 });
+        Console.WriteLine(output.Stdout);
+    }
+    finally
+    {
+        MxcLifecycle.StopContainer(id);
+    }
+}
+finally
+{
+    MxcLifecycle.DeprovisionContainer(id);
+}
 ```
 
 Use `SpawnInContainer` or `SpawnInContainerAsync` for live piped execution. The
 asynchronous methods are convenience wrappers over native operations and
 support cancellation. Backend and phase-specific policy requirements are
 described in the
-[IsolationSession](../../docs/isolation-session/state-aware-rust.md) and
-[WSLC](../../docs/wsl/wslc-state-aware.md) guides.
+[IsolationSession](https://github.com/microsoft/mxc/blob/main/docs/isolation-session/state-aware-rust.md) and
+[WSLC](https://github.com/microsoft/mxc/blob/main/docs/wsl/wslc-state-aware.md) guides.
 `MxcLifecycle.SpawnInContainerWithPty(id, request, options?)` starts an
 IsolationSession exec with a caller-controlled terminal and returns an
 `MxcPtyProcess`. Set `SpawnInContainerWithPtyOptions.Size` to choose initial
@@ -105,8 +178,6 @@ var request = new ExecutionRequest("echo hello")
 };
 ```
 
-The SDK maps `Network.RuntimeConfig` to the unchanged top-level wire
-`runtimeConfig` field.
 Provisioning uses the same `FilesystemPolicy` and `NetworkPolicy` authoring
 types as container creation; the selected backend determines what it enforces.
 
@@ -129,7 +200,7 @@ Backend/platform discovery, errors, telemetry, and helpers are also in
 
 | Purpose | .NET type |
 | --- | --- |
-| One-shot workload and cross-backend restrictions | `ContainerRequest` |
+| Creation workload and cross-backend restrictions | `ContainerRequest` |
 | Persistent container identity | `ContainerId` |
 | Persistent container provision input | `ProvisionRequest` |
 | Existing-container workload | `ExecutionRequest` |
@@ -140,8 +211,10 @@ Backend/platform discovery, errors, telemetry, and helpers are also in
 | Terminal process outcome | `WaitResult` |
 
 All types above are in `Microsoft.Mxc.Sdk.V1`. See the
-[networking guide](../../docs/sandbox-policy/0.8.0/networking/networking.md)
-and [schema reference](../../docs/schema.md) for policy behavior.
+[networking guide](https://github.com/microsoft/mxc/blob/main/docs/sandbox-policy/0.8.0/networking/networking.md)
+for policy behavior and the
+[SDK API reference](https://github.com/microsoft/mxc/blob/main/docs/reference/README.md)
+for complete signatures and types.
 
 ## Errors, warnings, and discovery
 
@@ -182,5 +255,7 @@ Applications do not need to launch an MXC executor process. The governed build
 pipeline produces the publishable NuGet package; `build.bat` creates local
 architecture-specific packages under `output\packages`.
 
-For examples, AOT requirements, and development commands, see the
-[SDK project](Microsoft.Mxc.Sdk/README.md) and the repository's backend guides.
+For API details, see the
+[SDK API reference](https://github.com/microsoft/mxc/blob/main/docs/reference/README.md).
+Build and validation commands are in the
+[pull request guide](https://github.com/microsoft/mxc/blob/main/docs/pull-requests.md).

@@ -627,6 +627,18 @@ public class MxcLifecycleTests
     }
 
     [Fact]
+    public async Task RunAsync_PreCancelledTokenDoesNotExecuteRequest()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => MxcContainer.RunAsync(
+                new ContainerRequest(""),
+                cancellationToken: cancellation.Token));
+    }
+
+    [Fact]
     public async Task RunBlockingOperationAsync_CancellationCleansUpLateResult()
     {
         using var releaseOperation = new ManualResetEventSlim();

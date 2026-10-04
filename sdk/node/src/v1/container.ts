@@ -379,6 +379,12 @@ function validateOperationOptions(
     throw new MxcError('malformed_request', `${apiName} options must be an object`);
   }
   for (const [key, value] of Object.entries(options)) {
+    if (key === 'dryRun' && !supportsDryRun) {
+      throw new MxcError(
+        'malformed_request',
+        `${apiName} does not support dryRun because it executes the request`,
+      );
+    }
     if (key === 'telemetry') {
       if (
         value !== undefined &&
@@ -414,12 +420,6 @@ function validateOperationOptions(
         `${apiName} option '${key}' must be a boolean`,
       );
     }
-  }
-  if (!supportsDryRun && options.dryRun === true) {
-    throw new MxcError(
-      'malformed_request',
-      `${apiName} does not support dryRun because it executes the request`,
-    );
   }
 }
 

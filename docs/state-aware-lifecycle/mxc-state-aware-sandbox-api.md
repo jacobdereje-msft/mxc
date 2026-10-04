@@ -301,12 +301,12 @@ Backend and phase semantics are validated by the native engine.
 | `spawn` / `spawnAsync` | `ContainerRequest`, `SpawnOptions?` | `MxcProcess` / promise |
 | `spawnWithPty` | `ContainerRequest`, `SpawnWithPtyOptions?` (includes `size`) | `Promise<MxcPtyProcess>` |
 | `provisionContainer` | `ProvisionRequest`, `ProvisionOptions?` | `Promise<ProvisionResult>` |
-| `startContainer` | `ContainerId`, `StartOptions?` | `Promise<StartResult>` |
+| `startContainer` | `ContainerId`, `StartOptions?` | `Promise<LifecycleResult>` |
 | `spawnInContainer` / `spawnInContainerAsync` | `ContainerId`, `ExecutionRequest`, `SpawnInContainerOptions?` | `MxcProcess` / promise |
-| `runInContainerAsync` | `ContainerId`, `ExecutionRequest`, `RunInContainerOptions?` | `Promise<ExecutionResult>` |
+| `runInContainer` / `runInContainerAsync` | `ContainerId`, `ExecutionRequest`, `RunInContainerOptions?` | `ExecutionResult` / promise |
 | `spawnInContainerWithPty` | `ContainerId`, `ExecutionRequest`, `SpawnInContainerWithPtyOptions?` (includes `size`) | `Promise<MxcPtyProcess>` |
-| `stopContainer` | `ContainerId`, `StopOptions?` | `Promise<StopResult>` |
-| `deprovisionContainer` | `ContainerId`, `DeprovisionOptions?` | `Promise<DeprovisionResult>` |
+| `stopContainer` | `ContainerId`, `StopOptions?` | `Promise<LifecycleResult>` |
+| `deprovisionContainer` | `ContainerId`, `DeprovisionOptions?` | `Promise<LifecycleResult>` |
 
 Invocation options control experimental authorization and, for lifecycle and
 existing-container operations, optional telemetry. Supplied invocation telemetry
@@ -316,8 +316,10 @@ administrative restriction. Options do not change the owned wire contract.
 `validateProvision`, `validateStart`, `validateStop`, `validateDeprovision`,
 and `validateProcess` use native dry-run validation and return no execution
 result. There is no `dryRun` execution option or public attached-exec API.
-Existing-container captured execution is asynchronous so streams can be
-drained by the Node event loop. Live processes own wait, kill, and disposal.
+Captured execution has synchronous and asynchronous forms. `runInContainer`
+blocks Node's event loop while native execution drains both output streams;
+`runInContainerAsync` drains them asynchronously. Live processes own wait,
+kill, and disposal.
 IsolationSession has stdin; WSLC currently provides stdout/stderr only.
 
 ### 6.3 Example

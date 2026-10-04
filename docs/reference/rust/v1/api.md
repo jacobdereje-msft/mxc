@@ -27,7 +27,7 @@ pub fn available_tools_policy(environment: Option<&[(String, String)]>, options:
 Deprovision an existing container.
 
 ```rust
-pub fn deprovision(
+pub fn deprovision_container(
 container_id: &ContainerId,
 options: DeprovisionOptions,
 ) -> Result<LifecycleResult, Error>;
@@ -39,7 +39,7 @@ options: DeprovisionOptions,
 Provision a container from typed Rust policy.
 
 ```rust
-pub fn provision(
+pub fn provision_container(
 request: ProvisionRequest,
 options: ProvisionOptions,
 ) -> Result<ProvisionResult, Error>;
@@ -64,7 +64,7 @@ options: SpawnInContainerWithPtyOptions,
 Start an existing container.
 
 ```rust
-pub fn start(container_id: &ContainerId, options: StartOptions) -> Result<LifecycleResult, Error>;
+pub fn start_container(container_id: &ContainerId, options: StartOptions) -> Result<LifecycleResult, Error>;
 ```
 
 
@@ -73,7 +73,7 @@ pub fn start(container_id: &ContainerId, options: StartOptions) -> Result<Lifecy
 Stop an existing container.
 
 ```rust
-pub fn stop(container_id: &ContainerId, options: StopOptions) -> Result<LifecycleResult, Error>;
+pub fn stop_container(container_id: &ContainerId, options: StopOptions) -> Result<LifecycleResult, Error>;
 ```
 
 

@@ -184,8 +184,8 @@ that share those options. `ContainerRequest` has no telemetry field.
 
 | SDK | Creation option |
 | --- | --- |
-| Rust | `telemetry_opt_in: Some(true)` |
-| .NET | `Telemetry = new TelemetrySettings { Enabled = true }` |
+| Rust | `telemetry: Some(TelemetryConfig { enabled: Some(true) })` |
+| .NET | `Telemetry = new TelemetryConfig { Enabled = true }` |
 | Node | `telemetry: { enabled: true }` |
 
 SDK adapters preserve this setting in the native top-level `telemetry.enabled`

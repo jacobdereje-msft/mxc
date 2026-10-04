@@ -162,7 +162,7 @@ function assertStateAwareStreamingOptions(
   additionalOptionKeys: readonly string[] = [],
 ): void {
   assertStateAwareOptions(apiName, options, additionalOptionKeys);
-  if (options.dryRun === true) {
+  if (Object.hasOwn(options, 'dryRun')) {
     throw new MxcError(
       'malformed_request',
       `${apiName} does not support dryRun; use an explicit validation API`,

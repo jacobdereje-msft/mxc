@@ -559,7 +559,7 @@ reclaimed when the session is stopped and deprovisioned.
 An exited process is never routed through the shutdown ladder, which reads only `ExitCode()`
 and so cannot tell a `259` exit from a live process. The adapter maps
 `TimedOut` onto `ErrorKind::TimedOut`, which is what
-`mxc_sdk::Sandbox::wait` reads as `WaitResult::TimedOut`. That outcome
+`mxc_sdk::v1::MxcProcess::wait` reads as `WaitResult::TimedOut`. That outcome
 is reachable only under `Piped`; the `Relayed` arm reports `Exited`.
 
 Teardown is bounded only insofar as the kill is: the streaming adapter's

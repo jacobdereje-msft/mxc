@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `spawn` / `spawnAsync`. Persistent operations use `provisionContainer`,
   `startContainer`, `stopContainer`, and `deprovisionContainer`.
   Use `spawnInContainer` / `spawnInContainerAsync` for live execution or
-  `runInContainerAsync` for captured output in an existing container.
+  `runInContainer` / `runInContainerAsync` for captured output in an existing container.
 - Each operation takes its own options type. PTY operations take initial
   dimensions in those options and return SDK-owned terminal process handles.
 

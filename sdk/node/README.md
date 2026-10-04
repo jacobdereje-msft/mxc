@@ -14,11 +14,11 @@ Node.js 24 or later is required. On Windows, native stdio transfer requires
 Node.js 24.21.0 or later within the Node.js 24 release line, or Node.js 26.8.0
 or later.
 
-## One-shot execution
+## Run to completion
 
 ```typescript
 import { getPlatformSupport } from '@microsoft/mxc-sdk/v1';
-import { runAsync, spawn } from '@microsoft/mxc-sdk/v1';
+import { runAsync } from '@microsoft/mxc-sdk/v1';
 import type { ContainerRequest } from '@microsoft/mxc-sdk/v1';
 
 if (!getPlatformSupport().isSupported) {
@@ -29,22 +29,39 @@ const request: ContainerRequest = {
   filesystem: { readonlyPaths: [process.cwd()] },
   network: { egress: { default: 'deny' } },
   timeoutMs: 30_000,
-  command: 'node -e "console.log(\\'hello from sandbox\\')"',
+  command: 'node -e "console.log(\'hello from container\')"',
 };
 
 const output = await runAsync(request);
 console.log(output.stdout, output.exitCode);
 
-const processHandle = spawn(request);
-processHandle.standardOutput?.on('data', (chunk) => process.stdout.write(chunk));
-const outcome = await processHandle.waitAsync();
-processHandle.dispose();
 ```
 
-`run` / `runAsync` capture stdout and stderr in an `ExecutionResult`. `spawn` /
-`spawnAsync` return an `MxcProcess` with standard pipes, wait, termination, and
-disposal operations. Access output streams before awaiting completion; any
-untaken streams are drained internally to avoid pipe-buffer deadlocks.
+`run` / `runAsync` capture stdout and stderr in an `ExecutionResult`. `run`
+blocks Node's event loop until execution finishes; use `runAsync` to await it.
+
+## Spawn with streaming output
+
+```typescript
+import { spawnAsync } from '@microsoft/mxc-sdk/v1';
+
+const processHandle = await spawnAsync({
+  command: 'node -e "console.log(\'hello from container\')"',
+  timeoutMs: 30_000,
+});
+try {
+  processHandle.standardOutput?.on('data', (chunk) => process.stdout.write(chunk));
+  processHandle.standardError?.on('data', (chunk) => process.stderr.write(chunk));
+  console.log(await processHandle.waitAsync());
+} finally {
+  processHandle.dispose();
+}
+```
+
+`spawn` / `spawnAsync` return an `MxcProcess` with standard pipes, wait,
+termination, and disposal operations. Access output streams before awaiting
+completion; any untaken streams are drained internally to avoid pipe-buffer
+deadlocks.
 Each operation accepts its own optional options type: `RunOptions`,
 `SpawnOptions`, or `SpawnWithPtyOptions`. `experimental` authorizes native
 experimental features; it does not change the SDK-owned wire contract.
@@ -53,19 +70,42 @@ Execution options do not support `dryRun`.
 `ContainerRequest` holds the command, cross-backend filesystem, network, and UI
 settings, and the selected backend's typed configuration. The SDK selects its
 exact V1 contract; callers do not provide a schema version or raw executor
-configuration. One-shot proxy settings are authored at
-`network.runtimeConfig.networkProxy`; the SDK maps them to the existing
-top-level wire `runtimeConfig`.
+configuration.
 
 When UI settings are supplied, `ui.disable` explicitly controls whether UI is
 disabled; clipboard and input-injection permissions remain separate.
 
-`spawnWithPty(request, options?)` starts a one-shot request with a caller-driven
-terminal and returns a `Promise<MxcPtyProcess>`. Set `options.size` for initial
-dimensions; it defaults to 24 rows by 80 columns. PTY support is currently
-available for IsolationSession and supported Windows ProcessContainer requests.
+## Spawn with an IsolationSession terminal
 
-## Existing containers
+PTY execution is available only for IsolationSession on a supported Windows
+host. IsolationSession requires explicit unrestricted networking because it
+cannot enforce network restrictions.
+
+```typescript
+import { spawnWithPty } from '@microsoft/mxc-sdk/v1';
+
+const terminal = await spawnWithPty({
+  containment: { type: 'isolation_session' },
+  command: 'cmd.exe',
+  network: {
+    egress: { default: 'allow' },
+    ingress: { default: 'allow', hostLoopback: 'allow' },
+  },
+  timeoutMs: 30_000,
+}, { size: { rows: 24, columns: 80 } });
+try {
+  terminal.output.on('data', (chunk) => process.stdout.write(chunk));
+  terminal.input.end('echo hello from terminal\r\nexit\r\n');
+  console.log(await terminal.waitAsync());
+} finally {
+  terminal.dispose();
+}
+```
+
+`spawnWithPty` returns a `Promise<MxcPtyProcess>` with merged terminal output
+and resizing support. Initial dimensions default to 24 rows by 80 columns.
+
+## Lifecycle API
 
 `ProvisionResult<C>.metadata` uses `ProvisionMetadata<C>` to select the
 backend's metadata type. IsolationSession returns
@@ -85,16 +125,26 @@ import {
 } from '@microsoft/mxc-sdk/v1';
 
 const { containerId } = await provisionContainer({
-  containment: 'wslc',
-  image: 'alpine:latest',
+  containment: 'isolation_session',
+  network: {
+    egress: { default: 'allow' },
+    ingress: { default: 'allow', hostLoopback: 'allow' },
+  },
 });
-await startContainer(containerId);
-const result = await runInContainerAsync(containerId, {
-  command: 'echo hello',
-});
-console.log(result.stdout, result.exitCode);
-await stopContainer(containerId);
-await deprovisionContainer(containerId);
+try {
+  await startContainer(containerId);
+  try {
+    const result = await runInContainerAsync(containerId, {
+      command: 'echo hello from lifecycle',
+      timeoutMs: 30_000,
+    });
+    console.log(result.stdout, result.exitCode);
+  } finally {
+    await stopContainer(containerId);
+  }
+} finally {
+  await deprovisionContainer(containerId);
+}
 ```
 
 `spawnInContainer` / `spawnInContainerAsync` return a live pipe-backed
@@ -107,8 +157,8 @@ IsolationSession exec with a caller-driven terminal and returns a
 to 24 rows by 80 columns.
 IsolationSession provision requires an explicit unrestricted directional
 network posture; WSLC network posture is fixed at provision. See the
-[IsolationSession](../../docs/isolation-session/state-aware-typescript.md) and
-[WSLC](../../docs/wsl/wslc-state-aware.md) guides for backend and phase
+[IsolationSession](https://github.com/microsoft/mxc/blob/main/docs/isolation-session/state-aware-typescript.md) and
+[WSLC](https://github.com/microsoft/mxc/blob/main/docs/wsl/wslc-state-aware.md) guides for backend and phase
 requirements.
 
 Provisioning takes a discriminated `ProvisionRequest` and optional
@@ -125,8 +175,7 @@ Lifecycle and existing-container options can override request telemetry.
 and `validateProcess` perform native dry-run validation without creating a
 container or returning an execution result. They return `ValidationResult`
 with a `warnings` array and use the corresponding
-operation options. Captured existing-container execution is asynchronous;
-there is no synchronous `runInContainer` API.
+operation options.
 Existing-container execution accepts runtime-only network settings at
 `network.runtimeConfig`; it cannot change the container's provision-time
 network policy.
@@ -145,7 +194,7 @@ remain on the selected containment configuration.
 
 | Purpose | TypeScript type |
 | --- | --- |
-| One-shot request and cross-backend restrictions | `ContainerRequest` |
+| Creation request and cross-backend restrictions | `ContainerRequest` |
 | Persistent container identity | `ContainerId` |
 | Persistent container provision input | `ProvisionRequest` |
 | Existing-container workload | `ExecutionRequest` |
@@ -162,9 +211,11 @@ remain on the selected containment configuration.
 | Runtime network values | `NetworkRuntimeConfig` |
 
 Network policy details are in the
-[networking guide](../../docs/sandbox-policy/0.8.0/networking/networking.md);
+[networking guide](https://github.com/microsoft/mxc/blob/main/docs/sandbox-policy/0.8.0/networking/networking.md);
 host-specific behavior and supported capabilities are documented in the
-backend guides under [`docs/`](../../docs/).
+backend guides under [`docs/`](https://github.com/microsoft/mxc/tree/main/docs).
+See the [SDK API reference](https://github.com/microsoft/mxc/blob/main/docs/reference/README.md)
+for complete signatures and types.
 
 ## Errors, warnings, and telemetry
 

@@ -21,7 +21,7 @@ and helpers live under `mxc_sdk::v1`, `Microsoft.Mxc.Sdk.V1`, or
 | Live standard pipes | `spawn` | `MxcContainer.Spawn` / `SpawnAsync` | `spawn` / `spawnAsync` |
 | Provision | `container::provision_container` | `MxcLifecycle.ProvisionContainer` | `provisionContainer` |
 | Start | `container::start_container` | `MxcLifecycle.StartContainer` | `startContainer` |
-| Existing-container capture | `run_in_container` | `RunInContainer` / `RunInContainerAsync` | `runInContainerAsync` |
+| Existing-container capture | `run_in_container` | `RunInContainer` / `RunInContainerAsync` | `runInContainer` / `runInContainerAsync` |
 | Existing-container streaming | `spawn_in_container` | `SpawnInContainer` / `SpawnInContainerAsync` | `spawnInContainer` / `spawnInContainerAsync` |
 | Stop | `container::stop_container` | `MxcLifecycle.StopContainer` | `stopContainer` |
 | Deprovision | `container::deprovision_container` | `MxcLifecycle.DeprovisionContainer` | `deprovisionContainer` |

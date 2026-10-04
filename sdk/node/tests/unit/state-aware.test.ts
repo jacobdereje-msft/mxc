@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream';
 import {
   deprovisionContainer,
   spawnInContainer,
+  spawnInContainerAsync,
   runInContainer,
   runInContainerAsync,
   spawnInContainerWithPty,
@@ -181,6 +182,43 @@ function readStreamText(stream: NodeJS.ReadableStream | null): Promise<string> {
 afterEach(() => _setBindingStateAwareAsyncImplementation());
 afterEach(() => _setStateAwareBindingSandboxProcessFactory());
 afterEach(() => _setBindingStateAwareRunImplementation());
+
+describe('lifecycle execution options', () => {
+  it('rejects supplied dryRun on asynchronous execution and lifecycle operations', async () => {
+    _setBindingStateAwareAsyncImplementation(async () => {
+      assert.fail('invalid options must not reach native execution');
+    });
+    const id = 'iso:abc' as ContainerId<'isolation_session'>;
+    for (const dryRun of [true, false, undefined]) {
+      const options = { dryRun } as never;
+      for (const operation of [
+        () => provisionContainer({
+          containment: 'isolation_session',
+          network: {
+            egress: { default: 'allow' },
+            ingress: { default: 'allow', hostLoopback: 'allow' },
+          },
+        }, options),
+        () => startContainer(id, options),
+        () => stopContainer(id, options),
+        () => deprovisionContainer(id, options),
+        () => runInContainerAsync(id, { command: 'echo hello' }, options),
+        () => spawnInContainerAsync(id, { command: 'echo hello' }, options),
+      ]) {
+        await assert.rejects(
+          async () => operation(),
+          (error: unknown) => error instanceof MxcError
+            && error.code === 'malformed_request'
+            && /does not support dryRun/.test(error.message),
+        );
+      }
+      assert.throws(
+        () => spawnInContainerWithPty(id, { command: 'echo hello' }, options),
+        /does not support dryRun/,
+      );
+    }
+  });
+});
 
 describe('validation results', () => {
   const id = 'iso:validation' as ContainerId<'isolation_session'>;
@@ -793,9 +831,11 @@ describe('runInContainer', () => {
   it('rejects unsupported options and identities before native execution', () => {
     _setBindingStateAwareRunImplementation(() => { assert.fail('must not execute'); });
     const id = 'iso:abc' as ContainerId<'isolation_session'>;
-    assert.throws(() => runInContainer(id, { command: 'echo' },
-      { dryRun: true } as RunInContainerOptions),
-      (error: unknown) => error instanceof MxcError && error.code === 'malformed_request');
+    for (const dryRun of [true, false, undefined]) {
+      assert.throws(() => runInContainer(id, { command: 'echo' },
+        { dryRun } as RunInContainerOptions),
+        (error: unknown) => error instanceof MxcError && error.code === 'malformed_request');
+    }
     assert.throws(() => runInContainer(id, { command: 'echo' },
       { extra: true } as RunInContainerOptions),
       (error: unknown) => error instanceof MxcError && error.code === 'malformed_request');
@@ -1000,19 +1040,21 @@ timeoutMs: 123 },
     assert.strictEqual(exec.experimental(), true);
     proc.dispose();
   });
-  it('rejects dryRun because no live process exists', () => {
+  it('rejects any supplied dryRun because no live process exists', () => {
     const id = 'iso:abc' as ContainerId<'isolation_session'>;
-    assert.throws(
-      () => spawnInContainer(
-        id,
-        { command: 'echo live' },
-        { dryRun: true } as never,
-      ),
-      (err: unknown) => err instanceof MxcError && err.code === 'malformed_request' && /does not support dryRun/.test(err.message),
-    );
+    for (const dryRun of [true, false, undefined]) {
+      assert.throws(
+        () => spawnInContainer(
+          id,
+          { command: 'echo live' },
+          { dryRun } as never,
+        ),
+        (err: unknown) => err instanceof MxcError && err.code === 'malformed_request' && /does not support dryRun/.test(err.message),
+      );
+    }
   });
 
-  it('rejects options other than experimental and dryRun', () => {
+  it('rejects unsupported execution options', () => {
     assert.throws(
       () => spawnInContainer(
         'iso:abc' as ContainerId<'isolation_session'>,
