@@ -46,6 +46,11 @@ use wxc_common::validator::{
 use crate::default_env::{env_pairs, resolved_env, DEFAULT_SANDBOX_PATH};
 use crate::profile_builder::build_profile_with_proxy;
 
+#[link(name = "proc")]
+unsafe extern "C" {
+    fn proc_listallpids(buffer: *mut libc::c_void, buffersize: libc::c_int) -> libc::c_int;
+}
+
 /// Env var keys the cooperative proxy manages. When a proxy is active these
 /// are stripped from the caller-supplied environment so sandboxed code cannot
 /// override the `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` values we inject (or
@@ -63,6 +68,63 @@ const PROXY_ENV_KEYS: &[&str] = &[
     "NO_PROXY",
     "no_proxy",
 ];
+
+fn session_kill(child: &mut std::process::Child) -> std::io::Result<()> {
+    let session_id = child.id() as libc::pid_t;
+    let group_result = group_kill(child);
+    let session_result = kill_session_members(session_id);
+    group_result.and(session_result)
+}
+
+fn kill_session_members(session_id: libc::pid_t) -> std::io::Result<()> {
+    const SESSION_SWEEPS: usize = 3;
+
+    let mut first_error = None;
+    // SAFETY: `getpid` has no preconditions.
+    let current_pid = unsafe { libc::getpid() };
+    for _ in 0..SESSION_SWEEPS {
+        for pid in list_all_pids()? {
+            if pid <= 0 || pid == current_pid {
+                continue;
+            }
+            // SAFETY: `getsid` only queries the process identified by `pid`.
+            if unsafe { libc::getsid(pid) } != session_id {
+                continue;
+            }
+            // SAFETY: every matched process belongs to the child-owned session.
+            if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+                continue;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) && first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+        std::thread::yield_now();
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn list_all_pids() -> std::io::Result<Vec<libc::pid_t>> {
+    // SAFETY: a null buffer asks libproc for the current process count.
+    let count = unsafe { proc_listallpids(std::ptr::null_mut(), 0) };
+    if count < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut pids = vec![0; count as usize + 128];
+    let buffer_size = pids
+        .len()
+        .checked_mul(std::mem::size_of::<libc::pid_t>())
+        .and_then(|size| libc::c_int::try_from(size).ok())
+        .ok_or_else(|| std::io::Error::other("macOS process list is too large"))?;
+    // SAFETY: `pids` is writable for exactly `buffer_size` bytes.
+    let listed = unsafe { proc_listallpids(pids.as_mut_ptr().cast::<libc::c_void>(), buffer_size) };
+    if listed < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    pids.truncate((listed as usize).min(pids.len()));
+    Ok(pids)
+}
 
 /// Proxy env var keys injected (pointing at the resolved proxy URL) when a
 /// proxy is active. `NO_PROXY` is intentionally absent — see the module docs
@@ -334,6 +396,7 @@ fn spawn_exec(
         started,
         timed_out: false,
         group: new_session || new_group || stdio != StdioMode::Inherit,
+        session: new_session,
         cleanup: Vec::new(),
         proxy,
     }))
@@ -490,6 +553,7 @@ fn spawn_open(
         started,
         timed_out: false,
         group: false,
+        session: false,
         cleanup: vec![profile_path, helper_path, command_path],
         proxy,
     }))
@@ -517,9 +581,12 @@ struct SeatbeltSandboxProcess {
     timeout: Option<Duration>,
     started: Instant,
     timed_out: bool,
-    /// The child leads its own process group (`setsid`), so termination signals
-    /// the whole group; `false` for inherited / Open mode (a single process).
+    /// The child leads its own process group, so termination can signal that
+    /// group without touching the host process group.
     group: bool,
+    /// The child leads an owned session, so job-control descendants in other
+    /// process groups can be terminated without touching the host session.
+    session: bool,
     /// Temp files to remove once the child exits (Open mode); empty otherwise.
     cleanup: Vec<String>,
     /// The per-run cooperative network proxy. Inactive (a no-op on teardown)
@@ -690,7 +757,9 @@ impl SandboxProcess for SeatbeltSandboxProcess {
         if self.child.try_wait()?.is_some() {
             return Ok(());
         }
-        if self.group {
+        if self.session {
+            session_kill(&mut self.child)
+        } else if self.group {
             // The child leads its own process group — signal the whole group so
             // sandboxed descendants are terminated too.
             group_kill(&mut self.child)
@@ -700,6 +769,11 @@ impl SandboxProcess for SeatbeltSandboxProcess {
             // binary itself).
             self.child.kill()
         }
+    }
+
+    fn kill_for_timeout(&mut self) -> std::io::Result<()> {
+        self.timed_out = true;
+        self.kill()
     }
 
     fn wait(&mut self) -> std::io::Result<i32> {

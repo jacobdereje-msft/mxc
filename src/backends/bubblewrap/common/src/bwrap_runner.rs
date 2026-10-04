@@ -1046,6 +1046,11 @@ impl SandboxProcess for BubblewrapSandboxProcess {
         }
     }
 
+    fn kill_for_timeout(&mut self) -> std::io::Result<()> {
+        self.inner.timed_out = true;
+        self.kill()
+    }
+
     fn wait(&mut self) -> std::io::Result<i32> {
         // Close our copy of any not-taken stdin so the child sees EOF.
         self.inner.stdin.take();

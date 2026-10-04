@@ -499,13 +499,21 @@ impl LivePty {
                     let mut buffer = [0_u8; 8192];
                     loop {
                         let count = match reader.read(&mut buffer) {
-                            Ok(0) | Err(_) => return,
+                            Ok(0) => {
+                                let _ = writer.send_eof_until_shutdown(&input_shutdown);
+                                return;
+                            }
+                            Err(_) => {
+                                writer.abandon_eof();
+                                return;
+                            }
                             Ok(count) => count,
                         };
                         if writer
                             .write_all_until_shutdown(&buffer[..count], &input_shutdown)
                             .is_err()
                         {
+                            writer.abandon_eof();
                             return;
                         }
                     }
@@ -651,6 +659,7 @@ impl Read for PtyReader {
 struct PtyWriter {
     writer: Option<std::fs::File>,
     eof: PtyEof,
+    eof_sent: bool,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -659,6 +668,7 @@ impl PtyWriter {
         Self {
             writer: Some(writer),
             eof,
+            eof_sent: false,
         }
     }
 
@@ -672,6 +682,41 @@ impl PtyWriter {
             .as_mut()
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
         write_all_until_shutdown(writer, buffer, shutdown)
+    }
+
+    fn send_eof_until_shutdown(&mut self, shutdown: &BridgeShutdown) -> std::io::Result<()> {
+        let Some(eof) = self.take_eof_byte() else {
+            return Ok(());
+        };
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        write_all_until_shutdown(writer, &[eof, eof], shutdown)?;
+        writer.flush()
+    }
+
+    fn send_eof(&mut self) -> std::io::Result<()> {
+        let Some(eof) = self.take_eof_byte() else {
+            return Ok(());
+        };
+        self.write_all(&[eof, eof])?;
+        self.flush()
+    }
+
+    fn take_eof_byte(&mut self) -> Option<u8> {
+        if self.eof_sent {
+            return None;
+        }
+        self.eof_sent = true;
+        match self.eof {
+            PtyEof::CurrentCanonical => self.writer.as_ref().and_then(terminal_eof_byte),
+            PtyEof::Forwarded(eof) => Some(eof),
+        }
+    }
+
+    fn abandon_eof(&mut self) {
+        self.eof_sent = true;
     }
 }
 
@@ -715,16 +760,7 @@ impl Write for PtyWriter {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for PtyWriter {
     fn drop(&mut self) {
-        let Some(mut writer) = self.writer.take() else {
-            return;
-        };
-        let eof = match self.eof {
-            PtyEof::CurrentCanonical => terminal_eof_byte(&writer),
-            PtyEof::Forwarded(eof) => Some(eof),
-        };
-        if eof.is_some_and(|eof| writer.write_all(&[eof]).is_ok()) {
-            let _ = writer.flush();
-        }
+        let _ = self.send_eof();
     }
 }
 
@@ -1210,7 +1246,11 @@ mod tests {
         drop(command);
         let mut reader = terminal.try_clone_reader().expect("clone reader");
 
-        drop(terminal.take_writer().expect("take writer"));
+        let mut writer = terminal.take_writer().expect("take writer");
+        writer
+            .write_all(b"partial-line")
+            .expect("write partial line");
+        drop(writer);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -1243,9 +1283,9 @@ mod tests {
 
         let _reader = terminal.try_clone_reader().expect("clone reader");
         let mut writer = terminal.take_writer().expect("take writer");
-        writer
-            .write_all(&vec![b'\n'; 256 * 1024])
-            .expect("write large input");
+        let mut input = b"x\n".repeat(128 * 1024);
+        input.extend_from_slice(b"partial-line");
+        writer.write_all(&input).expect("write large partial input");
         drop(writer);
 
         assert!(child.wait().expect("wait child").success());
@@ -1298,7 +1338,7 @@ mod tests {
         assert!(terminal.try_clone_reader().is_err());
         let mut input = File::from(stdio.stdin);
         let mut output = File::from(stdio.stdout);
-        input.write_all(b"hello\n").expect("write input");
+        input.write_all(b"hello").expect("write partial input");
         drop(input);
 
         assert!(child.wait().expect("wait child").success());
@@ -1306,6 +1346,37 @@ mod tests {
         let mut text = String::new();
         output.read_to_string(&mut text).expect("read output");
         assert!(text.contains("native-reply:hello"), "got: {text:?}");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn native_bridge_delivers_eof_after_large_partial_input() {
+        let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("stty -echo; sleep 0.1; cat >/dev/null; printf 'native-eof-observed\\n'");
+        let terminal = LivePty::attach(&mut command, PtySize::default(), &[]).expect("attach PTY");
+        let mut child = command.spawn().expect("spawn child");
+        drop(command);
+
+        let stdio = terminal.take_native_stdio().expect("take native stdio");
+        let input_thread = std::thread::spawn(move || {
+            let mut input = std::fs::File::from(stdio.stdin);
+            let mut bytes = b"x\n".repeat(128 * 1024);
+            bytes.extend_from_slice(b"partial-line");
+            input.write_all(&bytes).expect("write large partial input");
+            drop(input);
+            stdio.stdout
+        });
+
+        assert!(child.wait().expect("wait child").success());
+        terminal.finish_native_bridge();
+        let stdout = input_thread.join().expect("input thread");
+        let mut output = std::fs::File::from(stdout);
+        let mut text = String::new();
+        output.read_to_string(&mut text).expect("read output");
+        assert!(text.contains("native-eof-observed"), "got: {text:?}");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

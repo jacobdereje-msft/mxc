@@ -99,6 +99,17 @@ fn bubblewrap_pty_enforces_script_timeout() {
 }
 
 #[test]
+fn bubblewrap_pty_preserves_explicit_timeout_kill() {
+    if !bwrap_available() {
+        return;
+    }
+    unix_pty_contract::assert_explicit_timeout_kill(bwrap_request(
+        unix_pty_contract::TIMEOUT_COMMAND,
+        30_000,
+    ));
+}
+
+#[test]
 fn bubblewrap_pty_transfers_native_stdio() {
     if !bwrap_available() {
         return;

@@ -12,8 +12,8 @@
 
 mod unix_pty_contract;
 
-use mxc_sdk::v1::{build_request, spawn_sandbox, SandboxPolicy, SandboxRequest};
-use mxc_sdk::WaitOutcome;
+use mxc_sdk::v1::{build_request, spawn_sandbox, spawn_with_pty, SandboxPolicy, SandboxRequest};
+use mxc_sdk::{MxcPtySize, WaitOutcome};
 
 /// A Seatbelt streaming request (`/tmp` read-write) with the given command and
 /// timeout (ms; `0` == run until exit, required for interactive/long cases).
@@ -75,6 +75,14 @@ fn seatbelt_pty_enforces_script_timeout() {
         seatbelt_request(unix_pty_contract::TIMEOUT_COMMAND, 1_000),
         std::time::Duration::from_secs(15),
     );
+}
+
+#[test]
+fn seatbelt_pty_preserves_explicit_timeout_kill() {
+    unix_pty_contract::assert_explicit_timeout_kill(seatbelt_request(
+        unix_pty_contract::TIMEOUT_COMMAND,
+        30_000,
+    ));
 }
 
 #[test]
@@ -321,6 +329,71 @@ fn pid_alive(pid: u32) -> bool {
     // ESRCH => no such process (dead). Any other errno (e.g. EPERM: the pid
     // exists but we may not signal it) means it is still alive.
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(target_os = "macos")]
+fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
+    use std::io::{BufRead, BufReader};
+
+    let terminal = spawn_with_pty(
+        seatbelt_request(
+            "exec /bin/bash -c 'set -m; trap \"\" HUP; sleep 300 & echo CHILD=$!; wait'",
+            timeout_ms,
+        ),
+        MxcPtySize::default(),
+    )
+    .expect("spawn PTY job-control shell");
+    let mut reader = BufReader::new(terminal.try_clone_reader().expect("PTY reader"));
+    let mut line = String::new();
+    let descendant = loop {
+        line.clear();
+        reader.read_line(&mut line).expect("read descendant pid");
+        if let Some(value) = line.trim().strip_prefix("CHILD=") {
+            break value.parse::<u32>().expect("descendant pid");
+        }
+    };
+
+    // SAFETY: `getpgid` only queries the process identified by `descendant`.
+    let descendant_group = unsafe { libc::getpgid(descendant as libc::pid_t) };
+    assert!(descendant_group > 0, "descendant process group");
+    assert_ne!(
+        descendant_group as u32,
+        terminal.id(),
+        "job control must place the descendant outside the shell's process group"
+    );
+
+    if explicit_kill {
+        terminal.kill().expect("kill PTY session");
+        assert_ne!(
+            terminal.wait().expect("wait after kill"),
+            WaitOutcome::Exited(0)
+        );
+    } else {
+        assert_eq!(
+            terminal.wait().expect("wait for timeout"),
+            WaitOutcome::TimedOut
+        );
+    }
+
+    for _ in 0..60 {
+        if !pid_alive(descendant) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("job-control descendant {descendant} survived PTY termination");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_pty_kill_terminates_job_control_groups() {
+    assert_pty_job_control_tree_is_killed(0, true);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_pty_timeout_terminates_job_control_groups() {
+    assert_pty_job_control_tree_is_killed(1_000, false);
 }
 
 #[cfg(target_os = "macos")]

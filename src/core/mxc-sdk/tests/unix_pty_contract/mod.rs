@@ -38,7 +38,7 @@ pub fn assert_round_trip(request: SandboxRequest) {
         output
     });
     let mut writer = terminal.take_writer().expect("writer");
-    writer.write_all(b"hello\n").expect("write input");
+    writer.write_all(b"hello").expect("write partial input");
     drop(writer);
 
     assert_eq!(terminal.wait().expect("wait"), WaitOutcome::Exited(0));
@@ -80,6 +80,19 @@ pub fn assert_timeout(request: SandboxRequest, maximum: Duration) {
     );
 }
 
+pub fn assert_explicit_timeout_kill(request: SandboxRequest) {
+    let terminal = spawn_with_pty(request, MxcPtySize::default())
+        .expect("spawn_with_pty for explicit timeout kill");
+    terminal
+        .kill_for_timeout()
+        .expect("explicit timeout kill succeeds");
+    let repeated = terminal
+        .try_wait()
+        .expect_err("explicit timeout kill must latch timeout classification");
+    assert_eq!(repeated.kind(), std::io::ErrorKind::TimedOut);
+    assert_eq!(terminal.wait().expect("wait"), WaitOutcome::TimedOut);
+}
+
 pub fn assert_native_stdio(request: SandboxRequest) {
     let mut terminal =
         spawn_with_pty(request, MxcPtySize::default()).expect("spawn_with_pty for native stdio");
@@ -91,7 +104,9 @@ pub fn assert_native_stdio(request: SandboxRequest) {
 
     let mut input = std::fs::File::from(stdio.stdin.expect("PTY input pipe"));
     let mut output = std::fs::File::from(stdio.stdout.expect("PTY output pipe"));
-    input.write_all(b"hello\n").expect("write native input");
+    input
+        .write_all(b"hello")
+        .expect("write partial native input");
     drop(input);
 
     assert_eq!(terminal.wait().expect("wait"), WaitOutcome::Exited(0));

@@ -139,6 +139,21 @@ fn lxc_pty_enforces_script_timeout_and_tears_down() {
 }
 
 #[test]
+fn lxc_pty_preserves_explicit_timeout_kill() {
+    if !lxc_ready() {
+        return;
+    }
+    let _guard = exclusive();
+    let name = container_name("pty-explicit-timeout");
+    unix_pty_contract::assert_explicit_timeout_kill(lxc_request(
+        unix_pty_contract::TIMEOUT_COMMAND,
+        &name,
+        LIVE_TIMEOUT_MS,
+    ));
+    assert_container_released(&name);
+}
+
+#[test]
 fn lxc_pty_transfers_native_stdio() {
     if !lxc_ready() {
         return;
