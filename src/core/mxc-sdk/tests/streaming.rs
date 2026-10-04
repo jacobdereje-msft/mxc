@@ -401,6 +401,7 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
     );
 
     let terminal = std::sync::Arc::new(terminal);
+    let leader = terminal.id();
     let waiter = {
         let terminal = std::sync::Arc::clone(&terminal);
         std::thread::spawn(move || {
@@ -420,7 +421,11 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
         Ok(Err(_)) => panic!("PTY termination thread panicked"),
         Err(error) => {
             closer.close();
-            let _ = terminal.kill();
+            // SAFETY: these are the two process IDs created and observed by this test.
+            unsafe {
+                libc::kill(descendant as libc::pid_t, libc::SIGKILL);
+                libc::kill(leader as libc::pid_t, libc::SIGKILL);
+            }
             panic!("PTY termination did not complete within 20 seconds: {error}");
         }
     };

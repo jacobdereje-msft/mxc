@@ -365,6 +365,7 @@ impl LivePty {
             let flags = FdFlag::from_bits_truncate(bits) | FdFlag::FD_CLOEXEC;
             fcntl(fd, FcntlArg::F_SETFD(flags)).map_err(std::io::Error::from)?;
         }
+        set_nonblocking(pair.master.as_raw_fd())?;
 
         let secondary_in: Stdio = pair.slave.try_clone()?.into();
         let secondary_out: Stdio = pair.slave.try_clone()?.into();
@@ -721,11 +722,19 @@ impl PtyWriter {
     }
 
     fn send_eof(&mut self) -> std::io::Result<()> {
+        // Drop must not prevent the owning process timeout from running when a
+        // terminal input queue has no active reader.
+        const EOF_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
         let Some((eof, count)) = self.take_eof() else {
             return Ok(());
         };
-        self.write_all(&[eof, eof][..count])?;
-        self.flush()
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        write_all_until_deadline(writer, &[eof, eof][..count], EOF_WRITE_TIMEOUT)?;
+        writer.flush()
     }
 
     fn take_eof(&mut self) -> Option<(u8, usize)> {
@@ -881,6 +890,50 @@ fn write_all_until_shutdown(
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if !shutdown.wait_writable(writer.as_raw_fd())? {
                     return Err(std::io::ErrorKind::Interrupted.into());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn write_all_until_deadline(
+    writer: &mut std::fs::File,
+    mut buffer: &[u8],
+    timeout: std::time::Duration,
+) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    while !buffer.is_empty() {
+        match writer.write(buffer) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(count) => buffer = &buffer[count..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Err(std::io::ErrorKind::TimedOut.into());
+                }
+                let timeout_ms = (deadline - now)
+                    .as_millis()
+                    .clamp(1, libc::c_int::MAX as u128)
+                    as libc::c_int;
+                let mut poll_fd = libc::pollfd {
+                    fd: writer.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: `poll_fd` references the live writer descriptor for this call.
+                let result = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+                if result == 0 {
+                    return Err(std::io::ErrorKind::TimedOut.into());
+                }
+                if result < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -1407,6 +1460,54 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "closing untouched canonical input blocked without a reader"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn dropping_writer_does_not_wait_for_a_full_input_queue() {
+        let _guard = RUN_WITH_PTY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("sleep 30");
+        let terminal = LivePty::attach(&mut command, PtySize::default(), &[]).expect("attach PTY");
+        let mut child = command.spawn().expect("spawn child");
+        drop(command);
+
+        let mut fill = terminal
+            .access
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .writer
+            .as_ref()
+            .expect("PTY writer")
+            .try_clone()
+            .expect("clone writer");
+        let buffer = [b'x'; 4096];
+        let mut queue_full = false;
+        // A PTY input queue is far smaller than 16 MiB. Cap the attempts so a
+        // platform that unexpectedly discards input fails instead of looping.
+        for _ in 0..4096 {
+            match fill.write(&buffer) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    queue_full = true;
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => panic!("fill PTY input queue: {error}"),
+            }
+        }
+        assert!(queue_full, "PTY input queue did not reach backpressure");
+        drop(fill);
+
+        let started = std::time::Instant::now();
+        drop(terminal.take_writer().expect("take writer"));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "closing canonical input blocked on a full input queue"
         );
 
         let _ = child.kill();
