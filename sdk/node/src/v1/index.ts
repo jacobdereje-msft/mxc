@@ -110,6 +110,9 @@ export {
 // Export types
 export {
   IsolationTier,
+  AvailableBackend,
+  BackendCapability,
+  ContainmentBackend,
   PlatformSupport,
   UiCapabilitySupport,
   ProbeOutput,
@@ -119,6 +122,7 @@ export {
 
 // Export platform detection functions
 export {
+  getAvailableBackends,
   getPlatformSupport,
 } from './platform.js';
 
@@ -150,9 +154,9 @@ export {
   TelemetryConsentDecision,
   TelemetryConsentOutcome,
   TelemetryConsentPresenter,
-  TelemetryConsentQuery,
+  TelemetryConsentStatus,
   TelemetryPolicyState,
-  requestTelemetryConsent,
-  queryTelemetryConsentAsync,
+  requestTelemetryConsentAsync,
+  getTelemetryConsentStatusAsync,
   withdrawTelemetryConsentAsync,
 } from './telemetry.js';

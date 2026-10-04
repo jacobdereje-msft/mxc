@@ -730,6 +730,27 @@ export type IsolationTier =
   | 'appcontainer-bfs'
   | 'appcontainer-dacl';
 
+/** Optional capability reported by native backend discovery. */
+export type BackendCapability =
+  | 'captureDenials'
+  | 'filesystemDeniedPaths'
+  | 'filesystemEnumeratePaths'
+  | 'ingressHostLoopbackAllow'
+  | 'proxyEnforcement'
+  | 'unknown';
+
+/** One host-available backend and its native capabilities. */
+export interface AvailableBackend {
+  /** Unknown names from a newer native library map to 'unknown'. */
+  backend: ContainmentBackend | 'unknown';
+  /** Omitted when the backend has no isolation-tier ladder. */
+  tier?: IsolationTier | 'unknown';
+  /** Empty when no optional capability was reported. */
+  capabilities: BackendCapability[];
+  /** Diagnostics for optional capabilities that are unavailable. */
+  warnings: string[];
+}
+
 /**
  * Host support for enforcing sandbox UI restrictions.
  *

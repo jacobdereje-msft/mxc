@@ -32,6 +32,17 @@ Get platform support information.
 export function getPlatformSupport(): PlatformSupport;
 ```
 
+## `@microsoft/mxc-sdk/v1::getAvailableBackends`
+
+Read every native host-available backend, including its isolation tier,
+capabilities, and warnings. Host availability is advisory and does not imply
+that V1 creation can launch every reported backend. Native failures and
+malformed payloads throw.
+
+```typescript
+export function getAvailableBackends(): AvailableBackend[];
+```
+
 
 ## `@microsoft/mxc-sdk/v1::getTemporaryFilesPolicy`
 
@@ -82,21 +93,21 @@ export async function provisionContainer<C extends LifecycleContainmentKind>(req
 ```
 
 
-## `@microsoft/mxc-sdk/v1::queryTelemetryConsentAsync`
+## `@microsoft/mxc-sdk/v1::getTelemetryConsentStatusAsync`
 
 Read persisted/effective consent and policy without blocking the event loop.
 
 ```typescript
-export async function queryTelemetryConsentAsync(): Promise<TelemetryConsentQuery>;
+export async function getTelemetryConsentStatusAsync(): Promise<TelemetryConsentStatus>;
 ```
 
 
-## `@microsoft/mxc-sdk/v1::requestTelemetryConsent`
+## `@microsoft/mxc-sdk/v1::requestTelemetryConsentAsync`
 
 Request consent with the versioned canonical consent resource.
 
 ```typescript
-export async function requestTelemetryConsent(presenter: TelemetryConsentPresenter, locale?: string): Promise<TelemetryConsentOutcome>;
+export async function requestTelemetryConsentAsync(presenter: TelemetryConsentPresenter, locale?: string): Promise<TelemetryConsentOutcome>;
 ```
 
 

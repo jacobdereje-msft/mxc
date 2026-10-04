@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
 import {
+  type AvailableBackend,
+  type BackendCapability,
   BubblewrapNetworkSupport,
   ContainmentBackend,
   IsolationTier,
@@ -14,6 +16,74 @@ import {
   UiCapabilitySupport,
 } from './types.js';
 import { diagLog } from '../diagnostic.js';
+import { readAvailableBackendsJson } from '../bindings/probe.js';
+import { MxcError } from './errors.js';
+
+const discoveryBackends: readonly ContainmentBackend[] = [
+  'processcontainer', 'windows_sandbox', 'wslc', 'lxc', 'microvm',
+  'hyperlight', 'seatbelt', 'isolation_session', 'bubblewrap',
+];
+const discoveryCapabilities: readonly BackendCapability[] = [
+  'captureDenials', 'filesystemDeniedPaths', 'filesystemEnumeratePaths',
+  'ingressHostLoopbackAllow', 'proxyEnforcement',
+];
+const discoveryTiers: readonly IsolationTier[] = [
+  'base-container', 'appcontainer-bfs', 'appcontainer-dacl',
+];
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item: unknown) => typeof item === 'string');
+}
+
+/**
+ * Read every host-available backend and its capabilities through in-process
+ * mxc_ffi. Availability is advisory; not every reported backend is launchable
+ * through the V1 creation API. Native failures and malformed results throw.
+ */
+export function getAvailableBackends(): AvailableBackend[] {
+  return parseAvailableBackends(readAvailableBackendsJson());
+}
+
+/** @internal Pure projection of the native discovery payload. */
+export function parseAvailableBackends(json: string): AvailableBackend[] {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(json);
+  } catch (error) {
+    throw new MxcError(
+      'backend_error',
+      `native backend discovery returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const malformed = (): never => {
+    throw new MxcError('backend_error', 'native backend discovery returned malformed JSON');
+  };
+  if (!Array.isArray(payload)) return malformed();
+  return payload.map((value: unknown) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return malformed();
+    const item = value as Record<string, unknown>;
+    if (typeof item.backend !== 'string') return malformed();
+    if (item.tier !== undefined && typeof item.tier !== 'string') return malformed();
+    if (
+      item.capabilities !== undefined &&
+      !isStringArray(item.capabilities)
+    ) return malformed();
+    if (
+      item.warnings !== undefined &&
+      !isStringArray(item.warnings)
+    ) return malformed();
+
+    const match = <T extends string>(known: readonly T[], name: string): T | 'unknown' =>
+      known.find(candidate => candidate === name) ?? 'unknown';
+    return {
+      backend: match(discoveryBackends, item.backend),
+      ...(item.tier === undefined ? {} : { tier: match(discoveryTiers, item.tier) }),
+      capabilities: item.capabilities === undefined ? [] :
+        item.capabilities.map((name: string) => match(discoveryCapabilities, name)),
+      warnings: item.warnings === undefined ? [] : item.warnings,
+    };
+  });
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.resolve(path.dirname(__filename), '..');

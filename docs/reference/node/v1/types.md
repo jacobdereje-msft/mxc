@@ -4,6 +4,34 @@ Public entrypoint: `@microsoft/mxc-sdk/v1`. [Operations](api.md) | [Overview](RE
 
 Declarations include public fields, variants, constructors, and members. Inherited SDK members remain defined on their base type; implementation-only helpers and external framework APIs are not expanded.
 
+## `@microsoft/mxc-sdk/v1::AvailableBackend`
+
+One native host-available backend. Absent capability/warning lists become
+empty arrays. New native backend, tier, or capability names map to `unknown`.
+
+```typescript
+export interface AvailableBackend {
+  backend: ContainmentBackend | 'unknown';
+  tier?: IsolationTier | 'unknown';
+  capabilities: BackendCapability[];
+  warnings: string[];
+}
+```
+
+## `@microsoft/mxc-sdk/v1::BackendCapability`
+
+An optional capability reported by native backend discovery.
+
+```typescript
+export type BackendCapability =
+  | 'captureDenials'
+  | 'filesystemDeniedPaths'
+  | 'filesystemEnumeratePaths'
+  | 'ingressHostLoopbackAllow'
+  | 'proxyEnforcement'
+  | 'unknown';
+```
+
 ## `@microsoft/mxc-sdk/v1::BaseProcessUiConfig`
 
 BaseProcess-specific UI configuration (Windows only).
@@ -15,6 +43,23 @@ export interface BaseProcessUiConfig {
   systemSettings: string;
   ime: boolean;
 }
+```
+
+## `@microsoft/mxc-sdk/v1::ContainmentBackend`
+
+A canonical containment backend name.
+
+```typescript
+export type ContainmentBackend =
+  | 'processcontainer'
+  | 'windows_sandbox'
+  | 'wslc'
+  | 'lxc'
+  | 'microvm'
+  | 'hyperlight'
+  | 'seatbelt'
+  | 'isolation_session'
+  | 'bubblewrap';
 ```
 
 
@@ -866,12 +911,12 @@ export interface TelemetryConsentPrompt {
 ```
 
 
-## `@microsoft/mxc-sdk/v1::TelemetryConsentQuery`
+## `@microsoft/mxc-sdk/v1::TelemetryConsentStatus`
 
 Stored, effective, and policy state returned by a consent query.
 
 ```typescript
-export interface TelemetryConsentQuery {
+export interface TelemetryConsentStatus {
   state: TelemetryConsentState;
   storedState: TelemetryConsentState;
   effectiveState: TelemetryConsentState;

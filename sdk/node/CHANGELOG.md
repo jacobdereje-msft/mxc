@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runInContainer` / `runInContainerAsync` for captured output in an existing container.
 - Each operation takes its own options type. PTY operations take initial
   dimensions in those options and return SDK-owned terminal process handles.
+- Backend discovery uses in-process `getAvailableBackends()` and returns
+  `AvailableBackend[]`, including tiers, capabilities, and warnings.
+- Telemetry consent uses `getTelemetryConsentStatusAsync`,
+  `requestTelemetryConsentAsync`, and `withdrawTelemetryConsentAsync`.
+  Status queries return `TelemetryConsentStatus`.
 
 Entries below describe historical release APIs, not the current V1 surface.
 

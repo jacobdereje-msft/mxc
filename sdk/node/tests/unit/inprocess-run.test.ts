@@ -58,9 +58,15 @@ describe('public SDK namespace exports', () => {
     }
     assert.strictEqual(Object.hasOwn(v1Sdk, 'MxcSandboxProcess'), false);
 
-    for (const name of ['getPlatformSupport', 'probe', 'MxcError'] as const) {
+    for (const name of [
+      'getPlatformSupport', 'getAvailableBackends', 'probe', 'MxcError',
+      'getTelemetryConsentStatusAsync', 'requestTelemetryConsentAsync', 'withdrawTelemetryConsentAsync',
+    ] as const) {
       assert.strictEqual(typeof v1Sdk[name], 'function', name);
       assert.strictEqual(Object.hasOwn(rootSdk, name), false, name);
+    }
+    for (const name of ['queryTelemetryConsentAsync', 'requestTelemetryConsent']) {
+      assert.strictEqual(Object.hasOwn(v1Sdk, name), false, name);
     }
     assert.deepStrictEqual(Object.keys(rootSdk), []);
   });

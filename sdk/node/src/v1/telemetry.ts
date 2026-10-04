@@ -72,7 +72,7 @@ export type TelemetryConsentPresenter = (
   signal?: AbortSignal,
 ) => TelemetryConsentDecision | Promise<TelemetryConsentDecision>;
 
-export interface TelemetryConsentQuery {
+export interface TelemetryConsentStatus {
   state: TelemetryConsentState;
   storedState: TelemetryConsentState;
   effectiveState: TelemetryConsentState;
@@ -292,7 +292,7 @@ function notApplicable(action: 'request' | 'withdraw'): TelemetryConsentOutcome 
   };
 }
 
-function failedConsentQuery(operation: string, error: unknown): TelemetryConsentQuery {
+function failedConsentQuery(operation: string, error: unknown): TelemetryConsentStatus {
   const detail = error instanceof Error ? error.message : String(error);
   reportFailClosed(operation, 'undetermined', detail);
   return {
@@ -325,7 +325,7 @@ async function presentConsentDecision(
 }
 
 /** Read persisted/effective consent and policy without blocking the event loop. */
-export async function queryTelemetryConsentAsync(): Promise<TelemetryConsentQuery> {
+export async function getTelemetryConsentStatusAsync(): Promise<TelemetryConsentStatus> {
   if (!isWindows()) {
     return {
       state: 'not-applicable',
@@ -345,12 +345,12 @@ export async function queryTelemetryConsentAsync(): Promise<TelemetryConsentQuer
       policy: status.policy,
     };
   } catch (error) {
-    return failedConsentQuery('queryTelemetryConsentAsync', error);
+    return failedConsentQuery('getTelemetryConsentStatusAsync', error);
   }
 }
 
 /** Request consent with the versioned canonical consent resource. */
-export async function requestTelemetryConsent(
+export async function requestTelemetryConsentAsync(
   presenter: TelemetryConsentPresenter,
   locale?: string,
 ): Promise<TelemetryConsentOutcome> {

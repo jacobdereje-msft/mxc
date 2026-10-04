@@ -209,6 +209,9 @@ remain on the selected containment configuration.
 | Structured execution outputs | `ExecutionMetadata` |
 | Denial-capture output and failure | `CaptureDenialsResult`, `CaptureDenialsError` |
 | Runtime network values | `NetworkRuntimeConfig` |
+| Native host backend and optional capability | `AvailableBackend`, `BackendCapability` |
+| Consent status and operation result | `TelemetryConsentStatus`, `TelemetryConsentOutcome` |
+| Host consent presenter | `TelemetryConsentPresenter` |
 
 Network policy details are in the
 [networking guide](https://github.com/microsoft/mxc/blob/main/docs/sandbox-policy/0.8.0/networking/networking.md);
@@ -238,6 +241,18 @@ Creation telemetry is supplied through `telemetry: { enabled: true }` on
 Omission leaves telemetry disabled; `enabled: false` explicitly disables it.
 Opt-in remains subject to MXC's persisted user consent and administrative policy. Telemetry consent
 APIs and `getPlatformSupport` are exported from `@microsoft/mxc-sdk/v1`.
+
+`getTelemetryConsentStatusAsync` reads stored/effective consent and policy.
+`requestTelemetryConsentAsync` accepts an application-owned presenter;
+`withdrawTelemetryConsentAsync` withdraws consent. These operations are
+Windows-only and report `not-applicable` on other platforms.
+
+`getAvailableBackends()` reads native host availability, isolation tiers,
+capabilities, and warnings through in-process `mxc_ffi`. It returns
+`AvailableBackend[]`; a reported host backend is not necessarily launchable
+through V1 creation. Discovery is advisory, and launch-time validation still
+applies. Native failures and malformed discovery results throw rather than
+reporting an unsupported host.
 
 Filesystem discovery helpers take an optional `environment` map; omission uses
 `process.env`, and `{}` stays empty. `getAvailableToolsPolicy` also accepts
