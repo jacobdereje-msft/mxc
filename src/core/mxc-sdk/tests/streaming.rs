@@ -332,6 +332,18 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn diagnose_pty_processes(leader: u32, descendant: u32) {
+    let pids = format!("{leader},{descendant}");
+    let _ = std::process::Command::new("/bin/ps")
+        .args(["-o", "pid,ppid,pgid,sess,state,wchan,command", "-p", &pids])
+        .status();
+    let _ = std::process::Command::new("/usr/bin/sample")
+        .arg(leader.to_string())
+        .args(["1", "1"])
+        .status();
+}
+
+#[cfg(target_os = "macos")]
 fn assert_pty_job_control_tree_is_killed(
     timeout_ms: u32,
     explicit_kill: bool,
@@ -437,7 +449,10 @@ fn assert_pty_job_control_tree_is_killed(
     });
     let outcome = match receiver.recv_timeout(std::time::Duration::from_secs(20)) {
         Ok(Ok(Ok(outcome))) => outcome,
-        Ok(Ok(Err(error))) => panic!("PTY termination failed: {error}"),
+        Ok(Ok(Err(error))) => {
+            diagnose_pty_processes(leader, descendant);
+            panic!("PTY termination failed: {error}");
+        }
         Ok(Err(_)) => panic!("PTY termination thread panicked"),
         Err(error) => {
             closer.close();
@@ -467,6 +482,7 @@ fn assert_pty_job_control_tree_is_killed(
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    diagnose_pty_processes(leader, descendant);
     panic!(
         "PTY termination left processes alive: leader={leader} alive={}, descendant={descendant} \
          alive={}",
