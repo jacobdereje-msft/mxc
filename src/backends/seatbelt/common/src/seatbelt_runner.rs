@@ -386,6 +386,8 @@ fn spawn_exec(
         };
 
     let started = Instant::now();
+    let session_id =
+        (new_session || matches!(stdio, StdioMode::Pty(_))).then_some(child.id() as libc::pid_t);
     Ok(Box::new(SeatbeltSandboxProcess {
         child,
         stdin,
@@ -398,8 +400,7 @@ fn spawn_exec(
         started,
         timed_out: false,
         group: new_session || new_group || stdio != StdioMode::Inherit,
-        session_id: (new_session || matches!(stdio, StdioMode::Pty(_)))
-            .then_some(child.id() as libc::pid_t),
+        session_id,
         cleanup: Vec::new(),
         proxy,
     }))
