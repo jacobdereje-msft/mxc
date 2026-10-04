@@ -1006,7 +1006,6 @@ impl SandboxProcess for BubblewrapSandboxProcess {
         {
             self.inner.timed_out = true;
             let terminated = self.kill_for_timeout();
-            let _ = self.inner.lock_child().wait();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 match terminated {

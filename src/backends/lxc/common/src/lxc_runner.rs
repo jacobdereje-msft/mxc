@@ -1513,7 +1513,6 @@ impl SandboxProcess for LxcSandboxProcess {
         {
             self.inner.timed_out = true;
             let terminated = self.kill_for_timeout();
-            let _ = self.inner.child.wait();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 match terminated {
@@ -1588,7 +1587,6 @@ impl SandboxProcess for LxcSandboxProcess {
                     // backgrounded descendant would otherwise hold past the
                     // deadline, so the drains below can finish.
                     let terminated = self.kill_for_timeout();
-                    let _ = self.inner.child.wait();
                     Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         match terminated {

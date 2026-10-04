@@ -420,20 +420,6 @@ fn assert_pty_job_control_tree_is_killed(timeout_ms: u32, explicit_kill: bool) {
         Ok(Ok(Err(error))) => panic!("PTY termination failed: {error}"),
         Ok(Err(_)) => panic!("PTY termination thread panicked"),
         Err(error) => {
-            match std::process::Command::new("/usr/bin/sample")
-                .arg(std::process::id().to_string())
-                .args(["1", "1"])
-                .output()
-            {
-                Ok(sample) => {
-                    eprintln!(
-                        "macOS process sample:\n{}\n{}",
-                        String::from_utf8_lossy(&sample.stdout),
-                        String::from_utf8_lossy(&sample.stderr)
-                    );
-                }
-                Err(sample_error) => eprintln!("failed to sample hung test: {sample_error}"),
-            }
             closer.close();
             // SAFETY: these are the two process IDs created and observed by this test.
             unsafe {

@@ -735,7 +735,6 @@ impl SandboxProcess for SeatbeltSandboxProcess {
         {
             self.timed_out = true;
             let terminated = self.kill_for_timeout();
-            let _ = self.child.wait();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 match terminated {
