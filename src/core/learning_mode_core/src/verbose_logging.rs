@@ -51,6 +51,10 @@ pub enum VerboseLoggingOutcomeReason {
     UnusableResourcePath,
     /// A capability event did not contain a usable capability denial.
     UnresolvedCapability,
+    /// A valid classic COM class-activation denial was retained for diagnostics.
+    ComActivation,
+    /// A valid classic COM interface-call denial was retained for diagnostics.
+    ComInterfaceCall,
     /// The event was valid but did not describe an actionable denial.
     NotActionable,
 }
@@ -303,7 +307,7 @@ pub struct VerboseLoggingDocumentSummary {
 
 impl VerboseLoggingDocument {
     /// Current verbose logging document schema version.
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
 
     /// Builds an on-disk document from decoder aggregate state.
     #[must_use]
@@ -467,6 +471,36 @@ mod tests {
     }
 
     #[test]
+    fn com_signature_overflow_is_not_counted_as_actionable() {
+        let mut summary = VerboseLoggingSummary::default();
+        let mut signature: VerboseLoggingSignature = serde_json::from_value(serde_json::json!({
+            "provider": "kernelGeneral",
+            "providerGuid": "kernel",
+            "eventId": 0,
+            "reason": "unsupportedEventSchema",
+            "pid": 1,
+            "properties": []
+        }))
+        .unwrap();
+        for event_id in 0..MAX_VERBOSE_LOGGING_GROUPS as u16 {
+            signature.event_id = event_id;
+            summary.record(signature.clone());
+        }
+
+        signature.event_id = u16::MAX;
+        signature.reason = VerboseLoggingOutcomeReason::ComActivation;
+        signature.resource_type = Some(crate::ResourceType::Other);
+        summary.record(signature);
+
+        assert_eq!(summary.overflow_occurrences, 1);
+        assert_eq!(summary.actionable_overflow_occurrences, 0);
+        assert!(!summary
+            .signatures
+            .iter()
+            .any(|group| { group.signature.reason == VerboseLoggingOutcomeReason::ComActivation }));
+    }
+
+    #[test]
     fn byte_budget_leaves_guarded_analysis_protocol_headroom() {
         let mut summary = VerboseLoggingSummary::default();
         let mut retained_bytes = 0;
@@ -531,10 +565,24 @@ mod tests {
         summary.mark_actionable_limit_reached();
 
         let value = serde_json::to_value(VerboseLoggingDocument::new(&summary)).unwrap();
-        assert_eq!(value["version"], 2);
+        assert_eq!(value["version"], 3);
         assert_eq!(value["signatures"][0]["signature"]["reason"], "actionable");
         assert_eq!(value["summary"]["actionableOverflowOccurrences"], 2);
         assert_eq!(value["summary"]["actionableLimitReached"], true);
+    }
+
+    #[test]
+    fn document_serializes_distinct_nonactionable_com_reasons() {
+        for (reason, expected) in [
+            (VerboseLoggingOutcomeReason::ComActivation, "comActivation"),
+            (
+                VerboseLoggingOutcomeReason::ComInterfaceCall,
+                "comInterfaceCall",
+            ),
+        ] {
+            assert!(!reason.is_actionable());
+            assert_eq!(serde_json::to_value(reason).unwrap(), expected);
+        }
     }
 
     #[test]

@@ -1805,6 +1805,110 @@ mod tests {
     }
 
     #[test]
+    fn com_access_checks_are_distinct_verbose_only_outcomes_in_both_modes() {
+        let activation_clsid = "{A47979D2-C419-11D9-A5B4-001185AD2B89}";
+        let call_iid = "{00000132-0000-0000-C000-000000000046}";
+        let events = vec![
+            kernel_event(
+                14,
+                100,
+                1,
+                &[
+                    ("Mode", "\"Normal\""),
+                    ("ObjectType", "\"ComActivationForClass\""),
+                    ("ObjectName", activation_clsid),
+                    ("AccessMask", "0x1"),
+                ],
+            ),
+            kernel_event(
+                14,
+                101,
+                2,
+                &[
+                    ("Mode", "\"Permissive\""),
+                    ("ObjectType", "\"ComActivationForClass\""),
+                    ("ObjectName", "\"{a47979d2-c419-11d9-a5b4-001185ad2b89}\""),
+                    ("AccessMask", "0xffffffff"),
+                ],
+            ),
+            kernel_event(
+                14,
+                102,
+                3,
+                &[
+                    ("Mode", "\"Permissive\""),
+                    ("ObjectType", "\"ComCallOnInterface\""),
+                    ("ObjectName", call_iid),
+                    ("AccessMask", "0x2"),
+                ],
+            ),
+        ];
+
+        let analysis = resources_from_events(&events);
+
+        assert!(analysis.denials.is_empty());
+        let activation_signatures = analysis
+            .verbose_logging
+            .signatures
+            .iter()
+            .filter(|group| property(&group.signature, "ObjectType") == "ComActivationForClass")
+            .collect::<Vec<_>>();
+        assert_eq!(activation_signatures.len(), 2);
+        assert!(activation_signatures.iter().all(|group| {
+            group.signature.reason == VerboseLoggingOutcomeReason::ComActivation
+                && group.signature.resource_type == Some(ResourceType::Other)
+                && group.signature.access_type.is_none()
+                && group.count == 1
+        }));
+        assert!(activation_signatures
+            .iter()
+            .any(|group| property(&group.signature, "ObjectName") == activation_clsid));
+
+        let call = analysis
+            .verbose_logging
+            .signatures
+            .iter()
+            .find(|group| property(&group.signature, "ObjectType") == "ComCallOnInterface")
+            .expect("COM interface call should remain in verbose logging");
+        assert_eq!(
+            call.signature.reason,
+            VerboseLoggingOutcomeReason::ComInterfaceCall
+        );
+        assert_eq!(call.signature.resource_type, Some(ResourceType::Other));
+        assert!(call.signature.access_type.is_none());
+        assert_eq!(property(&call.signature, "ObjectName"), call_iid);
+    }
+
+    #[test]
+    fn malformed_com_identifier_remains_classified_verbose_diagnostic() {
+        let events = vec![kernel_event(
+            14,
+            42,
+            1,
+            &[
+                ("Mode", "\"Normal\""),
+                ("ObjectType", "\"ComActivationForClass\""),
+                ("ObjectName", "\"not-a-clsid\""),
+                ("AccessMask", "0x1"),
+            ],
+        )];
+
+        let analysis = resources_from_events(&events);
+
+        assert!(analysis.denials.is_empty());
+        assert_eq!(analysis.verbose_logging.signatures.len(), 1);
+        let signature = &analysis.verbose_logging.signatures[0].signature;
+        assert_eq!(
+            signature.reason,
+            VerboseLoggingOutcomeReason::EventPayloadMalformed
+        );
+        assert_eq!(signature.resource_type, Some(ResourceType::Other));
+        assert!(signature.access_type.is_none());
+        assert_eq!(property(signature, "ObjectType"), "ComActivationForClass");
+        assert_eq!(property(signature, "ObjectName"), "not-a-clsid");
+    }
+
+    #[test]
     fn unidentified_capability_events_are_omitted() {
         let events = vec![
             kernel_event(
