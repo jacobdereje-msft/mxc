@@ -432,9 +432,19 @@ fn looks_like_file_path_property(name: &str, value: &str, object_type: Option<&s
         return true;
     }
 
-    crate::path_norm::is_user_visible_absolute(value)
-        || looks_like_dos_device_filesystem_path(value)
-        || looks_like_nt_filesystem_path(value)
+    value.char_indices().any(|(offset, _)| {
+        let candidate = &value[offset..];
+        if offset > 0
+            && candidate.get(1..4) == Some("://")
+            && (value.as_bytes()[offset - 1].is_ascii_alphanumeric()
+                || matches!(value.as_bytes()[offset - 1], b'+' | b'-' | b'.'))
+        {
+            return false;
+        }
+        crate::path_norm::is_user_visible_absolute(candidate)
+            || looks_like_dos_device_filesystem_path(candidate)
+            || looks_like_nt_filesystem_path(candidate)
+    })
 }
 
 fn looks_like_dos_device_filesystem_path(value: &str) -> bool {
@@ -1835,7 +1845,13 @@ mod tests {
             r"\Device\MountPointManager",
             Some("Section")
         ));
-        for identifier in [r"\??\FDC#GENERIC_FLOPPY_DRIVE", r"\\.\PhysicalDrive0"] {
+        for identifier in [
+            r"\??\FDC#GENERIC_FLOPPY_DRIVE",
+            r"\\.\PhysicalDrive0",
+            "https://example.com/resource",
+            "custom+a://example.com/resource",
+            r"\Device\NamedPipe\mxc",
+        ] {
             assert!(!looks_like_file_path_property(
                 "ObjectName",
                 identifier,
@@ -1940,6 +1956,46 @@ mod tests {
             ),
         ]);
         assert!(properties.iter().all(|(_, value)| value == REDACTED_PATH));
+    }
+
+    #[test]
+    fn sanitize_properties_redacts_embedded_file_paths() {
+        let long_value = format!("{}C:\\Users\\alice\\secret.txt", "prefix ".repeat(100));
+        for value in [
+            r"cmd.exe /c type C:\Users\alice\secret.txt",
+            r#"--input="C:\Program Files\private\data.txt""#,
+            r"open \\server\share\private.txt",
+            r"open \??\C:\Users\alice\secret.txt",
+            r"open \\?\Volume{1234}\private.txt",
+            r"open \Device\HarddiskVolume3\Users\alice\secret.txt",
+            "message: C:/Users/alice/secret.txt",
+            "\u{03bb}: C:\\Users\\alice\\secret.txt",
+        ]
+        .into_iter()
+        .chain([long_value.as_str()])
+        {
+            assert_eq!(
+                sanitize_properties(&[("CommandLine".into(), value.into())]),
+                [("CommandLine".into(), REDACTED_PATH.into())],
+                "{value}",
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_properties_redacts_paths_in_rendered_arrays() {
+        for value in [
+            r#"["C:\Users\alice\secret.txt", "D:\private.txt"]"#,
+            r#"["safe", "\\server\share\private.txt"]"#,
+            r#"["safe", "\Device\HarddiskVolume3\private.txt"]"#,
+            r#"["C:\\Users\\alice\\secret.txt"]"#,
+        ] {
+            assert_eq!(
+                sanitize_properties(&[("FutureLocations".into(), value.into())]),
+                [("FutureLocations".into(), REDACTED_PATH.into())],
+                "{value}",
+            );
+        }
     }
 
     #[test]

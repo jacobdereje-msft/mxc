@@ -475,6 +475,11 @@ impl<'visitor> Accumulator<'visitor> {
             }
             None => VerboseLoggingOutcomeReason::SchemaUnavailable,
         };
+        if reason == VerboseLoggingOutcomeReason::SchemaUnavailable
+            && is_learning_mode_event(provider, event_id)
+        {
+            self.truncated = true;
+        }
         // Retain only the sanitized schema name. Free-form decoder errors can
         // contain property values and must never enter verbose logging.
         let properties = error
@@ -1543,6 +1548,67 @@ mod tests {
         assert!(!String::from_utf8(bytes)
             .unwrap()
             .contains("manifest unavailable"));
+    }
+
+    #[test]
+    fn schema_failure_completeness_follows_the_supported_event_vocabulary() {
+        let kernel = crate::extractors::KERNEL_GENERAL_PROVIDER;
+        let privacy = crate::extractors::PRIVACY_LEARNING_MODE_PROVIDER;
+        for (provider, event_id, incomplete) in [
+            (kernel, 14, true),
+            (kernel, 27, true),
+            (kernel, 28, true),
+            (privacy, 14, true),
+            (privacy, 27, true),
+            (privacy, 4907, true),
+            (kernel, 999, false),
+            (privacy, 28, false),
+            (windows::core::GUID::from_u128(1), 14, false),
+        ] {
+            let mut accumulator = Accumulator::analyze();
+            accumulator.record_event_decode_error(
+                provider,
+                event_id,
+                42,
+                tdh_decode::DecodeError::Schema("manifest unavailable".into()),
+            );
+            let event = kernel_event(
+                14,
+                42,
+                150,
+                &[
+                    ("ObjectType", "File"),
+                    ("ObjectName", r"C:\kept.txt"),
+                    ("AccessMask", "1"),
+                ],
+            );
+            handle_decoded_event(&event.parts, event.pid, event.filetime, &mut accumulator);
+            let analysis = accumulator.into_analysis().unwrap();
+            assert_eq!(
+                analysis.denied_resources_truncated, incomplete,
+                "{provider:?} {event_id}"
+            );
+            assert_eq!(analysis.denials.len(), 1);
+            assert_eq!(analysis.denials[0].resource, r"C:\kept.txt");
+            assert_eq!(analysis.verbose_logging.total_occurrences, 2);
+            assert!(analysis.verbose_logging.signatures.iter().any(|group| {
+                group.signature.reason == VerboseLoggingOutcomeReason::SchemaUnavailable
+            }));
+            let mut bytes = Vec::new();
+            let summary = learning_mode_core::DenialSummary::new(
+                0,
+                analysis.denials.len(),
+                analysis.denied_resources_truncated,
+            );
+            learning_mode_core::write_document(
+                &mut bytes,
+                &learning_mode_core::DenialsDocument::new(analysis.denials, summary),
+            )
+            .unwrap();
+            assert!(String::from_utf8(bytes)
+                .unwrap()
+                .contains(&format!("\"deniedResourcesTruncated\": {incomplete}")));
+        }
     }
 
     fn raw(path: &str, access: AccessType, rt: ResourceType) -> RawDenial {

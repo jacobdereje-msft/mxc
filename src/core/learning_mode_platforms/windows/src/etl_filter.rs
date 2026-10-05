@@ -363,11 +363,15 @@ mod tests {
     fn private_trace_relogging_preserves_unknown_events() {
         use windows::core::PCWSTR;
         use windows::Win32::System::Diagnostics::Etw::{
-            ControlTraceW, EnableTraceEx2, EventRegister, EventUnregister, EventWriteString,
-            StartTraceW, CONTROLTRACE_HANDLE, EVENT_TRACE_CONTROL_STOP,
-            EVENT_TRACE_PRIVATE_IN_PROC, EVENT_TRACE_PRIVATE_LOGGER_MODE, EVENT_TRACE_PROPERTIES,
-            REGHANDLE, WNODE_FLAG_TRACED_GUID,
+            ControlTraceW, EnableTraceEx2, StartTraceW, CONTROLTRACE_HANDLE,
+            EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_PRIVATE_IN_PROC, EVENT_TRACE_PRIVATE_LOGGER_MODE,
+            EVENT_TRACE_PROPERTIES, WNODE_FLAG_TRACED_GUID,
         };
+        tracelogging::define_provider!(
+            TEST_PROVIDER,
+            "MxcTest.Redaction",
+            id("a93bc25e-f2de-485a-90e7-a2d8970b22a9")
+        );
 
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source.etl");
@@ -382,13 +386,12 @@ mod tests {
             .encode_wide()
             .chain([0])
             .collect::<Vec<_>>();
-        let message = "test observation"
-            .encode_utf16()
-            .chain([0])
-            .collect::<Vec<_>>();
+        let mut locations = 2u16.to_le_bytes().to_vec();
+        for value in [r"C:\Users\alice\secret.txt", r"D:\private.txt"] {
+            locations.extend(value.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+        }
         let mut storage = vec![0u64; 512];
         let properties = storage.as_mut_ptr().cast::<EVENT_TRACE_PROPERTIES>();
-        let mut registration = REGHANDLE::default();
         let mut session = CONTROLTRACE_HANDLE::default();
         // SAFETY: the aligned buffer holds both null-terminated strings and
         // outlives the synchronous ETW calls.
@@ -413,25 +416,37 @@ mod tests {
                     .cast::<u16>(),
                 path.len(),
             );
-            assert_eq!(EventRegister(&provider, None, None, &mut registration), 0);
+            assert_eq!(TEST_PROVIDER.register(), 0);
             let started = StartTraceW(&mut session, PCWSTR(name.as_ptr()), properties);
             if started.0 != 0 {
-                EventUnregister(registration);
+                TEST_PROVIDER.unregister();
                 panic!("private StartTraceW failed: {}", started.0);
             }
             let enabled = EnableTraceEx2(session, &provider, 1, 5, u64::MAX, 0, 0, None);
-            let first = EventWriteString(registration, 4, 0, PCWSTR(message.as_ptr()));
-            let second = EventWriteString(registration, 4, 0, PCWSTR(message.as_ptr()));
+            let emit = || {
+                tracelogging::write_event!(
+                    TEST_PROVIDER,
+                    "CompositeProperties",
+                    cstr8("CommandLine", r"cmd.exe /c type C:\Users\alice\secret.txt"),
+                    raw_field_slice("FutureLocations", CStr16, &locations),
+                    u32("SafeIdentifier", &42),
+                )
+            };
+            let first = emit();
+            let second = emit();
             let stopped = ControlTraceW(
                 session,
                 PCWSTR(name.as_ptr()),
                 properties,
                 EVENT_TRACE_CONTROL_STOP,
             );
-            let unregistered = EventUnregister(registration);
+            let unregistered = TEST_PROVIDER.unregister();
             for status in [enabled.0, first, second, stopped.0, unregistered] {
                 assert_eq!(status, 0);
             }
+        }
+        if let Some(path) = std::env::var_os("MXC_TEST_ETL_OUTPUT") {
+            std::fs::copy(&source, path).expect("failed to retain the test ETL for CLI replay");
         }
         let lifetimes = [ProcessLifetime {
             pid: std::process::id(),
@@ -454,10 +469,26 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].count, 2);
-        assert_eq!(native.verbose_logging, guarded.verbose_logging);
-        if let Some(path) = std::env::var_os("MXC_TEST_ETL_OUTPUT") {
-            std::fs::copy(&source, path).expect("failed to retain the test ETL for CLI replay");
+        for name in ["CommandLine", "FutureLocations"] {
+            assert_eq!(
+                groups[0]
+                    .signature
+                    .properties
+                    .iter()
+                    .find(|(key, _)| key == name),
+                Some(&(
+                    name.to_string(),
+                    crate::extractors::REDACTED_PATH.to_string()
+                )),
+                "{:?}",
+                groups[0].signature,
+            );
         }
+        assert!(groups[0]
+            .signature
+            .properties
+            .contains(&("SafeIdentifier".into(), "42".into())));
+        assert_eq!(native.verbose_logging, guarded.verbose_logging);
     }
 
     const START: u64 = 100;

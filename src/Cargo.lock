@@ -1376,6 +1376,7 @@ dependencies = [
  "process_security_environment_spec",
  "tempfile",
  "thiserror",
+ "tracelogging",
  "windows",
  "windows-core",
  "wxc_common",
