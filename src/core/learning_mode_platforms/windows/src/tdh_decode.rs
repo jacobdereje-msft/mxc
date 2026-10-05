@@ -216,11 +216,12 @@ pub unsafe fn decode_event_parts(
     let pointer_size = pointer_size_from_header_flags(header.Flags);
     let event_name = schema_event_name(buffer.as_bytes(), info);
     let props = decode_properties(buffer.as_bytes(), info, event_record, pointer_size)
-        .map_err(|error| map_property_decode_error(error, event_name))?;
+        .map_err(|error| map_property_decode_error(error, event_name.clone()))?;
 
     Ok(DecodedEventParts {
         provider: header.ProviderId,
         event_id,
+        event_name,
         props,
     })
 }

@@ -150,6 +150,7 @@ fn project_for_telemetry(mut document: VerboseLoggingDocument) -> VerboseLogging
     for mut aggregate in document.signatures {
         aggregate.signature.provider_guid =
             canonical_provider_guid(aggregate.signature.provider).to_string();
+        aggregate.signature.event_name = None;
         aggregate.signature.properties.clear();
         let count = groups.entry(aggregate.signature).or_insert(0u64);
         *count = count.saturating_add(aggregate.count);
@@ -231,6 +232,7 @@ mod tests {
     ) -> VerboseLoggingAggregate {
         VerboseLoggingAggregate {
             signature: VerboseLoggingSignature {
+                event_name: None,
                 provider: VerboseLoggingProvider::KernelGeneral,
                 provider_guid: "{a68ca8b7-004f-d7b6-a698-07e2de0f1f5d}".to_string(),
                 event_id,
@@ -398,6 +400,7 @@ mod tests {
         let injected = "customer-secret";
         let mut doc = document(vec![aggregate(1, injected)]);
         doc.signatures[0].signature.provider_guid = injected.to_string();
+        doc.signatures[0].signature.event_name = Some(injected.to_string());
         doc.signatures[0].signature.properties = vec![(injected.to_string(), injected.to_string())];
 
         let projected = project_for_telemetry(doc);
@@ -416,9 +419,11 @@ mod tests {
         let mut first = aggregate(999, "first-secret");
         first.signature.provider = VerboseLoggingProvider::Other;
         first.signature.provider_guid = "first-provider".into();
+        first.signature.event_name = Some("first-event".into());
         first.count = 3;
         let mut second = first.clone();
         second.signature.provider_guid = "second-provider".into();
+        second.signature.event_name = Some("second-event".into());
         second.signature.properties[0].1 = "second-secret".into();
         second.count = 4;
         let mut input = document(vec![first, second]);
@@ -429,6 +434,7 @@ mod tests {
         assert_eq!(projected.signatures.len(), 1);
         assert_eq!(projected.signatures[0].count, 7);
         assert!(projected.signatures[0].signature.provider_guid.is_empty());
+        assert!(projected.signatures[0].signature.event_name.is_none());
         assert!(projected.signatures[0].signature.properties.is_empty());
         assert_eq!(projected.summary.total_occurrences, 7);
     }

@@ -424,13 +424,26 @@ mod tests {
             }
             let enabled = EnableTraceEx2(session, &provider, 1, 5, u64::MAX, 0, 0, None);
             let emit = || {
-                tracelogging::write_event!(
-                    TEST_PROVIDER,
-                    "CompositeProperties",
-                    cstr8("CommandLine", r"cmd.exe /c type C:\Users\alice\secret.txt"),
-                    raw_field_slice("FutureLocations", CStr16, &locations),
-                    u32("SafeIdentifier", &42),
-                )
+                [
+                    tracelogging::write_event!(
+                        TEST_PROVIDER,
+                        "CompositeProperties",
+                        cstr8("CommandLine", r"cmd.exe /c type C:\Users\alice\secret.txt"),
+                        raw_field_slice("FutureLocations", CStr16, &locations),
+                        u32("SafeIdentifier", &42),
+                        u32("C:\\Users\\alice\\secret.txt", &42),
+                        cstr8("EventName", "payload-name"),
+                    ),
+                    tracelogging::write_event!(
+                        TEST_PROVIDER,
+                        "OtherCompositeProperties",
+                        cstr8("CommandLine", r"cmd.exe /c type C:\Users\alice\secret.txt"),
+                        raw_field_slice("FutureLocations", CStr16, &locations),
+                        u32("SafeIdentifier", &42),
+                        u32("C:\\Users\\alice\\secret.txt", &42),
+                        cstr8("EventName", "payload-name"),
+                    ),
+                ]
             };
             let first = emit();
             let second = emit();
@@ -441,7 +454,11 @@ mod tests {
                 EVENT_TRACE_CONTROL_STOP,
             );
             let unregistered = TEST_PROVIDER.unregister();
-            for status in [enabled.0, first, second, stopped.0, unregistered] {
+            for status in [enabled.0, stopped.0, unregistered]
+                .into_iter()
+                .chain(first)
+                .chain(second)
+            {
                 assert_eq!(status, 0);
             }
         }
@@ -467,27 +484,46 @@ mod tests {
             .iter()
             .filter(|group| group.signature.provider_guid == provider_guid)
             .collect::<Vec<_>>();
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].count, 2);
-        for name in ["CommandLine", "FutureLocations"] {
-            assert_eq!(
-                groups[0]
-                    .signature
-                    .properties
-                    .iter()
-                    .find(|(key, _)| key == name),
-                Some(&(
-                    name.to_string(),
-                    crate::extractors::REDACTED_PATH.to_string()
-                )),
-                "{:?}",
-                groups[0].signature,
-            );
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.signature.event_name.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("CompositeProperties"),
+                Some("OtherCompositeProperties")
+            ]
+        );
+        for group in groups {
+            assert_eq!(group.count, 2);
+            for name in ["CommandLine", "FutureLocations"] {
+                assert_eq!(
+                    group
+                        .signature
+                        .properties
+                        .iter()
+                        .find(|(key, _)| key == name),
+                    Some(&(
+                        name.to_string(),
+                        crate::extractors::REDACTED_PATH.to_string()
+                    )),
+                );
+            }
+            assert!(group
+                .signature
+                .properties
+                .contains(&("SafeIdentifier".into(), "42".into())));
+            assert!(group
+                .signature
+                .properties
+                .contains(&("EventName".into(), "payload-name".into())));
+            assert!(!group
+                .signature
+                .properties
+                .iter()
+                .any(|(name, _)| name.contains(r"C:\Users")));
         }
-        assert!(groups[0]
-            .signature
-            .properties
-            .contains(&("SafeIdentifier".into(), "42".into())));
         assert_eq!(native.verbose_logging, guarded.verbose_logging);
     }
 

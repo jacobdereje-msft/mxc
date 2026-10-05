@@ -91,6 +91,8 @@ pub struct DecodedEventParts {
     pub provider: GUID,
     /// Originating ETW event ID.
     pub event_id: u16,
+    /// Schema-declared event name.
+    pub event_name: Option<String>,
     /// `(name, value)` pairs from the decoded payload. String values are
     /// often TDH-quoted; extractors trim the surrounding quotes.
     pub props: Vec<(String, String)>,
@@ -565,7 +567,7 @@ pub(crate) fn sanitize_properties(props: &[(String, String)]) -> Vec<(String, St
         .map(|(_, value)| value.trim_matches('"'));
     let mut sanitized = std::collections::BTreeMap::new();
     for (name, raw_value) in props {
-        if is_timestamp_like_property(name) {
+        if is_timestamp_like_property(name) || looks_like_file_path_property("", name, None) {
             continue;
         }
         let value = raw_value.trim_matches('"');
@@ -622,6 +624,14 @@ pub(crate) fn sanitize_properties(props: &[(String, String)]) -> Vec<(String, St
             .collect()
     }
     bound_properties(sanitized.into_iter().collect())
+}
+
+pub(crate) fn sanitize_event_name(name: Option<&str>) -> Option<String> {
+    let name = name?;
+    sanitize_properties(&[("EventName".into(), name.into())])
+        .into_iter()
+        .next()
+        .map(|(_, value)| value)
 }
 
 /// Builds a denial from an access-check event.
@@ -1084,6 +1094,7 @@ mod tests {
         DecodedEventParts {
             provider,
             event_id,
+            event_name: None,
             props: kv
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -1956,6 +1967,38 @@ mod tests {
             ),
         ]);
         assert!(properties.iter().all(|(_, value)| value == REDACTED_PATH));
+    }
+
+    #[test]
+    fn sanitize_properties_omits_sensitive_property_names() {
+        let props = [
+            (r"C:\Users\alice\secret.txt".into(), "42".into()),
+            (r"lookup \\server\share\private.txt".into(), "43".into()),
+            (r"\Device\HarddiskVolume3\private.txt".into(), "44".into()),
+            ("SafeIdentifier".into(), "42".into()),
+        ];
+        assert_eq!(
+            sanitize_properties(&props),
+            [("SafeIdentifier".into(), "42".into())]
+        );
+    }
+
+    #[test]
+    fn event_names_are_sanitized_and_bounded() {
+        assert_eq!(sanitize_event_name(None), None);
+        assert_eq!(
+            sanitize_event_name(Some("AccessCheck")).as_deref(),
+            Some("AccessCheck")
+        );
+        assert_eq!(
+            sanitize_event_name(Some(r"C:\Users\alice\secret.txt")).as_deref(),
+            Some(REDACTED_PATH)
+        );
+        let first = sanitize_event_name(Some(&format!("{}First", "a".repeat(400)))).unwrap();
+        let second = sanitize_event_name(Some(&format!("{}Second", "a".repeat(400)))).unwrap();
+        assert_ne!(first, second);
+        assert!(first.chars().count() <= MAX_SIGNATURE_VALUE_LEN);
+        assert!(second.chars().count() <= MAX_SIGNATURE_VALUE_LEN);
     }
 
     #[test]

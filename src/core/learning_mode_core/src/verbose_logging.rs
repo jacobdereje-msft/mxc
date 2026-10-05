@@ -81,6 +81,9 @@ pub struct VerboseLoggingSignature {
     pub provider_guid: String,
     /// Provider-scoped ETW schema identifier.
     pub event_id: u16,
+    /// Sanitized schema name, separate from payload properties.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_name: Option<String>,
     /// Closed exclusion category.
     pub reason: VerboseLoggingOutcomeReason,
     /// Process identifier from the event header.
@@ -379,6 +382,7 @@ mod tests {
     fn aggregates_and_sorts_sanitized_signatures() {
         let mut summary = VerboseLoggingSummary::default();
         let signature = VerboseLoggingSignature {
+            event_name: None,
             provider: VerboseLoggingProvider::KernelGeneral,
             provider_guid: "{A68CA8B7-004F-D7B6-A698-07E2DE0F1F5D}".to_string(),
             event_id: 14,
@@ -415,6 +419,7 @@ mod tests {
         for event_id in 0..MAX_VERBOSE_LOGGING_GROUPS as u16 {
             summary.record(VerboseLoggingSignature {
                 provider: VerboseLoggingProvider::KernelGeneral,
+                event_name: None,
                 provider_guid: "kernel".to_string(),
                 event_id,
                 reason: VerboseLoggingOutcomeReason::UnsupportedEventSchema,
@@ -426,6 +431,7 @@ mod tests {
         }
         summary.record(VerboseLoggingSignature {
             provider: VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode,
+            event_name: None,
             provider_guid: "privacy".to_string(),
             event_id: u16::MAX,
             reason: VerboseLoggingOutcomeReason::UnsupportedEventSchema,
@@ -447,6 +453,7 @@ mod tests {
             summary.record(VerboseLoggingSignature {
                 provider: VerboseLoggingProvider::KernelGeneral,
                 provider_guid: "kernel".to_string(),
+                event_name: None,
                 event_id,
                 reason: VerboseLoggingOutcomeReason::UnsupportedEventSchema,
                 pid: 1,
@@ -460,6 +467,7 @@ mod tests {
             provider_guid: "kernel".to_string(),
             event_id: u16::MAX,
             reason: VerboseLoggingOutcomeReason::Actionable,
+            event_name: None,
             pid: 1,
             access_type: Some(crate::AccessType::Read),
             resource_type: Some(crate::ResourceType::File),
@@ -484,6 +492,7 @@ mod tests {
                 event_id,
                 reason: VerboseLoggingOutcomeReason::UnsupportedEventSchema,
                 pid: 1,
+                event_name: None,
                 access_type: None,
                 resource_type: None,
                 properties: Vec::new(),
@@ -495,6 +504,7 @@ mod tests {
             provider_guid: "kernel".to_string(),
             event_id: u16::MAX,
             reason: VerboseLoggingOutcomeReason::ComActivation,
+            event_name: None,
             pid: 1,
             access_type: None,
             resource_type: Some(crate::ResourceType::Other),
@@ -519,6 +529,7 @@ mod tests {
         for pid in 0..MAX_VERBOSE_LOGGING_GROUPS as u32 {
             summary.record_with_byte_budget(
                 VerboseLoggingSignature {
+                    event_name: None,
                     provider: VerboseLoggingProvider::KernelGeneral,
                     provider_guid: "{A68CA8B7-004F-D7B6-A698-07E2DE0F1F5D}".to_string(),
                     event_id: 14,
@@ -558,12 +569,39 @@ mod tests {
     }
 
     #[test]
+    fn schema_name_is_optional_and_separate_from_payload() {
+        let old = serde_json::json!({
+            "provider": "other",
+            "providerGuid": "provider",
+            "eventId": 0,
+            "reason": "unsupportedEventSchema",
+            "pid": 42,
+            "properties": [["EventName", "payload-name"]]
+        });
+        let mut signature: VerboseLoggingSignature = serde_json::from_value(old).unwrap();
+        assert!(signature.event_name.is_none());
+        assert!(serde_json::to_value(&signature)
+            .unwrap()
+            .get("eventName")
+            .is_none());
+        signature.event_name = Some("schema-name".into());
+        let json = serde_json::to_value(&signature).unwrap();
+        assert_eq!(json["eventName"], "schema-name");
+        assert_eq!(json["properties"][0][1], "payload-name");
+        assert_eq!(
+            serde_json::from_value::<VerboseLoggingSignature>(json).unwrap(),
+            signature
+        );
+    }
+
+    #[test]
     fn document_uses_actionable_vocabulary() {
         let mut summary = VerboseLoggingSummary::default();
         summary.record(VerboseLoggingSignature {
             provider: VerboseLoggingProvider::KernelGeneral,
             provider_guid: "kernel".to_string(),
             event_id: 14,
+            event_name: None,
             reason: VerboseLoggingOutcomeReason::Actionable,
             pid: 1,
             access_type: Some(crate::AccessType::Read),

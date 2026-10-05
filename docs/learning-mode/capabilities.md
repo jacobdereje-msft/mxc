@@ -301,12 +301,15 @@ policy denial occurrences plus diagnostic outcomes omitted from the policy file:
 ```
 
 Signatures are keyed by symbolic provider category, provider GUID,
-provider-scoped event ID, closed outcome reason, PID, and sorted sanitized
-properties. SIDs, capability names, GUIDs, PIDs/process identifiers, and
+provider-scoped event ID, optional schema `eventName`, closed outcome reason,
+PID, and sorted sanitized properties. The schema name distinguishes TraceLogging
+events that share ID 0 and is separate from any payload field named `EventName`.
+It is sanitized and bounded like other values, and is omitted when unavailable.
+SIDs, capability names, GUIDs, PIDs/process identifiers, and
 non-file resource values are retained. Complete file paths are replaced with
 `<REDACTED>`; a path inside a command line or rendered array causes that entire
 property value to be redacted. Standalone user/account names remain replaced
-with `<redacted-user>`.
+with `<redacted-user>`. Properties whose names contain file paths are omitted.
 Exact header timestamps and timestamp-like properties are omitted so otherwise
 identical events deduplicate, and free-form decoder errors are never serialized.
 This is an outcome summary, not an ordered event ledger: repeats become a count,
@@ -358,7 +361,8 @@ Per-event TDH failures use closed diagnostic reasons:
 `decoderLimitReached` means a nesting/element/work safety bound stopped
 decoding, and `unsupportedPropertyEncoding` means the decoder cannot consume
 that property shape. When TDH exposes it, the schema-declared name is retained
-as the bounded `EventName` signature property. Free-form decoder errors are
+in the optional `eventName` metadata field, with no partial payload properties.
+Free-form decoder errors are
 never serialized. Failure to obtain the event schema is retained as
 `schemaUnavailable` rather than aborting the analysis, and marks actionable
 results incomplete when the event belongs to a supported denial schema.
@@ -398,7 +402,7 @@ event contains a valid JSON array of complete signatures and document
 reconstruction metadata. Before emission, MXC derives provider GUIDs from the
 closed provider enum and drops every verbose property name and value. For `other`,
 the telemetry GUID is empty. Matching groups are combined again after these
-values are removed. MXC does
+values and the schema `eventName` are removed. MXC does
 not send the actionable denials file, workload-derived properties, or raw ETL
 through telemetry. See [MXC telemetry](../telemetry/telemetry.md).
 
