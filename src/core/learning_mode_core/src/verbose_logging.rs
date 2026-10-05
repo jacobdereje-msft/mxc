@@ -310,7 +310,7 @@ pub struct VerboseLoggingDocumentSummary {
 
 impl VerboseLoggingDocument {
     /// Current verbose logging document schema version.
-    pub const VERSION: u32 = 3;
+    pub const VERSION: u32 = 4;
 
     /// Builds an on-disk document from decoder aggregate state.
     #[must_use]
@@ -571,7 +571,7 @@ mod tests {
         summary.mark_actionable_limit_reached();
 
         let value = serde_json::to_value(VerboseLoggingDocument::new(&summary)).unwrap();
-        assert_eq!(value["version"], 3);
+        assert_eq!(value["version"], 4);
         assert_eq!(value["signatures"][0]["signature"]["reason"], "actionable");
         assert_eq!(value["summary"]["actionableOverflowOccurrences"], 2);
         assert_eq!(value["summary"]["actionableLimitReached"], true);

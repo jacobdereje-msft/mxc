@@ -926,24 +926,23 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
         Err(error) => {
             if matches!(acc.mode, CollectionMode::Analyze) {
                 let filetime = analyze_filetime.expect("analyze mode has normalized FILETIME");
-                if matches!(&error, tdh_decode::DecodeError::Schema(_))
-                    && event_id == crate::extractors::CAPABILITY_DENIAL_EVENT_ID
-                    && is_learning_mode_event(provider, event_id)
-                {
-                    acc.truncated = true;
-                }
                 let pid = if event_id == crate::extractors::CAPABILITY_DENIAL_EVENT_ID
                     && is_learning_mode_event(provider, event_id)
                 {
-                    let process_id = unsafe {
-                        tdh_decode::decode_event_property(
-                            event_record,
-                            &mut acc.schema_cache,
-                            "ProcessId",
-                        )
-                    }
-                    .ok()
-                    .flatten();
+                    let process_id = if matches!(&error, tdh_decode::DecodeError::Schema(_)) {
+                        acc.truncated = true;
+                        None
+                    } else {
+                        unsafe {
+                            tdh_decode::decode_event_property(
+                                event_record,
+                                &mut acc.schema_cache,
+                                "ProcessId",
+                            )
+                        }
+                        .ok()
+                        .flatten()
+                    };
                     decode_error_effective_pid(
                         process_id.as_deref(),
                         header.ProcessId,
@@ -1450,6 +1449,13 @@ mod tests {
             record.EventHeader.ProcessId = 9000;
             record.EventHeader.TimeStamp = 150;
             if incomplete {
+                for id in 0..4096 {
+                    let mut cached = EVENT_RECORD::default();
+                    cached.EventHeader.EventDescriptor.Id = id;
+                    accumulator
+                        .schema_cache
+                        .insert_test_schema(&cached, &["ProcessId"]);
+                }
                 assert!(matches!(
                     unsafe {
                         tdh_decode::decode_event_parts(&mut record, &mut accumulator.schema_cache)
@@ -1457,7 +1463,12 @@ mod tests {
                     Err(tdh_decode::DecodeError::Schema(_))
                 ));
             }
+            let schema_loads = accumulator.schema_cache.schema_loads;
             unsafe { process_event_record(&mut record, &mut accumulator) };
+            assert_eq!(
+                accumulator.schema_cache.schema_loads - schema_loads,
+                usize::from(incomplete)
+            );
             assert_eq!(accumulator.truncated, incomplete);
             assert!(accumulator.verbose_logging.is_empty());
             assert!(!accumulator.stop_requested);

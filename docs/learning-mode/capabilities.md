@@ -237,7 +237,7 @@ policy denial occurrences plus diagnostic outcomes omitted from the policy file:
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "signatures": [
     {
       "signature": {
@@ -329,6 +329,8 @@ Free-form decoder errors are
 never serialized. Failure to obtain the event schema is retained as
 `schemaUnavailable` rather than aborting the analysis, and marks actionable
 results incomplete when the event belongs to a supported denial schema.
+Missing manifest schemas share the 4,096-entry schema cache with successful
+lookups; TraceLogging metadata is decoded per event.
 For brokered Event 28, scoped analysis marks the result incomplete even when
 the missing schema prevents reading its workload PID; unattributed event
 contents are not retained.
