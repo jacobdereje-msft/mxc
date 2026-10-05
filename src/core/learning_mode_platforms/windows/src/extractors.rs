@@ -200,7 +200,7 @@ pub(crate) fn verbose_logging_classification(
                     ),
                     Some(ResourceType::Other),
                 ),
-                COM_ACTIVATION_OBJECT_TYPE | COM_CALL_OBJECT_TYPE => {
+                object_type if com_outcome_reason(object_type).is_some() => {
                     (None, Some(ResourceType::Other))
                 }
                 "" => (Some(AccessType::Unknown), Some(ResourceType::Capability)),
@@ -655,6 +655,7 @@ pub fn build_denial_from_access_check(
     let object_type = find_prop(&parts.props, "ObjectType")
         .ok_or(VerboseLoggingOutcomeReason::MissingObjectType)?;
     let object_type_str = object_type.trim_matches('"');
+    let com_reason = com_outcome_reason(object_type_str);
 
     let resource_type = match object_type_str {
         "File" => ResourceType::File,
@@ -662,7 +663,7 @@ pub fn build_denial_from_access_check(
         "Section" | "SymbolicLink" | "Timer" => ResourceType::Other,
         // A present-but-empty object type is a brokered-capability check.
         "" => ResourceType::Capability,
-        COM_ACTIVATION_OBJECT_TYPE | COM_CALL_OBJECT_TYPE => ResourceType::Other,
+        _ if com_reason.is_some() => ResourceType::Other,
         _ => return Err(VerboseLoggingOutcomeReason::UnsupportedObjectType),
     };
 
@@ -679,17 +680,11 @@ pub fn build_denial_from_access_check(
         (_, Some(name)) => name,
     };
 
-    if is_com_object_type(object_type_str) && !is_guid_identifier(&object_name) {
-        return Err(VerboseLoggingOutcomeReason::EventPayloadMalformed);
-    }
-    match object_type_str {
-        COM_ACTIVATION_OBJECT_TYPE => {
-            return Err(VerboseLoggingOutcomeReason::ComActivation);
+    if let Some(reason) = com_reason {
+        if !is_guid_identifier(&object_name) {
+            return Err(VerboseLoggingOutcomeReason::EventPayloadMalformed);
         }
-        COM_CALL_OBJECT_TYPE => {
-            return Err(VerboseLoggingOutcomeReason::ComInterfaceCall);
-        }
-        _ => {}
+        return Err(reason);
     }
 
     if resource_type == ResourceType::File {
@@ -1025,11 +1020,12 @@ fn find_prop<'a>(props: &'a [(String, String)], name: &str) -> Option<&'a String
     props.iter().find(|(k, _)| k == name).map(|(_, v)| v)
 }
 
-fn is_com_object_type(object_type: &str) -> bool {
-    matches!(
-        object_type,
-        COM_ACTIVATION_OBJECT_TYPE | COM_CALL_OBJECT_TYPE
-    )
+fn com_outcome_reason(object_type: &str) -> Option<VerboseLoggingOutcomeReason> {
+    match object_type {
+        COM_ACTIVATION_OBJECT_TYPE => Some(VerboseLoggingOutcomeReason::ComActivation),
+        COM_CALL_OBJECT_TYPE => Some(VerboseLoggingOutcomeReason::ComInterfaceCall),
+        _ => None,
+    }
 }
 
 fn is_guid_identifier(value: &str) -> bool {
