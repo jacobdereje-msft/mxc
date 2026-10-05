@@ -926,6 +926,12 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
         Err(error) => {
             if matches!(acc.mode, CollectionMode::Analyze) {
                 let filetime = analyze_filetime.expect("analyze mode has normalized FILETIME");
+                if matches!(&error, tdh_decode::DecodeError::Schema(_))
+                    && event_id == crate::extractors::CAPABILITY_DENIAL_EVENT_ID
+                    && is_learning_mode_event(provider, event_id)
+                {
+                    acc.truncated = true;
+                }
                 let pid = if event_id == crate::extractors::CAPABILITY_DENIAL_EVENT_ID
                     && is_learning_mode_event(provider, event_id)
                 {
@@ -986,6 +992,11 @@ fn select_capability_decode_result_for_relogging(
             header_pid,
             filetime,
         ),
+        Err(tdh_decode::DecodeError::Schema(_)) => {
+            acc.decode_error =
+                Some("could not scope brokered capability event: schema unavailable".into());
+            acc.stop_requested = true;
+        }
         Err(_) => {
             select_capability_event_for_relogging(acc, event_index, None, header_pid, filetime);
         }
@@ -1418,26 +1429,80 @@ mod tests {
     }
 
     #[test]
-    fn relog_selection_skips_unattributable_capability_schema_failure() {
+    fn brokered_schema_failure_marks_incomplete_before_pid_resolution() {
+        for (provider, event_id, incomplete) in [
+            (crate::extractors::KERNEL_GENERAL_PROVIDER, 28, true),
+            (crate::extractors::KERNEL_GENERAL_PROVIDER, 14, false),
+            (crate::extractors::PRIVACY_LEARNING_MODE_PROVIDER, 28, false),
+            (windows::core::GUID::from_u128(1), 28, false),
+        ] {
+            let mut accumulator = Accumulator::analyze_for_process_lifetimes(&[ProcessLifetime {
+                pid: 42,
+                start_filetime: 100,
+                end_filetime: 200,
+            }]);
+            let mut record = EVENT_RECORD::default();
+            record.EventHeader.ProviderId = provider;
+            record.EventHeader.EventDescriptor.Id = event_id;
+            record.EventHeader.EventDescriptor.Version = u8::MAX;
+            record.EventHeader.ProcessId = 9000;
+            record.EventHeader.TimeStamp = 150;
+            if incomplete {
+                assert!(matches!(
+                    unsafe {
+                        tdh_decode::decode_event_parts(&mut record, &mut accumulator.schema_cache)
+                    },
+                    Err(tdh_decode::DecodeError::Schema(_))
+                ));
+            }
+            unsafe { process_event_record(&mut record, &mut accumulator) };
+            assert_eq!(accumulator.truncated, incomplete);
+            assert!(accumulator.verbose_logging.is_empty());
+            assert!(!accumulator.stop_requested);
+            assert!(accumulator.decode_error.is_none());
+
+            let valid = kernel_event(
+                14,
+                42,
+                160,
+                &[
+                    ("ObjectType", "File"),
+                    ("ObjectName", r"C:\kept.txt"),
+                    ("AccessMask", "1"),
+                ],
+            );
+            handle_decoded_event(&valid.parts, valid.pid, valid.filetime, &mut accumulator);
+            let analysis = accumulator.into_analysis().unwrap();
+            assert_eq!(analysis.denied_resources_truncated, incomplete);
+            assert_eq!(analysis.denials.len(), 1);
+            assert_eq!(analysis.denials[0].resource, r"C:\kept.txt");
+            assert_eq!(analysis.verbose_logging.total_occurrences, 1);
+        }
+    }
+
+    #[test]
+    fn relog_selection_rejects_unattributable_capability_schema_failure() {
         let mut accumulator = Accumulator::select_for_relogging(&[ProcessLifetime {
             pid: 42,
             start_filetime: 100,
             end_filetime: 200,
         }]);
-
-        select_capability_decode_result_for_relogging(
-            &mut accumulator,
-            0,
-            Err(tdh_decode::DecodeError::Schema(
-                "manifest unavailable".to_string(),
-            )),
-            9000,
-            150,
-        );
+        let mut record = EVENT_RECORD::default();
+        record.EventHeader.ProviderId = crate::extractors::KERNEL_GENERAL_PROVIDER;
+        record.EventHeader.EventDescriptor.Id = crate::extractors::CAPABILITY_DENIAL_EVENT_ID;
+        record.EventHeader.EventDescriptor.Version = u8::MAX;
+        record.EventHeader.ProcessId = 9000;
+        record.EventHeader.TimeStamp = 150;
+        unsafe { process_event_record(&mut record, &mut accumulator) };
 
         assert!(accumulator.relog_selected_event_indices.is_empty());
-        assert!(!accumulator.stop_requested);
-        assert!(accumulator.decode_error.is_none());
+        assert!(accumulator.relog_selected_event_pids.is_empty());
+        assert!(accumulator.verbose_logging.is_empty());
+        assert!(accumulator.stop_requested);
+        assert_eq!(
+            accumulator.decode_error.as_deref(),
+            Some("could not scope brokered capability event: schema unavailable")
+        );
     }
 
     #[test]
