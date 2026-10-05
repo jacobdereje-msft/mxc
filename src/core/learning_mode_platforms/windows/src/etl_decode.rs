@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Sealed-ETL decoder: turns the `.etl` delivered by the Learning Mode trace API
-//! produces into cross-platform [`DeniedResource`]s.
+//! into cross-platform [`DeniedResource`]s.
 //!
 //! The trace is opened in **file mode** (`EVENT_TRACE_LOGFILEW.LogFileName`,
 //! without `PROCESS_TRACE_MODE_REAL_TIME`). `ProcessTrace` walks every
@@ -18,11 +18,11 @@
 //! The diagnostic console has a separate real-time, display-oriented ETW
 //! consumer in `tools/mxc_diagnostic_console`. It is a binary-private module
 //! that owns trace sessions and channels arbitrary provider events to a UI.
-//! This backend instead reads sealed files synchronously, filters a fixed
-//! provider/event vocabulary, bounds results, and skips malformed individual
-//! events without invalidating the rest of the capture. Depending on the tool would invert the workspace dependency
-//! direction; shared generic TDH primitives can be extracted later if another
-//! runtime consumer needs them.
+//! This backend reads sealed files synchronously and keeps bounded, deduplicated
+//! diagnostics even for unfamiliar or malformed events. Only known schemas
+//! produce actionable denials. Depending on the tool would invert the workspace
+//! dependency direction; shared generic TDH primitives can be extracted later
+//! if another runtime consumer needs them.
 
 use std::collections::{HashMap, HashSet};
 use std::os::windows::ffi::OsStrExt;
@@ -144,6 +144,7 @@ struct Accumulator<'visitor> {
     schema_cache: tdh_decode::EventSchemaCache,
     verbose_logging: VerboseLoggingSummary,
     verbose_logging_signature_bytes: usize,
+    skip_relog_header: bool,
 }
 
 impl<'visitor> Accumulator<'visitor> {
@@ -167,6 +168,7 @@ impl<'visitor> Accumulator<'visitor> {
             schema_cache: tdh_decode::EventSchemaCache::default(),
             verbose_logging: VerboseLoggingSummary::default(),
             verbose_logging_signature_bytes: 0,
+            skip_relog_header: false,
         }
     }
 
@@ -197,6 +199,7 @@ impl<'visitor> Accumulator<'visitor> {
             schema_cache: tdh_decode::EventSchemaCache::default(),
             verbose_logging: VerboseLoggingSummary::default(),
             verbose_logging_signature_bytes: 0,
+            skip_relog_header: false,
         }
     }
 
@@ -220,10 +223,11 @@ impl<'visitor> Accumulator<'visitor> {
             schema_cache: tdh_decode::EventSchemaCache::default(),
             verbose_logging: VerboseLoggingSummary::default(),
             verbose_logging_signature_bytes: 0,
+            skip_relog_header: false,
         }
     }
 
-    fn add_raw_denial(&mut self, raw: RawDenial) {
+    fn add_raw_denial(&mut self, raw: RawDenial, event_name: Option<&str>) {
         if !self.event_in_scope(raw.pid, raw.filetime) {
             return;
         }
@@ -235,6 +239,7 @@ impl<'visitor> Accumulator<'visitor> {
                         &raw,
                         &candidate,
                         VerboseLoggingOutcomeReason::UnusableResourcePath,
+                        event_name,
                     );
                     return;
                 }
@@ -247,6 +252,7 @@ impl<'visitor> Accumulator<'visitor> {
                         &raw,
                         &candidate,
                         VerboseLoggingOutcomeReason::UnusableResourcePath,
+                        event_name,
                     );
                     return;
                 }
@@ -254,7 +260,12 @@ impl<'visitor> Accumulator<'visitor> {
         } else {
             path_norm::to_user_visible(&raw.object_name).unwrap_or_else(|| raw.object_name.clone())
         };
-        self.record_raw_denial_outcome(&raw, &resource, VerboseLoggingOutcomeReason::Actionable);
+        self.record_raw_denial_outcome(
+            &raw,
+            &resource,
+            VerboseLoggingOutcomeReason::Actionable,
+            event_name,
+        );
         let dedup_resource = match raw.resource_type {
             learning_mode_core::ResourceType::File | learning_mode_core::ResourceType::Other => {
                 resource.to_ascii_lowercase()
@@ -295,6 +306,7 @@ impl<'visitor> Accumulator<'visitor> {
         raw: &RawDenial,
         resource: &str,
         reason: VerboseLoggingOutcomeReason,
+        event_name: Option<&str>,
     ) {
         let mut properties = raw
             .verbose_logging_properties
@@ -332,7 +344,7 @@ impl<'visitor> Accumulator<'visitor> {
             crate::extractors::bound_properties(properties.into_iter().collect::<Vec<_>>());
         self.record_outcome(
             raw.provider,
-            raw.event_id,
+            (raw.event_id, event_name),
             reason,
             raw.pid,
             (Some(raw.access_type), Some(raw.resource_type)),
@@ -347,18 +359,18 @@ impl<'visitor> Accumulator<'visitor> {
     fn record_exclusion(
         &mut self,
         provider: VerboseLoggingProvider,
-        event_id: u16,
+        event: (u16, Option<&str>),
         reason: VerboseLoggingOutcomeReason,
         pid: u32,
         properties: Vec<(String, String)>,
     ) {
-        self.record_outcome(provider, event_id, reason, pid, (None, None), properties);
+        self.record_outcome(provider, event, reason, pid, (None, None), properties);
     }
 
     fn record_outcome(
         &mut self,
         provider: VerboseLoggingProvider,
-        event_id: u16,
+        event: (u16, Option<&str>),
         reason: VerboseLoggingOutcomeReason,
         pid: u32,
         classification: (
@@ -371,13 +383,39 @@ impl<'visitor> Accumulator<'visitor> {
         let signature = VerboseLoggingSignature {
             provider,
             provider_guid: crate::extractors::verbose_logging_provider_guid(provider),
-            event_id,
+            event_id: event.0,
+            event_name: crate::extractors::sanitize_event_name(event.1),
             reason,
             pid,
             access_type,
             resource_type,
             properties,
         };
+        self.record_signature(signature);
+    }
+
+    fn record_unknown_provider_outcome(
+        &mut self,
+        provider: windows::core::GUID,
+        event: (u16, Option<&str>),
+        reason: VerboseLoggingOutcomeReason,
+        pid: u32,
+        properties: Vec<(String, String)>,
+    ) {
+        self.record_signature(VerboseLoggingSignature {
+            provider: VerboseLoggingProvider::Other,
+            provider_guid: crate::extractors::format_guid_braced_uppercase(provider),
+            event_id: event.0,
+            event_name: crate::extractors::sanitize_event_name(event.1),
+            reason,
+            pid,
+            access_type: None,
+            resource_type: None,
+            properties,
+        });
+    }
+
+    fn record_signature(&mut self, signature: VerboseLoggingSignature) {
         self.verbose_logging.record_with_byte_budget(
             signature,
             &mut self.verbose_logging_signature_bytes,
@@ -418,13 +456,8 @@ impl<'visitor> Accumulator<'visitor> {
 
     /// Handles a TDH decode failure for one event.
     ///
-    /// Schema-level failures (the event's manifest itself could not be
-    /// resolved) are fatal in every mode: they indicate the trace/schema
-    /// state is unreliable beyond this single event. Per-event decode
-    /// failures are fatal only for the raw diagnostic visitor (which needs
-    /// every event to succeed); in [`CollectionMode::Analyze`] they are
-    /// aggregated into the verbose logging summary for a known provider instead of
-    /// silently dropped.
+    /// Analysis records a closed diagnostic reason and continues. Raw diagnostic
+    /// visitors require every event to decode successfully and fail instead.
     fn record_event_decode_error(
         &mut self,
         provider: windows::core::GUID,
@@ -432,7 +465,7 @@ impl<'visitor> Accumulator<'visitor> {
         pid: u32,
         error: tdh_decode::DecodeError,
     ) {
-        let fatal = matches!(self.mode, CollectionMode::Raw) || error.is_schema_error();
+        let fatal = matches!(self.mode, CollectionMode::Raw);
         if fatal {
             if self.decode_error.is_none() {
                 self.decode_error =
@@ -440,26 +473,25 @@ impl<'visitor> Accumulator<'visitor> {
             }
             return;
         }
+        let reason = match error.event_kind() {
+            Some(tdh_decode::EventDecodeKind::PayloadMalformed) => {
+                VerboseLoggingOutcomeReason::EventPayloadMalformed
+            }
+            Some(tdh_decode::EventDecodeKind::DecoderLimitReached) => {
+                VerboseLoggingOutcomeReason::DecoderLimitReached
+            }
+            Some(tdh_decode::EventDecodeKind::UnsupportedPropertyEncoding) => {
+                VerboseLoggingOutcomeReason::UnsupportedPropertyEncoding
+            }
+            None => VerboseLoggingOutcomeReason::SchemaUnavailable,
+        };
+        if reason == VerboseLoggingOutcomeReason::SchemaUnavailable
+            && is_learning_mode_event(provider, event_id)
+        {
+            self.truncated = true;
+        }
+        let event = (event_id, error.event_name());
         if let Some(category) = crate::extractors::verbose_logging_provider_for_guid(provider) {
-            let reason = match error.event_kind() {
-                Some(tdh_decode::EventDecodeKind::PayloadMalformed) => {
-                    VerboseLoggingOutcomeReason::EventPayloadMalformed
-                }
-                Some(tdh_decode::EventDecodeKind::DecoderLimitReached) => {
-                    VerboseLoggingOutcomeReason::DecoderLimitReached
-                }
-                Some(tdh_decode::EventDecodeKind::UnsupportedPropertyEncoding) => {
-                    VerboseLoggingOutcomeReason::UnsupportedPropertyEncoding
-                }
-                None => return,
-            };
-            // Retain only the bounded schema-declared name. The free-form
-            // decoder message can include property values and is never emitted.
-            let properties = error
-                .event_name()
-                .map(|name| vec![("EventName".to_string(), name.to_string())])
-                .map(crate::extractors::bound_properties)
-                .unwrap_or_default();
             let classification = match event_id {
                 crate::extractors::LEARNING_MODE_VIOLATION_EVENT_ID => (
                     Some(learning_mode_core::AccessType::Unknown),
@@ -478,7 +510,9 @@ impl<'visitor> Accumulator<'visitor> {
                 },
                 _ => (None, None),
             };
-            self.record_outcome(category, event_id, reason, pid, classification, properties);
+            self.record_outcome(category, event, reason, pid, classification, Vec::new());
+        } else {
+            self.record_unknown_provider_outcome(provider, event, reason, pid, Vec::new());
         }
     }
 
@@ -543,6 +577,39 @@ impl EtlDenialAnalyzer {
     ) -> Result<AnalysisResult, AnalyzeError> {
         let process_lifetimes = attested_process_lifetimes(membership)?;
         self.analyze_for_process_lifetimes(source_path, &process_lifetimes)
+    }
+
+    /// Analyzes a relogged trace for exact job-attested process generations.
+    ///
+    /// The relogger's generated transport header is not a source observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AnalyzeError`] when job evidence is invalid or the trace cannot
+    /// be decoded.
+    pub fn analyze_relogged_for_job_membership(
+        &self,
+        source_path: &Path,
+        membership: &JobMembershipSnapshot,
+    ) -> Result<AnalysisResult, AnalyzeError> {
+        let lifetimes = attested_process_lifetimes(membership)?;
+        self.analyze_relogged_for_process_lifetimes(source_path, &lifetimes)
+    }
+
+    pub(crate) fn analyze_relogged_for_process_lifetimes(
+        &self,
+        source_path: &Path,
+        lifetimes: &[ProcessLifetime],
+    ) -> Result<AnalysisResult, AnalyzeError> {
+        let mut accumulator = Accumulator::analyze_for_process_lifetimes(lifetimes);
+        accumulator.skip_relog_header = true;
+        process_trace_file(source_path, &mut accumulator)?;
+        if accumulator.skip_relog_header {
+            return Err(AnalyzeError::Decode(
+                "relogged trace has no transport header".into(),
+            ));
+        }
+        accumulator.into_analysis()
     }
 }
 
@@ -616,7 +683,7 @@ pub fn visit_raw_events(
     Ok(accumulator.raw_event_count)
 }
 
-/// Builds a bounded decision vector for known-provider Learning Mode events in
+/// Builds a bounded decision vector for all in-scope events in
 /// source order. `ProcessTrace` normalizes each timestamp to FILETIME before
 /// the exact process-generation test, so Trace Relogger can replay these
 /// decisions without comparing its raw trace-clock timestamps.
@@ -643,7 +710,7 @@ pub(crate) fn select_learning_mode_events_for_relogging(
 fn dedup_to_resources<I: IntoIterator<Item = RawDenial>>(raws: I) -> AnalysisResult {
     let mut accumulator = Accumulator::analyze();
     for raw in raws {
-        accumulator.add_raw_denial(raw);
+        accumulator.add_raw_denial(raw, None);
     }
     accumulator
         .into_analysis()
@@ -705,7 +772,9 @@ fn process_trace_file(
 
     // ERROR_SUCCESS (0) is end-of-file. ERROR_CANCELLED (1223) is expected
     // when our buffer callback stops after a processing bound or fatal error.
-    if status.0 != 0 && status.0 != 1223 {
+    if status.0 != 0
+        && !(status.0 == 1223 && (accumulator.stop_requested || accumulator.decode_error.is_some()))
+    {
         return Err(AnalyzeError::Decode(format!(
             "ProcessTrace failed for '{}': Win32 error {}",
             source_path.display(),
@@ -781,10 +850,18 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
     let provider = header.ProviderId;
     let event_id = header.EventDescriptor.Id;
 
-    if matches!(acc.mode, CollectionMode::SelectForRelogging) {
-        if crate::extractors::verbose_logging_provider_for_guid(provider).is_none() {
-            return;
+    if acc.skip_relog_header {
+        acc.skip_relog_header = false;
+        if provider != windows::core::GUID::from_u128(0x68fdd900_4a3e_11d1_84f4_0000f80464e3)
+            || event_id != 0
+            || header.EventDescriptor.Opcode != 0
+        {
+            acc.decode_error = Some("relogged trace has an invalid transport header".into());
         }
+        return;
+    }
+
+    if matches!(acc.mode, CollectionMode::SelectForRelogging) {
         let event_index = acc.relog_event_count;
         let Some(next_event_count) = acc.relog_event_count.checked_add(1) else {
             acc.decode_error =
@@ -822,29 +899,13 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
     let mut analyze_filetime = None;
 
     if matches!(acc.mode, CollectionMode::Analyze) {
-        let Some(category) = crate::extractors::verbose_logging_provider_for_guid(provider) else {
-            // Unrelated provider: unrelated host traffic, ignored entirely
-            // (not aggregated as an excluded Learning Mode outcome).
-            return;
-        };
         let Some(filetime) = normalized_filetime(header.TimeStamp, acc) else {
             return;
         };
         analyze_filetime = Some(filetime);
-        if !is_learning_mode_event(provider, event_id) {
-            if !acc.event_in_scope(header.ProcessId, filetime) || !acc.begin_event() {
-                return;
-            }
-            // A known provider, but outside its supported event vocabulary:
-            // aggregate (as a signature with no decoded properties) without
-            // paying for a TDH decode.
-            acc.record_exclusion(
-                category,
-                event_id,
-                VerboseLoggingOutcomeReason::UnsupportedEventSchema,
-                header.ProcessId,
-                Vec::new(),
-            );
+        let brokered = event_id == crate::extractors::CAPABILITY_DENIAL_EVENT_ID
+            && is_learning_mode_event(provider, event_id);
+        if !brokered && !acc.event_in_scope(header.ProcessId, filetime) {
             return;
         }
     }
@@ -864,12 +925,16 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
         },
         Err(error) => {
             if matches!(acc.mode, CollectionMode::Analyze) {
-                if error.is_schema_error() {
-                    acc.record_event_decode_error(provider, event_id, header.ProcessId, error);
-                    return;
-                }
                 let filetime = analyze_filetime.expect("analyze mode has normalized FILETIME");
-                let pid = if event_id == crate::extractors::CAPABILITY_DENIAL_EVENT_ID {
+                if matches!(&error, tdh_decode::DecodeError::Schema(_))
+                    && event_id == crate::extractors::CAPABILITY_DENIAL_EVENT_ID
+                    && is_learning_mode_event(provider, event_id)
+                {
+                    acc.truncated = true;
+                }
+                let pid = if event_id == crate::extractors::CAPABILITY_DENIAL_EVENT_ID
+                    && is_learning_mode_event(provider, event_id)
+                {
                     let process_id = unsafe {
                         tdh_decode::decode_event_property(
                             event_record,
@@ -927,10 +992,9 @@ fn select_capability_decode_result_for_relogging(
             header_pid,
             filetime,
         ),
-        Err(error) if error.is_schema_error() => {
-            acc.decode_error = Some(format!(
-                "failed to decode brokered capability event while scoping guarded trace: {error}"
-            ));
+        Err(tdh_decode::DecodeError::Schema(_)) => {
+            acc.decode_error =
+                Some("could not scope brokered capability event: schema unavailable".into());
             acc.stop_requested = true;
         }
         Err(_) => {
@@ -977,27 +1041,32 @@ fn select_event_for_relogging(
     acc.relog_selected_event_pids.push(pid);
 }
 
-/// Extracts denials from one decoded, in-vocabulary event and feeds them
-/// (or their closed outcome reason) into `acc`.
-///
-/// Re-checks the provider/event vocabulary so it stays a single source of
-/// truth for both the real ETW path (which gates before decoding, above)
-/// and pure-composition tests that hand this already-"decoded" fixtures.
+/// Extracts known denials and retains other scoped events as diagnostics.
 fn handle_decoded_event(
     parts: &DecodedEventParts,
     header_pid: u32,
     filetime: u64,
     acc: &mut Accumulator<'_>,
 ) {
+    let event = (parts.event_id, parts.event_name.as_deref());
     let Some(category) = crate::extractors::verbose_logging_provider_for_guid(parts.provider)
     else {
+        if acc.event_in_scope(header_pid, filetime) && acc.begin_event() {
+            acc.record_unknown_provider_outcome(
+                parts.provider,
+                event,
+                VerboseLoggingOutcomeReason::UnsupportedEventSchema,
+                header_pid,
+                crate::extractors::sanitize_properties(&parts.props),
+            );
+        }
         return;
     };
     if !is_learning_mode_event(parts.provider, parts.event_id) {
         if acc.event_in_scope(header_pid, filetime) && acc.begin_event() {
             acc.record_exclusion(
                 category,
-                parts.event_id,
+                event,
                 VerboseLoggingOutcomeReason::UnsupportedEventSchema,
                 header_pid,
                 crate::extractors::sanitize_properties(&parts.props),
@@ -1009,7 +1078,7 @@ fn handle_decoded_event(
         if acc.event_in_scope(header_pid, filetime) && acc.begin_event() {
             acc.record_outcome(
                 category,
-                parts.event_id,
+                event,
                 VerboseLoggingOutcomeReason::EventPayloadMalformed,
                 header_pid,
                 crate::extractors::verbose_logging_classification(parts),
@@ -1030,18 +1099,18 @@ fn handle_decoded_event(
     // `UnresolvedCapability` outcome is counted only when none are recovered.
     let capability_candidates = crate::capability_dacl::extract_denials(parts, pid, filetime);
     for raw in capability_candidates.iter().cloned() {
-        acc.add_raw_denial(raw);
+        acc.add_raw_denial(raw, event.1);
     }
 
     match primary {
-        Ok(raw) => acc.add_raw_denial(raw),
+        Ok(raw) => acc.add_raw_denial(raw, event.1),
         Err(reason) => {
             let recovered_by_dacl = reason == VerboseLoggingOutcomeReason::UnresolvedCapability
                 && !capability_candidates.is_empty();
             if !recovered_by_dacl {
                 acc.record_outcome(
                     category,
-                    parts.event_id,
+                    event,
                     reason,
                     pid,
                     crate::extractors::verbose_logging_classification(parts),
@@ -1075,6 +1144,133 @@ mod tests {
     const SCOPED_START_FILETIME: u64 = 100;
     const SCOPED_END_FILETIME: u64 = 200;
     const SCOPED_EVENT_FILETIME: u64 = 150;
+
+    #[test]
+    fn callback_decodes_unknown_events_and_deduplicates_decode_failures() {
+        let mut accumulator = Accumulator::analyze();
+        let payload = 42u32.to_le_bytes();
+        for (provider, names) in [
+            (windows::core::GUID::from_u128(1), Some(vec!["FutureValue"])),
+            (
+                crate::extractors::KERNEL_GENERAL_PROVIDER,
+                Some(vec!["FutureValue"]),
+            ),
+            (
+                windows::core::GUID::from_u128(2),
+                Some(vec!["First", "Missing"]),
+            ),
+            (windows::core::GUID::from_u128(3), None),
+        ] {
+            for time in [100, 200] {
+                // SAFETY: the initialized record and payload remain live
+                // throughout the synchronous callback.
+                let mut record: EVENT_RECORD = unsafe { core::mem::zeroed() };
+                record.EventHeader.ProviderId = provider;
+                record.EventHeader.EventDescriptor.Id = 999;
+                record.EventHeader.ProcessId = 42;
+                record.EventHeader.TimeStamp = time;
+                record.UserData = payload.as_ptr().cast_mut().cast();
+                record.UserDataLength = payload.len() as u16;
+                if let Some(names) = &names {
+                    accumulator.schema_cache.insert_test_schema(&record, names);
+                }
+                unsafe { process_event_record(&mut record, &mut accumulator) };
+            }
+        }
+        let analysis = accumulator.into_analysis().unwrap();
+        let groups = &analysis.verbose_logging.signatures;
+        assert_eq!(analysis.verbose_logging.total_occurrences, 8);
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().all(|group| group.count == 2));
+        let decoded = groups
+            .iter()
+            .filter(|group| {
+                group.signature.reason == VerboseLoggingOutcomeReason::UnsupportedEventSchema
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(decoded.len(), 2);
+        assert!(decoded
+            .iter()
+            .all(|group| property(&group.signature, "FutureValue") == "42"));
+        for reason in [
+            VerboseLoggingOutcomeReason::EventPayloadMalformed,
+            VerboseLoggingOutcomeReason::SchemaUnavailable,
+        ] {
+            let group = groups
+                .iter()
+                .find(|group| group.signature.reason == reason)
+                .unwrap();
+            assert!(group.signature.properties.is_empty());
+            assert_eq!(group.signature.provider, VerboseLoggingProvider::Other);
+        }
+        assert!(analysis.denials.is_empty());
+    }
+
+    #[test]
+    fn unknown_event_dedup_preserves_provider_identity_and_process_scope() {
+        let properties = [("ProcessId", "99"), ("FutureValue", "42")];
+        let first = windows::core::GUID::from_u128(1);
+        let second = windows::core::GUID::from_u128(2);
+        let events = [
+            event_with_provider(first, 28, 42, 150, &properties),
+            event_with_provider(first, 28, 42, 151, &properties),
+            event_with_provider(second, 28, 42, 152, &properties),
+            event_with_provider(first, 29, 42, 153, &properties),
+            event_with_provider(first, 28, 99, 150, &[("ProcessId", "42")]),
+            event_with_provider(first, 28, 42, 201, &properties),
+            kernel_event(
+                14,
+                42,
+                160,
+                &[
+                    ("ObjectType", "File"),
+                    ("ObjectName", r"C:\kept.txt"),
+                    ("AccessMask", "1"),
+                ],
+            ),
+        ];
+        let analysis = resources_from_events_for_process_lifetimes(
+            &events,
+            Some(&[ProcessLifetime {
+                pid: 42,
+                start_filetime: 100,
+                end_filetime: 200,
+            }]),
+        );
+        let groups = &analysis.verbose_logging.signatures;
+        assert_eq!(groups.len(), 4);
+        assert_eq!(analysis.verbose_logging.total_occurrences, 5);
+        let repeated = groups
+            .iter()
+            .find(|group| {
+                group.signature.provider_guid
+                    == crate::extractors::format_guid_braced_uppercase(first)
+                    && group.signature.event_id == 28
+            })
+            .unwrap();
+        assert_eq!(repeated.count, 2);
+        assert_eq!(repeated.signature.pid, 42);
+        let expected = vec![DeniedResource {
+            resource: r"C:\kept.txt".into(),
+            resource_type: ResourceType::File,
+            access_type: AccessType::Read,
+            pid: 42,
+            filetime: 160,
+        }];
+        let serialize = |denials| {
+            let mut bytes = Vec::new();
+            learning_mode_core::write_document(
+                &mut bytes,
+                &learning_mode_core::DenialsDocument::new(
+                    denials,
+                    learning_mode_core::DenialSummary::new(0, 1, false),
+                ),
+            )
+            .unwrap();
+            bytes
+        };
+        assert_eq!(serialize(analysis.denials), serialize(expected));
+    }
 
     #[test]
     fn process_lifetime_index_matches_pid_and_merged_time_ranges() {
@@ -1118,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn relog_selection_tracks_known_provider_ordinals_and_exact_lifetimes() {
+    fn relog_selection_tracks_all_provider_ordinals_and_exact_lifetimes() {
         let mut accumulator = Accumulator::select_for_relogging(&[ProcessLifetime {
             pid: 42,
             start_filetime: 100,
@@ -1143,8 +1339,8 @@ mod tests {
         visit(crate::extractors::KERNEL_GENERAL_PROVIDER, 999, 42, 200);
         visit(crate::extractors::KERNEL_GENERAL_PROVIDER, 14, 43, 150);
 
-        assert_eq!(accumulator.relog_event_count, 4);
-        assert_eq!(accumulator.relog_selected_event_indices, [0, 2]);
+        assert_eq!(accumulator.relog_event_count, 5);
+        assert_eq!(accumulator.relog_selected_event_indices, [0, 1, 3]);
         assert!(accumulator.decode_error.is_none());
     }
 
@@ -1195,6 +1391,7 @@ mod tests {
         }]);
         let parts = DecodedEventParts {
             provider: crate::extractors::KERNEL_GENERAL_PROVIDER,
+            event_name: None,
             event_id: crate::extractors::CAPABILITY_DENIAL_EVENT_ID,
             props: Vec::new(),
         };
@@ -1234,29 +1431,80 @@ mod tests {
     }
 
     #[test]
-    fn relog_selection_stops_on_capability_schema_failure() {
+    fn brokered_schema_failure_marks_incomplete_before_pid_resolution() {
+        for (provider, event_id, incomplete) in [
+            (crate::extractors::KERNEL_GENERAL_PROVIDER, 28, true),
+            (crate::extractors::KERNEL_GENERAL_PROVIDER, 14, false),
+            (crate::extractors::PRIVACY_LEARNING_MODE_PROVIDER, 28, false),
+            (windows::core::GUID::from_u128(1), 28, false),
+        ] {
+            let mut accumulator = Accumulator::analyze_for_process_lifetimes(&[ProcessLifetime {
+                pid: 42,
+                start_filetime: 100,
+                end_filetime: 200,
+            }]);
+            let mut record = EVENT_RECORD::default();
+            record.EventHeader.ProviderId = provider;
+            record.EventHeader.EventDescriptor.Id = event_id;
+            record.EventHeader.EventDescriptor.Version = u8::MAX;
+            record.EventHeader.ProcessId = 9000;
+            record.EventHeader.TimeStamp = 150;
+            if incomplete {
+                assert!(matches!(
+                    unsafe {
+                        tdh_decode::decode_event_parts(&mut record, &mut accumulator.schema_cache)
+                    },
+                    Err(tdh_decode::DecodeError::Schema(_))
+                ));
+            }
+            unsafe { process_event_record(&mut record, &mut accumulator) };
+            assert_eq!(accumulator.truncated, incomplete);
+            assert!(accumulator.verbose_logging.is_empty());
+            assert!(!accumulator.stop_requested);
+            assert!(accumulator.decode_error.is_none());
+
+            let valid = kernel_event(
+                14,
+                42,
+                160,
+                &[
+                    ("ObjectType", "File"),
+                    ("ObjectName", r"C:\kept.txt"),
+                    ("AccessMask", "1"),
+                ],
+            );
+            handle_decoded_event(&valid.parts, valid.pid, valid.filetime, &mut accumulator);
+            let analysis = accumulator.into_analysis().unwrap();
+            assert_eq!(analysis.denied_resources_truncated, incomplete);
+            assert_eq!(analysis.denials.len(), 1);
+            assert_eq!(analysis.denials[0].resource, r"C:\kept.txt");
+            assert_eq!(analysis.verbose_logging.total_occurrences, 1);
+        }
+    }
+
+    #[test]
+    fn relog_selection_rejects_unattributable_capability_schema_failure() {
         let mut accumulator = Accumulator::select_for_relogging(&[ProcessLifetime {
             pid: 42,
             start_filetime: 100,
             end_filetime: 200,
         }]);
-
-        select_capability_decode_result_for_relogging(
-            &mut accumulator,
-            0,
-            Err(tdh_decode::DecodeError::Schema(
-                "manifest unavailable".to_string(),
-            )),
-            9000,
-            150,
-        );
+        let mut record = EVENT_RECORD::default();
+        record.EventHeader.ProviderId = crate::extractors::KERNEL_GENERAL_PROVIDER;
+        record.EventHeader.EventDescriptor.Id = crate::extractors::CAPABILITY_DENIAL_EVENT_ID;
+        record.EventHeader.EventDescriptor.Version = u8::MAX;
+        record.EventHeader.ProcessId = 9000;
+        record.EventHeader.TimeStamp = 150;
+        unsafe { process_event_record(&mut record, &mut accumulator) };
 
         assert!(accumulator.relog_selected_event_indices.is_empty());
+        assert!(accumulator.relog_selected_event_pids.is_empty());
+        assert!(accumulator.verbose_logging.is_empty());
         assert!(accumulator.stop_requested);
-        assert!(accumulator
-            .decode_error
-            .as_deref()
-            .is_some_and(|error| error.contains("manifest unavailable")));
+        assert_eq!(
+            accumulator.decode_error.as_deref(),
+            Some("could not scope brokered capability event: schema unavailable")
+        );
     }
 
     #[test]
@@ -1284,6 +1532,7 @@ mod tests {
         let mut accumulator = Accumulator::raw(&mut visitor);
         let parts = DecodedEventParts {
             provider: windows::core::GUID::from_u128(0),
+            event_name: None,
             event_id: 1,
             props: Vec::new(),
         };
@@ -1341,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn analyze_mode_reports_schema_lookup_failure() {
+    fn analyze_mode_records_schema_lookup_failure_without_aborting() {
         let mut accumulator = Accumulator::analyze();
         accumulator.record_event_decode_error(
             windows::core::GUID::from_u128(1),
@@ -1350,8 +1599,84 @@ mod tests {
             tdh_decode::DecodeError::Schema("manifest unavailable".to_string()),
         );
 
-        let error = accumulator.into_analysis().unwrap_err();
-        assert!(error.to_string().contains("manifest unavailable"));
+        let analysis = accumulator.into_analysis().unwrap();
+        let group = &analysis.verbose_logging.signatures[0];
+        assert_eq!(
+            group.signature.reason,
+            VerboseLoggingOutcomeReason::SchemaUnavailable
+        );
+        assert!(group.signature.properties.is_empty());
+        assert_eq!(group.count, 1);
+        let mut bytes = Vec::new();
+        learning_mode_core::write_verbose_logging_document(
+            &mut bytes,
+            &learning_mode_core::VerboseLoggingDocument::new(&analysis.verbose_logging),
+        )
+        .unwrap();
+        assert!(!String::from_utf8(bytes)
+            .unwrap()
+            .contains("manifest unavailable"));
+    }
+
+    #[test]
+    fn schema_failure_completeness_follows_the_supported_event_vocabulary() {
+        let kernel = crate::extractors::KERNEL_GENERAL_PROVIDER;
+        let privacy = crate::extractors::PRIVACY_LEARNING_MODE_PROVIDER;
+        for (provider, event_id, incomplete) in [
+            (kernel, 14, true),
+            (kernel, 27, true),
+            (kernel, 28, true),
+            (privacy, 14, true),
+            (privacy, 27, true),
+            (privacy, 4907, true),
+            (kernel, 999, false),
+            (privacy, 28, false),
+            (windows::core::GUID::from_u128(1), 14, false),
+        ] {
+            let mut accumulator = Accumulator::analyze();
+            accumulator.record_event_decode_error(
+                provider,
+                event_id,
+                42,
+                tdh_decode::DecodeError::Schema("manifest unavailable".into()),
+            );
+            let event = kernel_event(
+                14,
+                42,
+                150,
+                &[
+                    ("ObjectType", "File"),
+                    ("ObjectName", r"C:\kept.txt"),
+                    ("AccessMask", "1"),
+                ],
+            );
+            handle_decoded_event(&event.parts, event.pid, event.filetime, &mut accumulator);
+            let analysis = accumulator.into_analysis().unwrap();
+            assert_eq!(
+                analysis.denied_resources_truncated, incomplete,
+                "{provider:?} {event_id}"
+            );
+            assert_eq!(analysis.denials.len(), 1);
+            assert_eq!(analysis.denials[0].resource, r"C:\kept.txt");
+            assert_eq!(analysis.verbose_logging.total_occurrences, 2);
+            assert!(analysis.verbose_logging.signatures.iter().any(|group| {
+                group.signature.reason == VerboseLoggingOutcomeReason::SchemaUnavailable
+            }));
+            let mut bytes = Vec::new();
+            let summary = learning_mode_core::DenialSummary::new(
+                0,
+                analysis.denials.len(),
+                analysis.denied_resources_truncated,
+            );
+            learning_mode_core::write_document(
+                &mut bytes,
+                &learning_mode_core::DenialsDocument::new(analysis.denials, summary),
+            )
+            .unwrap();
+            assert!(String::from_utf8(bytes)
+                .unwrap()
+                .contains(&format!("\"deniedResourcesTruncated\": {incomplete}")));
+        }
     }
 
     fn raw(path: &str, access: AccessType, rt: ResourceType) -> RawDenial {
@@ -1502,11 +1827,14 @@ mod tests {
             .map(|index| (format!(r"c:\data\{index}.txt"), AccessType::Read))
             .collect();
 
-        accumulator.add_raw_denial(raw(
-            r"C:\data\overflow.txt",
-            AccessType::Read,
-            ResourceType::File,
-        ));
+        accumulator.add_raw_denial(
+            raw(
+                r"C:\data\overflow.txt",
+                AccessType::Read,
+                ResourceType::File,
+            ),
+            None,
+        );
 
         assert!(
             !accumulator.stop_requested,
@@ -1527,12 +1855,18 @@ mod tests {
         // Processing continues past the cap: a further overflow candidate is
         // still aggregated (not silently discarded), and a duplicate of an
         // already-actionable denial retains the same actionable classification.
-        accumulator.add_raw_denial(raw(
-            r"C:\data\overflow-2.txt",
-            AccessType::Read,
-            ResourceType::File,
-        ));
-        accumulator.add_raw_denial(raw(r"C:\data\0.txt", AccessType::Read, ResourceType::File));
+        accumulator.add_raw_denial(
+            raw(
+                r"C:\data\overflow-2.txt",
+                AccessType::Read,
+                ResourceType::File,
+            ),
+            None,
+        );
+        accumulator.add_raw_denial(
+            raw(r"C:\data\0.txt", AccessType::Read, ResourceType::File),
+            None,
+        );
 
         assert!(!accumulator.stop_requested);
         assert_eq!(
@@ -1645,6 +1979,7 @@ mod tests {
             parts: DecodedEventParts {
                 provider,
                 event_id,
+                event_name: None,
                 props: kv
                     .iter()
                     .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -2076,6 +2411,7 @@ mod tests {
                 parts: DecodedEventParts {
                     provider: crate::extractors::KERNEL_GENERAL_PROVIDER,
                     event_id: 14,
+                    event_name: None,
                     props: vec![
                         ("Mode".to_string(), "\"Permissive\"".to_string()),
                         ("ObjectType".to_string(), format!("\"{object_type}\"")),
@@ -2126,6 +2462,7 @@ mod tests {
                 parts: DecodedEventParts {
                     provider: crate::extractors::KERNEL_GENERAL_PROVIDER,
                     event_id: 14,
+                    event_name: None,
                     props: vec![
                         ("ObjectType".to_string(), "\"Section\"".to_string()),
                         ("ObjectName".to_string(), format!("\"{object_name}\"")),
@@ -2263,10 +2600,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_provider_is_ignored_without_accounting() {
-        // A provider outside the known Learning Mode vocabulary must not
-        // contribute any verbose logging accounting at all, even though its event
-        // ID happens to collide with a known access-check ID.
+    fn unknown_provider_is_retained_without_creating_actionable_denials() {
         let events = vec![event_with_provider(
             windows::core::GUID::from_u128(0xdead_beef),
             14,
@@ -2281,16 +2615,21 @@ mod tests {
 
         let out = resources_from_events(&events);
         assert!(out.denials.is_empty());
-        assert!(
-            out.verbose_logging.is_empty(),
-            "unrelated providers are ignored, not aggregated"
+        assert_eq!(out.verbose_logging.signatures.len(), 1);
+        let group = &out.verbose_logging.signatures[0];
+        assert_eq!(group.signature.provider, VerboseLoggingProvider::Other);
+        assert_eq!(
+            group.signature.provider_guid,
+            "{00000000-0000-0000-0000-0000DEADBEEF}"
         );
+        assert_eq!(property(&group.signature, "ObjectName"), "<REDACTED>");
+        assert_eq!(group.count, 1);
     }
 
     #[test]
     fn actionable_candidates_and_duplicates_share_one_verbose_logging_signature() {
         let make_event = |sequence_no: u64| {
-            kernel_event(
+            let mut event = kernel_event(
                 14,
                 7,
                 sequence_no,
@@ -2300,7 +2639,9 @@ mod tests {
                     ("AccessMask", "0x1"),
                     ("UserName", "\"jsmith\""),
                 ],
-            )
+            );
+            event.parts.event_name = Some("AccessCheck".into());
+            event
         };
         let events = vec![make_event(1), make_event(2), make_event(3)];
 
@@ -2322,6 +2663,10 @@ mod tests {
             VerboseLoggingProvider::KernelGeneral
         );
         assert_eq!(actionable_group.signature.event_id, 14);
+        assert_eq!(
+            actionable_group.signature.event_name.as_deref(),
+            Some("AccessCheck")
+        );
         assert_eq!(
             actionable_group.count, 3,
             "all three occurrences are retained"
@@ -2385,7 +2730,7 @@ mod tests {
         // capability candidate must not also surface an `UnresolvedCapability`
         // exclusion for the same event.
         let dacl = "hex:000000000000000001000000010200000000000F0300000001000000";
-        let events = vec![permissive_event(
+        let mut events = vec![permissive_event(
             14,
             5900,
             21,
@@ -2397,6 +2742,7 @@ mod tests {
                 ("Dacl", dacl),
             ],
         )];
+        events[0].parts.event_name = Some("CapabilityCheck".into());
 
         let out = resources_from_events(&events);
         assert_eq!(out.denials.len(), 1);
@@ -2406,6 +2752,7 @@ mod tests {
         assert_eq!(signature.reason, VerboseLoggingOutcomeReason::Actionable);
         assert_eq!(signature.access_type, Some(AccessType::Unknown));
         assert_eq!(signature.resource_type, Some(ResourceType::Capability));
+        assert_eq!(signature.event_name.as_deref(), Some("CapabilityCheck"));
     }
 
     fn find_signature(
@@ -2446,7 +2793,7 @@ mod tests {
         for pid in 0..learning_mode_core::MAX_VERBOSE_LOGGING_GROUPS as u32 {
             accumulator.record_exclusion(
                 VerboseLoggingProvider::KernelGeneral,
-                14,
+                (14, None),
                 VerboseLoggingOutcomeReason::Actionable,
                 pid,
                 properties.clone(),
@@ -2606,7 +2953,10 @@ mod tests {
             VerboseLoggingOutcomeReason::EventPayloadMalformed
         );
         assert_eq!(malformed.signature.pid, 9);
-        assert_eq!(property(&malformed.signature, "EventName"), "AccessCheck");
+        assert_eq!(
+            malformed.signature.event_name.as_deref(),
+            Some("AccessCheck")
+        );
         assert_eq!(
             find_signature(&out.verbose_logging, 27).signature.reason,
             VerboseLoggingOutcomeReason::DecoderLimitReached
@@ -2622,11 +2972,7 @@ mod tests {
             Some(ResourceType::Capability)
         );
         assert!(out.verbose_logging.signatures.iter().all(|aggregate| {
-            aggregate
-                .signature
-                .properties
-                .iter()
-                .all(|(name, _)| name == "EventName")
+            aggregate.signature.properties.is_empty() && aggregate.signature.event_name.is_some()
         }));
     }
 
@@ -2671,5 +3017,30 @@ mod tests {
                 .resource_type,
             None
         );
+    }
+
+    #[test]
+    fn decode_failure_schema_names_are_sanitized_for_all_providers() {
+        for provider in [
+            crate::extractors::KERNEL_GENERAL_PROVIDER,
+            windows::core::GUID::from_u128(1),
+        ] {
+            let mut accumulator = Accumulator::analyze();
+            accumulator.record_event_decode_error(
+                provider,
+                999,
+                42,
+                tdh_decode::DecodeError::event(
+                    tdh_decode::EventDecodeKind::PayloadMalformed,
+                    "private decoder message".into(),
+                    Some(r"C:\Users\private\schema".into()),
+                ),
+            );
+            let analysis = accumulator.into_analysis().unwrap();
+            let group = &analysis.verbose_logging.signatures[0];
+            assert_eq!(group.signature.event_name.as_deref(), Some("<REDACTED>"));
+            assert!(group.signature.properties.is_empty());
+            assert_eq!(group.count, 1);
+        }
     }
 }

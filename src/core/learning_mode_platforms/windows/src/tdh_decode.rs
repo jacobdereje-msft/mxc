@@ -88,6 +88,16 @@ pub(crate) struct EventSchemaCache {
     schemas: HashMap<EventSchemaKey, TdhInfoBuffer>,
 }
 
+#[cfg(test)]
+impl EventSchemaCache {
+    pub(crate) fn insert_test_schema(&mut self, record: &EVENT_RECORD, names: &[&str]) {
+        self.schemas.insert(
+            EventSchemaKey::from_record(record),
+            tests::uint32_property_buffer(names),
+        );
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum DecodeError {
     Schema(String),
@@ -106,10 +116,6 @@ pub(crate) enum EventDecodeKind {
 }
 
 impl DecodeError {
-    pub(crate) fn is_schema_error(&self) -> bool {
-        matches!(self, Self::Schema(_))
-    }
-
     pub(crate) fn event_kind(&self) -> Option<EventDecodeKind> {
         match self {
             Self::Event { kind, .. } => Some(*kind),
@@ -210,11 +216,12 @@ pub unsafe fn decode_event_parts(
     let pointer_size = pointer_size_from_header_flags(header.Flags);
     let event_name = schema_event_name(buffer.as_bytes(), info);
     let props = decode_properties(buffer.as_bytes(), info, event_record, pointer_size)
-        .map_err(|error| map_property_decode_error(error, event_name))?;
+        .map_err(|error| map_property_decode_error(error, event_name.clone()))?;
 
     Ok(DecodedEventParts {
         provider: header.ProviderId,
         event_id,
+        event_name,
         props,
     })
 }
@@ -1005,7 +1012,7 @@ mod tests {
             .collect()
     }
 
-    fn uint32_property_buffer(names: &[&str]) -> TdhInfoBuffer {
+    pub(super) fn uint32_property_buffer(names: &[&str]) -> TdhInfoBuffer {
         assert!(!names.is_empty());
         let encoded_names = names
             .iter()

@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Process-scoped ETL rewriting for guarded WPR captures.
-
 use std::collections::HashSet;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
@@ -19,7 +17,7 @@ use windows::Win32::System::Diagnostics::Etw::{
 };
 
 use crate::etl_decode::select_learning_mode_events_for_relogging;
-use crate::extractors::{is_learning_mode_event, verbose_logging_provider_for_guid};
+use crate::extractors::is_learning_mode_event;
 use crate::process_lifetime::{attested_process_lifetimes, JobMembershipSnapshot};
 use crate::tdh_decode;
 
@@ -90,19 +88,13 @@ impl RelogSelectionState {
         }
     }
 
-    fn observe_known_provider_event(&self, pid: u32) -> bool {
+    fn observe_event(&self, pid: u32) -> bool {
         let event_index = self.event_cursor.fetch_add(1, Ordering::Relaxed);
         let selected_index = self.selected_event_cursor.load(Ordering::Relaxed);
         if self.selected_event_indices.get(selected_index) != Some(&event_index) {
             return false;
         }
 
-        // The first ProcessTrace pass selected this ordinal using exact PID and
-        // lifetime bounds. Revalidate the second pass's current PID before
-        // injection so a different equal-timestamp ordering cannot substitute
-        // a foreign process's event at the same ordinal. Do not advance the
-        // selected-event index on mismatch: the final count reconciliation then
-        // fails closed and the partial destination is deleted.
         if self.selected_event_pids.get(selected_index) != Some(&pid)
             || !self.attested_pids.contains(&pid)
         {
@@ -130,8 +122,13 @@ impl ITraceEventCallback_Impl for ProcessScopedTraceFilter_Impl {
     ) -> windows::core::Result<()> {
         let header_event = header_event.ok()?;
         let relogger = relogger.ok()?;
-        // SAFETY: both interfaces are valid for this synchronous callback.
-        // The trace header is required for a standalone output ETL.
+        // SAFETY: Trace Relogger keeps the header and its interfaces valid
+        // throughout this synchronous callback.
+        let record = unsafe { header_event.GetEventRecord()? };
+        let record = unsafe { record.as_ref() }.ok_or_else(|| {
+            windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER)
+        })?;
+        self.selection.observe_event(record.EventHeader.ProcessId);
         unsafe { relogger.Inject(header_event)? };
         Ok(())
     }
@@ -156,9 +153,6 @@ impl ITraceEventCallback_Impl for ProcessScopedTraceFilter_Impl {
             ));
         };
         let header = &record.EventHeader;
-        if verbose_logging_provider_for_guid(header.ProviderId).is_none() {
-            return Ok(());
-        }
         let is_supported_capability_event = header.EventDescriptor.Id
             == crate::extractors::CAPABILITY_DENIAL_EVENT_ID
             && is_learning_mode_event(header.ProviderId, header.EventDescriptor.Id);
@@ -183,7 +177,7 @@ impl ITraceEventCallback_Impl for ProcessScopedTraceFilter_Impl {
         } else {
             header.ProcessId
         };
-        if self.selection.observe_known_provider_event(effective_pid) {
+        if self.selection.observe_event(effective_pid) {
             // SAFETY: both interfaces are valid for this synchronous callback,
             // and Inject clones the event into the output trace.
             unsafe { relogger.Inject(event)? };
@@ -321,7 +315,7 @@ fn relog_trace_with(
     let consumed_event_count = selection.consumed_event_count();
     if consumed_event_count != expected_event_count {
         return Err(AnalyzeError::Decode(format!(
-            "Trace Relogger observed {consumed_event_count} known-provider Learning Mode events, but ProcessTrace selected {expected_event_count}"
+            "Trace Relogger observed {consumed_event_count} events, but ProcessTrace selected {expected_event_count}"
         )));
     }
     let consumed_selected_event_count = selection.consumed_selected_event_count();
@@ -365,6 +359,174 @@ fn windows_error(operation: &str, error: windows::core::Error) -> AnalyzeError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn private_trace_relogging_preserves_unknown_events() {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::Diagnostics::Etw::{
+            ControlTraceW, EnableTraceEx2, StartTraceW, CONTROLTRACE_HANDLE,
+            EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_PRIVATE_IN_PROC, EVENT_TRACE_PRIVATE_LOGGER_MODE,
+            EVENT_TRACE_PROPERTIES, WNODE_FLAG_TRACED_GUID,
+        };
+        tracelogging::define_provider!(
+            TEST_PROVIDER,
+            "MxcTest.Redaction",
+            id("a93bc25e-f2de-485a-90e7-a2d8970b22a9")
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.etl");
+        let destination = directory.path().join("scoped.etl");
+        let provider = windows::core::GUID::from_u128(0xa93bc25e_f2de_485a_90e7_a2d8970b22a9);
+        let name = format!("mxc-verbose-test-{}", std::process::id())
+            .encode_utf16()
+            .chain([0])
+            .collect::<Vec<_>>();
+        let path = source
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect::<Vec<_>>();
+        let mut locations = 2u16.to_le_bytes().to_vec();
+        for value in [r"C:\Users\alice\secret.txt", r"D:\private.txt"] {
+            locations.extend(value.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+        }
+        let mut storage = vec![0u64; 512];
+        let properties = storage.as_mut_ptr().cast::<EVENT_TRACE_PROPERTIES>();
+        let mut session = CONTROLTRACE_HANDLE::default();
+        // SAFETY: the aligned buffer holds both null-terminated strings and
+        // outlives the synchronous ETW calls.
+        unsafe {
+            (*properties).Wnode.BufferSize = (storage.len() * 8) as u32;
+            (*properties).Wnode.Guid = provider;
+            (*properties).Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+            (*properties).Wnode.ClientContext = 1;
+            (*properties).BufferSize = 64;
+            (*properties).LogFileMode =
+                EVENT_TRACE_PRIVATE_LOGGER_MODE | EVENT_TRACE_PRIVATE_IN_PROC;
+            (*properties).LoggerNameOffset = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
+            (*properties).LogFileNameOffset =
+                (*properties).LoggerNameOffset + (name.len() * 2) as u32;
+            assert!((*properties).LogFileNameOffset as usize + path.len() * 2 <= storage.len() * 8);
+            std::ptr::copy_nonoverlapping(
+                path.as_ptr(),
+                storage
+                    .as_mut_ptr()
+                    .cast::<u8>()
+                    .add((*properties).LogFileNameOffset as usize)
+                    .cast::<u16>(),
+                path.len(),
+            );
+            assert_eq!(TEST_PROVIDER.register(), 0);
+            let started = StartTraceW(&mut session, PCWSTR(name.as_ptr()), properties);
+            if started.0 != 0 {
+                TEST_PROVIDER.unregister();
+                panic!("private StartTraceW failed: {}", started.0);
+            }
+            let enabled = EnableTraceEx2(session, &provider, 1, 5, u64::MAX, 0, 0, None);
+            let emit = || {
+                [
+                    tracelogging::write_event!(
+                        TEST_PROVIDER,
+                        "CompositeProperties",
+                        cstr8("CommandLine", r"cmd.exe /c type C:\Users\alice\secret.txt"),
+                        raw_field_slice("FutureLocations", CStr16, &locations),
+                        u32("SafeIdentifier", &42),
+                        u32("C:\\Users\\alice\\secret.txt", &42),
+                        cstr8("EventName", "payload-name"),
+                    ),
+                    tracelogging::write_event!(
+                        TEST_PROVIDER,
+                        "OtherCompositeProperties",
+                        cstr8("CommandLine", r"cmd.exe /c type C:\Users\alice\secret.txt"),
+                        raw_field_slice("FutureLocations", CStr16, &locations),
+                        u32("SafeIdentifier", &42),
+                        u32("C:\\Users\\alice\\secret.txt", &42),
+                        cstr8("EventName", "payload-name"),
+                    ),
+                ]
+            };
+            let first = emit();
+            let second = emit();
+            let stopped = ControlTraceW(
+                session,
+                PCWSTR(name.as_ptr()),
+                properties,
+                EVENT_TRACE_CONTROL_STOP,
+            );
+            let unregistered = TEST_PROVIDER.unregister();
+            for status in [enabled.0, stopped.0, unregistered]
+                .into_iter()
+                .chain(first)
+                .chain(second)
+            {
+                assert_eq!(status, 0);
+            }
+        }
+        if let Some(path) = std::env::var_os("MXC_TEST_ETL_OUTPUT") {
+            std::fs::copy(&source, path).expect("failed to retain the test ETL for CLI replay");
+        }
+        let lifetimes = [ProcessLifetime {
+            pid: std::process::id(),
+            start_filetime: 0,
+            end_filetime: u64::MAX,
+        }];
+        let native = crate::EtlDenialAnalyzer
+            .analyze_for_process_lifetimes(&source, &lifetimes)
+            .unwrap();
+        filter_trace_for_process_lifetimes(&source, &destination, &lifetimes).unwrap();
+        let guarded = crate::EtlDenialAnalyzer
+            .analyze_relogged_for_process_lifetimes(&destination, &lifetimes)
+            .unwrap();
+        let provider_guid = crate::extractors::format_guid_braced_uppercase(provider);
+        let groups = native
+            .verbose_logging
+            .signatures
+            .iter()
+            .filter(|group| group.signature.provider_guid == provider_guid)
+            .collect::<Vec<_>>();
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.signature.event_name.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("CompositeProperties"),
+                Some("OtherCompositeProperties")
+            ]
+        );
+        for group in groups {
+            assert_eq!(group.count, 2);
+            for name in ["CommandLine", "FutureLocations"] {
+                assert_eq!(
+                    group
+                        .signature
+                        .properties
+                        .iter()
+                        .find(|(key, _)| key == name),
+                    Some(&(
+                        name.to_string(),
+                        crate::extractors::REDACTED_PATH.to_string()
+                    )),
+                );
+            }
+            assert!(group
+                .signature
+                .properties
+                .contains(&("SafeIdentifier".into(), "42".into())));
+            assert!(group
+                .signature
+                .properties
+                .contains(&("EventName".into(), "payload-name".into())));
+            assert!(!group
+                .signature
+                .properties
+                .iter()
+                .any(|(name, _)| name.contains(r"C:\Users")));
+        }
+        assert_eq!(native.verbose_logging, guarded.verbose_logging);
+    }
+
     const START: u64 = 100;
     const END: u64 = 200;
 
@@ -380,7 +542,7 @@ mod tests {
     fn selected_ordinal_with_foreign_pid_is_not_injected() {
         let selection = RelogSelectionState::new(vec![0], vec![42], &[lifetime(42)]);
 
-        assert!(!selection.observe_known_provider_event(99));
+        assert!(!selection.observe_event(99));
         assert_eq!(selection.consumed_event_count(), 1);
         assert_eq!(
             selection.consumed_selected_event_count(),
@@ -393,7 +555,7 @@ mod tests {
     fn selected_ordinal_with_attested_pid_is_injected() {
         let selection = RelogSelectionState::new(vec![0], vec![42], &[lifetime(42)]);
 
-        assert!(selection.observe_known_provider_event(42));
+        assert!(selection.observe_event(42));
         assert_eq!(selection.consumed_event_count(), 1);
         assert_eq!(selection.consumed_selected_event_count(), 1);
     }
