@@ -169,6 +169,9 @@ fn canonical_provider_guid(provider: VerboseLoggingProvider) -> &'static str {
         VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode => {
             "{811A1DDB-2E69-5F25-ADC0-4B186170E760}"
         }
+        VerboseLoggingProvider::LearningModeNetworkDecision => {
+            "{71237669-21C3-4101-BD2F-FF38945D725A}"
+        }
     }
 }
 
@@ -378,6 +381,26 @@ mod tests {
             canonical_provider_guid(VerboseLoggingProvider::KernelGeneral)
         );
         assert!(projected.signatures[0].signature.properties.is_empty());
+    }
+
+    #[test]
+    fn telemetry_projection_strips_network_payload_and_canonicalizes_provider() {
+        let mut doc = document(vec![aggregate(1, "private-network-data")]);
+        doc.signatures[0].signature.provider = VerboseLoggingProvider::LearningModeNetworkDecision;
+        doc.signatures[0].signature.provider_guid = "untrusted-provider".into();
+        doc.signatures[0].signature.event_name = Some("NetworkDecisionV1".into());
+
+        let projected = project_for_telemetry(doc);
+
+        assert_eq!(
+            projected.signatures[0].signature.provider_guid,
+            "{71237669-21C3-4101-BD2F-FF38945D725A}"
+        );
+        assert!(projected.signatures[0].signature.properties.is_empty());
+        assert!(projected.signatures[0].signature.event_name.is_none());
+        let json = serde_json::to_string(&projected).unwrap();
+        assert!(!json.contains("private-network-data"));
+        assert!(!json.contains("untrusted-provider"));
     }
 
     #[test]

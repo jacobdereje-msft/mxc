@@ -48,6 +48,8 @@
 //!   [`ResourceType::Capability`], with the capability name resolved from the
 //!   capability SID via [`crate::capability_names`] (well-known SID → friendly
 //!   name; custom hashed capabilities fall back to the SID string).
+//! - **1 — `NetworkDecisionV1`** — the dedicated network-decision provider's
+//!   native-capture event. Retained as verbose diagnostics without policy grants.
 
 use learning_mode_core::{
     AccessType, ResourceType, VerboseLoggingOutcomeReason, VerboseLoggingProvider,
@@ -70,6 +72,11 @@ pub(crate) const PRIVACY_LEARNING_MODE_PROVIDER: GUID = GUID {
     data3: 0x5f25,
     data4: [0xad, 0xc0, 0x4b, 0x18, 0x61, 0x70, 0xe7, 0x60],
 };
+
+/// Microsoft-Windows-LearningMode-NetworkDecision.
+pub(crate) const NETWORK_DECISION_PROVIDER: GUID =
+    GUID::from_u128(0x71237669_21c3_4101_bd2f_ff38945d725a);
+pub(crate) const NETWORK_DECISION_EVENT_ID: u16 = 1;
 
 pub(crate) const ACCESS_CHECK_EVENT_ID: u16 = 14;
 pub(crate) const LEARNING_MODE_VIOLATION_EVENT_ID: u16 = 27;
@@ -225,13 +232,18 @@ pub(crate) fn is_learning_mode_event(provider: GUID, event_id: u16) -> bool {
                 | LEARNING_MODE_VIOLATION_EVENT_ID
                 | PRIVACY_ACCESS_CHECK_EVENT_ID
         )
+    } else if provider == NETWORK_DECISION_PROVIDER {
+        event_id == NETWORK_DECISION_EVENT_ID
     } else {
         false
     }
 }
 
 pub(crate) fn effective_event_pid(parts: &DecodedEventParts, header_pid: u32) -> Option<u32> {
-    if parts.event_id == CAPABILITY_DENIAL_EVENT_ID {
+    if parts.provider == NETWORK_DECISION_PROVIDER {
+        // Network decisions identify the broker, not a reliable workload PID.
+        Some(0)
+    } else if parts.event_id == CAPABILITY_DENIAL_EVENT_ID {
         effective_capability_event_pid(
             find_prop(&parts.props, "ProcessId").map(std::string::String::as_str),
         )
@@ -258,6 +270,8 @@ pub(crate) fn verbose_logging_provider_for_guid(provider: GUID) -> Option<Verbos
         Some(VerboseLoggingProvider::KernelGeneral)
     } else if provider == PRIVACY_LEARNING_MODE_PROVIDER {
         Some(VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode)
+    } else if provider == NETWORK_DECISION_PROVIDER {
+        Some(VerboseLoggingProvider::LearningModeNetworkDecision)
     } else {
         None
     }
@@ -275,6 +289,9 @@ pub(crate) fn verbose_logging_provider_guid(provider: VerboseLoggingProvider) ->
         }
         VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode => {
             format_guid_braced_uppercase(PRIVACY_LEARNING_MODE_PROVIDER)
+        }
+        VerboseLoggingProvider::LearningModeNetworkDecision => {
+            format_guid_braced_uppercase(NETWORK_DECISION_PROVIDER)
         }
     }
 }

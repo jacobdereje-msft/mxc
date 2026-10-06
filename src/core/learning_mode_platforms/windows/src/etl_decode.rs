@@ -39,7 +39,9 @@ use windows::Win32::System::Diagnostics::Etw::{
     PROCESS_TRACE_MODE_EVENT_RECORD,
 };
 
-use crate::extractors::{extract_denial, is_learning_mode_event, DecodedEventParts, RawDenial};
+use crate::extractors::{
+    extract_denial, is_learning_mode_event, DecodedEventParts, RawDenial, NETWORK_DECISION_PROVIDER,
+};
 use crate::process_lifetime::{attested_process_lifetimes, JobMembershipSnapshot};
 use crate::{path_norm, tdh_decode};
 
@@ -456,6 +458,11 @@ impl<'visitor> Accumulator<'visitor> {
         if !is_learning_mode_event(provider, event_id) {
             return;
         }
+        let pid = if provider == NETWORK_DECISION_PROVIDER {
+            0
+        } else {
+            pid
+        };
         let reason = match error.event_kind() {
             Some(tdh_decode::EventDecodeKind::PayloadMalformed) => {
                 VerboseLoggingOutcomeReason::EventPayloadMalformed
@@ -849,7 +856,7 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
             return;
         };
         acc.relog_event_count = next_event_count;
-        if !is_learning_mode_event(provider, event_id) {
+        if !is_learning_mode_event(provider, event_id) || provider == NETWORK_DECISION_PROVIDER {
             return;
         }
         let Some(filetime) = normalized_filetime(header.TimeStamp, acc) else {
@@ -874,12 +881,14 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
 
     // Establish scope before charging the event against the shared processing
     // budget. Brokered capability events are scoped after decoding their
-    // effective workload PID below; all other supported events can use the
-    // header PID directly.
+    // effective workload PID below. Native-only network events are excluded
+    // from process scoping; other events use the header PID directly.
     let mut analyze_filetime = None;
 
     if matches!(acc.mode, CollectionMode::Analyze) {
-        if !is_learning_mode_event(provider, event_id) {
+        if !is_learning_mode_event(provider, event_id)
+            || (provider == NETWORK_DECISION_PROVIDER && acc.process_lifetimes.is_some())
+        {
             return;
         }
         let Some(filetime) = normalized_filetime(header.TimeStamp, acc) else {
@@ -1027,7 +1036,9 @@ fn handle_decoded_event(
     filetime: u64,
     acc: &mut Accumulator<'_>,
 ) {
-    if !is_learning_mode_event(parts.provider, parts.event_id) {
+    if !is_learning_mode_event(parts.provider, parts.event_id)
+        || (parts.provider == NETWORK_DECISION_PROVIDER && acc.process_lifetimes.is_some())
+    {
         return;
     }
     let event = (parts.event_id, parts.event_name.as_deref());
@@ -1105,6 +1116,116 @@ mod tests {
     const SCOPED_START_FILETIME: u64 = 100;
     const SCOPED_END_FILETIME: u64 = 200;
     const SCOPED_EVENT_FILETIME: u64 = 150;
+
+    #[test]
+    fn network_decision_is_retained_only_in_unscoped_native_analysis() {
+        let provider = windows::core::GUID::from_u128(0x71237669_21c3_4101_bd2f_ff38945d725a);
+        assert!(is_learning_mode_event(provider, 1));
+        for event_id in [0, 2, 14, 28] {
+            assert!(!is_learning_mode_event(provider, event_id));
+        }
+        assert!(!is_learning_mode_event(
+            crate::extractors::KERNEL_GENERAL_PROVIDER,
+            1
+        ));
+        let event = event_with_provider(
+            provider,
+            1,
+            SCOPED_PID,
+            SCOPED_EVENT_FILETIME,
+            &[
+                ("SchemaVersion", "1"),
+                ("Reason", "100"),
+                ("ProcessId", "42"),
+                ("ApplicationId", r"C:\Users\private\app.exe"),
+                ("RemoteAddress", "203.0.113.10"),
+            ],
+        );
+        let native = resources_from_events(std::slice::from_ref(&event));
+        assert!(native.denials.is_empty());
+        let signature = &native.verbose_logging.signatures[0].signature;
+        assert_eq!(
+            signature.provider,
+            VerboseLoggingProvider::LearningModeNetworkDecision
+        );
+        assert_eq!(
+            signature.provider_guid,
+            "{71237669-21C3-4101-BD2F-FF38945D725A}"
+        );
+        assert_eq!(signature.pid, 0);
+        assert_eq!(
+            signature.reason,
+            VerboseLoggingOutcomeReason::UnsupportedEventSchema
+        );
+        assert_eq!(property(signature, "Reason"), "100");
+        assert_eq!(property(signature, "ApplicationId"), "<REDACTED>");
+        assert_eq!(property(signature, "RemoteAddress"), "203.0.113.10");
+
+        let lifetimes = [ProcessLifetime {
+            pid: SCOPED_PID,
+            start_filetime: SCOPED_START_FILETIME,
+            end_filetime: SCOPED_END_FILETIME,
+        }];
+        let scoped = resources_from_events_for_process_lifetimes(&[event], Some(&lifetimes));
+        assert!(scoped.verbose_logging.is_empty());
+
+        for mut accumulator in [
+            Accumulator::analyze(),
+            Accumulator::analyze_for_process_lifetimes(&lifetimes),
+            Accumulator::select_for_relogging(&lifetimes),
+        ] {
+            let native = accumulator.process_lifetimes.is_none();
+            let mut record = EVENT_RECORD::default();
+            record.EventHeader.ProviderId = provider;
+            record.EventHeader.EventDescriptor.Id = 1;
+            record.EventHeader.ProcessId = SCOPED_PID;
+            record.EventHeader.TimeStamp = SCOPED_EVENT_FILETIME as i64;
+            let payload = 100u32.to_le_bytes();
+            record.UserData = payload.as_ptr().cast_mut().cast();
+            record.UserDataLength = payload.len() as u16;
+            if native {
+                accumulator
+                    .schema_cache
+                    .insert_test_schema(&record, &["Reason"]);
+            }
+            unsafe { process_event_record(&mut record, &mut accumulator) };
+            assert_eq!(accumulator.schema_cache.schema_loads, 0);
+            assert_eq!(
+                accumulator.verbose_logging.total_occurrences,
+                u64::from(native)
+            );
+            if native {
+                assert_eq!(accumulator.verbose_logging.signatures[0].signature.pid, 0);
+            }
+            assert!(accumulator.relog_selected_event_indices.is_empty());
+            assert!(!accumulator.truncated);
+        }
+    }
+
+    #[test]
+    fn network_decode_failure_does_not_attribute_the_broker_pid() {
+        let mut accumulator = Accumulator::analyze();
+        accumulator.record_event_decode_error(
+            windows::core::GUID::from_u128(0x71237669_21c3_4101_bd2f_ff38945d725a),
+            1,
+            SCOPED_PID,
+            tdh_decode::DecodeError::event(
+                tdh_decode::EventDecodeKind::PayloadMalformed,
+                "malformed network event".into(),
+                Some("NetworkDecisionV1".into()),
+            ),
+        );
+        let group = &accumulator.verbose_logging.signatures[0];
+        assert_eq!(group.signature.pid, 0);
+        assert_eq!(
+            group.signature.event_name.as_deref(),
+            Some("NetworkDecisionV1")
+        );
+        assert_eq!(
+            group.signature.reason,
+            VerboseLoggingOutcomeReason::EventPayloadMalformed
+        );
+    }
 
     #[test]
     fn callback_selects_only_learning_mode_events_before_decoding() {

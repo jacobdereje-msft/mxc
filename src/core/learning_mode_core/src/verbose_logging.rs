@@ -27,6 +27,8 @@ pub enum VerboseLoggingProvider {
     KernelGeneral,
     /// Microsoft-Windows-Privacy-Auditing-PermissiveLearningMode.
     PrivacyAuditingPermissiveLearningMode,
+    /// Microsoft-Windows-LearningMode-NetworkDecision.
+    LearningModeNetworkDecision,
 }
 
 /// Closed reason describing how a decoder outcome was handled.

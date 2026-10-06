@@ -319,12 +319,21 @@ Analysis selects known Learning Mode provider/event pairs:
 |---|---|
 | Microsoft-Windows-Kernel-General | 14, 27, 28 |
 | Microsoft-Windows-Privacy-Auditing-PermissiveLearningMode | 14, 27, 4907 |
+| Microsoft-Windows-LearningMode-NetworkDecision | 1 (`NetworkDecisionV1`) |
 
 Other providers and event IDs are excluded before decoding. This selection
 does not depend on resource type: unfamiliar object types within selected events
 retain their sanitized properties as verbose diagnostics, without creating
 new actionable policy grants. Raw schema-discovery visitors and the WPR capture
 profile are unchanged.
+
+`NetworkDecisionV1` uses provider `{71237669-21C3-4101-BD2F-FF38945D725A}`.
+Its sanitized payload is retained as a verbose diagnostic without creating
+network policy grants. The event has no reliable workload PID, so its signature
+uses `pid: 0` rather than the broker's header PID. Process-scoped analysis and
+guarded WPR exclude this source because they cannot safely attribute it to a job.
+Collection requires option-aware native broker capture; adding this allowlist
+entry does not enable network collection through legacy capture or WPR.
 
 Per-event TDH failures use closed diagnostic reasons:
 `eventPayloadMalformed` means the payload conflicts with its declared schema,
