@@ -360,7 +360,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn private_trace_relogging_preserves_unknown_events() {
+    fn private_trace_relogging_excludes_unrelated_events_but_raw_decoding_preserves_them() {
         use windows::core::PCWSTR;
         use windows::Win32::System::Diagnostics::Etw::{
             ControlTraceW, EnableTraceEx2, StartTraceW, CONTROLTRACE_HANDLE,
@@ -477,54 +477,47 @@ mod tests {
         let guarded = crate::EtlDenialAnalyzer
             .analyze_relogged_for_process_lifetimes(&destination, &lifetimes)
             .unwrap();
-        let provider_guid = crate::extractors::format_guid_braced_uppercase(provider);
-        let groups = native
-            .verbose_logging
-            .signatures
-            .iter()
-            .filter(|group| group.signature.provider_guid == provider_guid)
-            .collect::<Vec<_>>();
-        assert_eq!(groups.len(), 2, "{groups:?}");
+        let mut decoded = Vec::new();
+        crate::visit_raw_events(&source, &mut |parts| {
+            if parts.provider == provider {
+                decoded.push(parts.clone());
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(decoded.len(), 4);
         assert_eq!(
-            groups
+            decoded
                 .iter()
-                .map(|group| group.signature.event_name.as_deref())
+                .map(|parts| parts.event_name.as_deref())
                 .collect::<Vec<_>>(),
             [
+                Some("CompositeProperties"),
+                Some("OtherCompositeProperties"),
                 Some("CompositeProperties"),
                 Some("OtherCompositeProperties")
             ]
         );
-        for group in groups {
-            assert_eq!(group.count, 2);
+        for parts in decoded {
+            let properties = crate::extractors::sanitize_properties(&parts.props);
             for name in ["CommandLine", "FutureLocations"] {
                 assert_eq!(
-                    group
-                        .signature
-                        .properties
-                        .iter()
-                        .find(|(key, _)| key == name),
+                    properties.iter().find(|(key, _)| key == name),
                     Some(&(
                         name.to_string(),
                         crate::extractors::REDACTED_PATH.to_string()
                     )),
                 );
             }
-            assert!(group
-                .signature
-                .properties
-                .contains(&("SafeIdentifier".into(), "42".into())));
-            assert!(group
-                .signature
-                .properties
-                .contains(&("EventName".into(), "payload-name".into())));
-            assert!(!group
-                .signature
-                .properties
+            assert!(properties.contains(&("SafeIdentifier".into(), "42".into())));
+            assert!(properties.contains(&("EventName".into(), "payload-name".into())));
+            assert!(!properties
                 .iter()
                 .any(|(name, _)| name.contains(r"C:\Users")));
         }
-        assert_eq!(native.verbose_logging, guarded.verbose_logging);
+        assert_eq!(native, guarded);
+        assert!(native.verbose_logging.is_empty());
+        assert!(native.denials.is_empty());
     }
 
     const START: u64 = 100;

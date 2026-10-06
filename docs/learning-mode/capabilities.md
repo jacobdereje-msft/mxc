@@ -313,11 +313,18 @@ named-object resources individually identifiable when they share a prefix
 without exceeding the per-property bound. Redaction occurs before the digest is computed, so neither retained context nor
 a digest is derived from a sensitive value.
 
-Unknown providers and event IDs receive best-effort TDH decoding. Events with no
-actionable extractor use `unsupportedEventSchema` and retain their sanitized
-properties. Unknown providers use `provider: "other"` with their actual GUID
-in the local file. Different provider GUIDs remain separate deduplication keys.
-They do not create new actionable policy grants.
+Analysis selects known Learning Mode provider/event pairs:
+
+| Provider | Event IDs |
+|---|---|
+| Microsoft-Windows-Kernel-General | 14, 27, 28 |
+| Microsoft-Windows-Privacy-Auditing-PermissiveLearningMode | 14, 27, 4907 |
+
+Other providers and event IDs are excluded before decoding. This selection
+does not depend on resource type: unfamiliar object types within selected events
+retain their sanitized properties as verbose diagnostics, without creating
+new actionable policy grants. Raw schema-discovery visitors and the WPR capture
+profile are unchanged.
 
 Per-event TDH failures use closed diagnostic reasons:
 `eventPayloadMalformed` means the payload conflicts with its declared schema,
@@ -347,8 +354,9 @@ The existing 64 MiB guarded analysis frame can also move verbose groups into
 overflow accounting. These bounds are retained; the file does not claim complete
 event-by-event coverage.
 
-Guarded WPR keeps only events from the exact job-attested process lifetimes,
-including brokered capability attribution, regardless of provider. Its generated
+Guarded WPR keeps the selected Learning Mode events from the exact job-attested
+process lifetimes, including brokered capability attribution.
+Required ETL headers remain in the retained trace. Its generated
 relogging header is excluded from analysis so it does not add a diagnostic that
 was absent from the source. A schema lookup failure while scoping brokered
 Event 28 fails the capture, because its workload PID cannot be established.
@@ -403,8 +411,8 @@ WPR's source ETL is host-wide, so the elevated guarded-WPR helper never
 transfers that file across the privilege boundary for `captureDenials` or
 `--audit`. After the sandbox process tree terminates, the helper uses the
 retained, job-attested process handles and their exact PID/creation/exit
-`FILETIME` ranges to relog a second ETL. The retained ETL contains events from
-any provider attributed to those process generations, plus required ETL metadata.
+`FILETIME` ranges to relog a second ETL. The retained ETL contains selected
+Learning Mode events attributed to those process generations, plus required ETL headers.
 Brokered capability events use their payload `ProcessId` rather than the
 broker's header PID. Guarded analysis and
 retention both consume that same filtered ETL; filtering failure transfers no

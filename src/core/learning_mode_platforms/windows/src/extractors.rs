@@ -20,10 +20,9 @@
 //!
 //! The learning-mode ETL carries a set of event IDs that map onto the
 //! resource types we surface. This list grows as more denial sources are
-//! decoded; event IDs outside this vocabulary are excluded rather than
-//! extracted, and (for the known providers below) that exclusion is
-//! aggregated into [`learning_mode_core::VerboseLoggingSummary`] rather than
-//! silently dropped. The IDs handled today:
+//! decoded; provider/event pairs outside this vocabulary are excluded.
+//! Every resource type within these events remains eligible for verbose
+//! diagnostics. The IDs handled today:
 //!
 //! - **14 / 4907 — access check** — the primary denial event
 //!   (`ObjectType` / `ObjectName` / `AccessMask`). `ObjectType` selects the
@@ -34,8 +33,8 @@
 //!   access are retained only as verbose diagnostics. Named Section,
 //!   SymbolicLink, and Timer objects are likewise verbose-only because MXC has
 //!   no corresponding policy grants.
-//!   Other object types are dropped until their access-mask vocabulary is
-//!   understood. The [`AccessType`] is derived from the
+//!   Other object types remain verbose diagnostics until their access-mask
+//!   vocabulary is understood. The [`AccessType`] is derived from the
 //!   `AccessMask` field (see [`access_type_from_mask`]). Emitted under both
 //!   learning modes (`block` → `Mode="Normal"`, `allow` →
 //!   `Mode="Permissive"`).
@@ -253,8 +252,7 @@ pub(crate) fn effective_capability_event_pid(process_id: Option<&str>) -> Option
 
 /// Maps a raw ETW provider GUID to its symbolic verbose logging category.
 ///
-/// Returns `None` outside the actionable vocabulary. Verbose logging retains
-/// those events as `Other` after process scoping.
+/// Returns `None` outside the Learning Mode provider vocabulary.
 pub(crate) fn verbose_logging_provider_for_guid(provider: GUID) -> Option<VerboseLoggingProvider> {
     if provider == KERNEL_GENERAL_PROVIDER {
         Some(VerboseLoggingProvider::KernelGeneral)
