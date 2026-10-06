@@ -241,7 +241,6 @@ pub(crate) fn is_learning_mode_event(provider: GUID, event_id: u16) -> bool {
 
 pub(crate) fn effective_event_pid(parts: &DecodedEventParts, header_pid: u32) -> Option<u32> {
     if parts.provider == NETWORK_DECISION_PROVIDER {
-        // Network decisions identify the broker, not a reliable workload PID.
         Some(0)
     } else if parts.event_id == CAPABILITY_DENIAL_EVENT_ID {
         effective_capability_event_pid(
@@ -443,8 +442,19 @@ fn looks_like_file_path_property(name: &str, value: &str, object_type: Option<&s
         return true;
     }
 
-    value.char_indices().any(|(offset, _)| {
-        let candidate = &value[offset..];
+    contains_file_path(value)
+}
+
+fn contains_file_path(value: &str) -> bool {
+    value.match_indices(['\\', ':']).any(|(offset, marker)| {
+        let offset = if marker == ":" {
+            offset.saturating_sub(1)
+        } else {
+            offset
+        };
+        let Some(candidate) = value.get(offset..) else {
+            return false;
+        };
         if offset > 0
             && candidate.get(1..4) == Some("://")
             && (value.as_bytes()[offset - 1].is_ascii_alphanumeric()
@@ -576,7 +586,7 @@ pub(crate) fn sanitize_properties(props: &[(String, String)]) -> Vec<(String, St
         .map(|(_, value)| value.trim_matches('"'));
     let mut sanitized = std::collections::BTreeMap::new();
     for (name, raw_value) in props {
-        if is_timestamp_like_property(name) || looks_like_file_path_property("", name, None) {
+        if is_timestamp_like_property(name) || contains_file_path(name) {
             continue;
         }
         let value = raw_value.trim_matches('"');
@@ -1759,6 +1769,31 @@ mod tests {
                 Some("SymbolicLink")
             ));
         }
+    }
+
+    #[test]
+    fn path_content_scan_handles_candidate_boundaries() {
+        for (value, expected) in [
+            ("", false),
+            (":", false),
+            ("::", false),
+            ("\u{03bb}:/not-a-drive", false),
+            ("\u{03bb}:C:/private.txt", true),
+            ("https://example.com:443/resource", false),
+            ("custom+a://example.com/resource", false),
+            (r"\\server\pipe\mxc", false),
+            (r"\Device\NamedPipe\mxc", false),
+            (r"\BaseNamedObjects\cache", false),
+            (r"C:\", true),
+            ("C:/", true),
+            (r"prefix \\server\share\file.txt", true),
+            (r"prefix \\?\Volume{1234}\file.txt", true),
+        ] {
+            assert_eq!(contains_file_path(value), expected, "{value}");
+        }
+        let prefix = "ordinary text ".repeat(4096);
+        assert!(!contains_file_path(&prefix));
+        assert!(contains_file_path(&format!("{prefix}C:\\private.txt")));
     }
 
     #[test]

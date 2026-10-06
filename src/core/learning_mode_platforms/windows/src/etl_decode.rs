@@ -879,10 +879,6 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
         return;
     }
 
-    // Establish scope before charging the event against the shared processing
-    // budget. Brokered capability events are scoped after decoding their
-    // effective workload PID below. Native-only network events are excluded
-    // from process scoping; other events use the header PID directly.
     let mut analyze_filetime = None;
 
     if matches!(acc.mode, CollectionMode::Analyze) {
