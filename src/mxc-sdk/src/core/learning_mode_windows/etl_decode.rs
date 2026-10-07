@@ -35,7 +35,7 @@ use crate::learning_mode_core::{
 };
 use windows::core::PWSTR;
 use windows::Win32::System::Diagnostics::Etw::{
-    CloseTrace, OpenTraceW, ProcessTrace, EVENT_RECORD, EVENT_TRACE_LOGFILEW,
+    CloseTrace, EventTraceGuid, OpenTraceW, ProcessTrace, EVENT_RECORD, EVENT_TRACE_LOGFILEW,
     PROCESS_TRACE_MODE_EVENT_RECORD,
 };
 
@@ -357,22 +357,6 @@ impl<'visitor> Accumulator<'visitor> {
         );
     }
 
-    /// Records one excluded outcome as a deduplicated verbose logging signature:
-    /// symbolic provider, provider GUID, event ID, reason, PID, and the
-    /// already-sanitized/bounded property list all identify the group;
-    /// repeats of the same signature only increment its `count`.
-    #[cfg(test)]
-    fn record_exclusion(
-        &mut self,
-        provider: VerboseLoggingProvider,
-        event: (u16, Option<&str>),
-        reason: VerboseLoggingOutcomeReason,
-        pid: u32,
-        properties: Vec<(String, String)>,
-    ) {
-        self.record_outcome(provider, event, reason, pid, (None, None), properties);
-    }
-
     fn record_outcome(
         &mut self,
         provider: VerboseLoggingProvider,
@@ -399,10 +383,6 @@ impl<'visitor> Accumulator<'visitor> {
             resource_type,
             properties,
         };
-        self.record_signature(signature);
-    }
-
-    fn record_signature(&mut self, signature: VerboseLoggingSignature) {
         self.verbose_logging.record_with_byte_budget(
             signature,
             &mut self.verbose_logging_signature_bytes,
@@ -838,10 +818,7 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
 
     if acc.skip_relog_header {
         acc.skip_relog_header = false;
-        if provider != windows::core::GUID::from_u128(0x68fdd900_4a3e_11d1_84f4_0000f80464e3)
-            || event_id != 0
-            || header.EventDescriptor.Opcode != 0
-        {
+        if provider != EventTraceGuid || event_id != 0 || header.EventDescriptor.Opcode != 0 {
             acc.decode_error = Some("relogged trace has an invalid transport header".into());
         }
         return;
@@ -1584,12 +1561,7 @@ mod tests {
             42,
             150,
         );
-        visit(
-            windows::core::GUID::from_u128(0x68fdd900_4a3e_11d1_84f4_0000f80464e3),
-            0,
-            42,
-            150,
-        );
+        visit(EventTraceGuid, 0, 42, 150);
         visit(
             windows::core::GUID::from_u128(0x3d6fa8d0_fe05_11d0_9dda_00c04fd7ba7c),
             0,
@@ -3047,11 +3019,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for pid in 0..crate::learning_mode_core::MAX_VERBOSE_LOGGING_GROUPS as u32 {
-            accumulator.record_exclusion(
+            accumulator.record_outcome(
                 VerboseLoggingProvider::KernelGeneral,
                 (14, None),
                 VerboseLoggingOutcomeReason::Actionable,
                 pid,
+                (None, None),
                 properties.clone(),
             );
         }

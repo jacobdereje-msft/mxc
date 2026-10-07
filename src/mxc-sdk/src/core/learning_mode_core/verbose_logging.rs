@@ -21,8 +21,6 @@ pub const MAX_VERBOSE_LOGGING_SIGNATURE_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VerboseLoggingProvider {
-    /// Any other provider.
-    Other,
     /// Microsoft-Windows-Kernel-General.
     KernelGeneral,
     /// Microsoft-Windows-Privacy-Auditing-PermissiveLearningMode.
@@ -532,7 +530,7 @@ mod tests {
     #[test]
     fn schema_name_is_optional_and_separate_from_payload() {
         let old = serde_json::json!({
-            "provider": "other",
+            "provider": "kernelGeneral",
             "providerGuid": "provider",
             "eventId": 0,
             "reason": "unsupportedEventSchema",

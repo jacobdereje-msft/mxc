@@ -164,7 +164,6 @@ fn project_for_telemetry(mut document: VerboseLoggingDocument) -> VerboseLogging
 
 fn canonical_provider_guid(provider: VerboseLoggingProvider) -> &'static str {
     match provider {
-        VerboseLoggingProvider::Other => "",
         VerboseLoggingProvider::KernelGeneral => "{A68CA8B7-004F-D7B6-A698-07E2DE0F1F5D}",
         VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode => {
             "{811A1DDB-2E69-5F25-ADC0-4B186170E760}"
@@ -406,7 +405,6 @@ mod tests {
     #[test]
     fn telemetry_deduplicates_after_removing_unknown_provider_guids_and_properties() {
         let mut first = aggregate(999, "first-secret");
-        first.signature.provider = VerboseLoggingProvider::Other;
         first.signature.provider_guid = "first-provider".into();
         first.signature.event_name = Some("first-event".into());
         first.count = 3;
@@ -422,7 +420,10 @@ mod tests {
 
         assert_eq!(projected.signatures.len(), 1);
         assert_eq!(projected.signatures[0].count, 7);
-        assert!(projected.signatures[0].signature.provider_guid.is_empty());
+        assert_eq!(
+            projected.signatures[0].signature.provider_guid,
+            "{A68CA8B7-004F-D7B6-A698-07E2DE0F1F5D}"
+        );
         assert!(projected.signatures[0].signature.event_name.is_none());
         assert!(projected.signatures[0].signature.properties.is_empty());
         assert_eq!(projected.summary.total_occurrences, 7);
