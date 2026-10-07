@@ -360,7 +360,7 @@ mod tests {
             VerboseLoggingOutcomeReason::ComActivation,
         )]);
         document.signatures[0].signature.resource_type =
-            Some(learning_mode_core::ResourceType::Other);
+            Some(crate::learning_mode_core::ResourceType::Other);
 
         document = project_for_telemetry(document);
 
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(signature.reason, VerboseLoggingOutcomeReason::ComActivation);
         assert_eq!(
             signature.resource_type,
-            Some(learning_mode_core::ResourceType::Other)
+            Some(crate::learning_mode_core::ResourceType::Other)
         );
         assert!(signature.access_type.is_none());
         assert!(signature.properties.is_empty());

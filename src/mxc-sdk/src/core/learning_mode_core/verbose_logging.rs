@@ -489,7 +489,7 @@ mod tests {
 
         signature.event_id = u16::MAX;
         signature.reason = VerboseLoggingOutcomeReason::ComActivation;
-        signature.resource_type = Some(crate::ResourceType::Other);
+        signature.resource_type = Some(crate::learning_mode_core::ResourceType::Other);
         summary.record(signature);
 
         assert_eq!(summary.overflow_occurrences, 1);
