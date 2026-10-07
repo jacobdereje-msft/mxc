@@ -351,11 +351,27 @@ function Get-HostCapabilities {
     $enumBit = if ($p.probes.PSObject.Properties['baseContainerSupportsEnumeratePaths']) {
         [bool]$p.probes.baseContainerSupportsEnumeratePaths
     } else { $false }
+    $identitylessProxyBit = if ($p.probes.PSObject.Properties['baseContainerSupportsIdentitylessLoopbackProxy']) {
+        [bool]$p.probes.baseContainerSupportsIdentitylessLoopbackProxy
+    } else { $false }
     # uiCapabilities is absent on older binaries / when the detector errored.
     $canInject = $false
     if ($p.probes.PSObject.Properties['uiCapabilities'] -and
         $p.probes.uiCapabilities.PSObject.Properties['canBlockInputInjection']) {
         $canInject = [bool]$p.probes.uiCapabilities.canBlockInputInjection
+    }
+    # Guarded capture resolves plm.exe next to the loaded module, so the release
+    # sidecar's trust result does not answer for the binary these tests run.
+    $pd = Invoke-Probe -Wxc $WxcDebug -Phase 'P0' -Name 'host-capabilities (capture providers)'
+    $nativeCapture = $false
+    $guardedCapture = $false
+    if ($pd -and $pd.PSObject.Properties['probes']) {
+        if ($pd.probes.PSObject.Properties['nativeCaptureAvailable']) {
+            $nativeCapture = [bool]$pd.probes.nativeCaptureAvailable
+        }
+        if ($pd.probes.PSObject.Properties['guardedCaptureAvailable']) {
+            $guardedCapture = [bool]$pd.probes.guardedCaptureAvailable
+        }
     }
     return [pscustomobject]@{
         BaselineTier                   = $tier
@@ -374,12 +390,19 @@ function Get-HostCapabilities {
         # denied tests auto-enable when it ships.
         SupportsDeniedPaths            = (($tier -eq 'appcontainer-dacl') -or $denyBit)
         BaseContainerSupportsEnumeratePaths = $enumBit
+        BaseContainerSupportsIdentitylessLoopbackProxy = $identitylessProxyBit
         # enumeratePaths has NO fallback: it needs PSEC 1.1 plus
         # PSE_SUPPORT_FS_ENUMERATE, and the detector refuses the request
         # outright on every AppContainer tier (FallbackError::
         # EnumeratePathsUnsupported). So it is available only where the host
         # both selects base-container and advertises the capability.
         SupportsEnumeratePaths         = (($tier -eq 'base-container') -and $enumBit)
+        # Native capture is reachable only on base-container; every AppContainer
+        # tier needs the guarded WPR fallback. With neither, a captureDenials
+        # request fails before the sandbox exists (docs/schema.md).
+        NativeCaptureAvailable         = $nativeCapture
+        GuardedCaptureAvailable        = $guardedCapture
+        CaptureDenialsUsable           = ((($tier -eq 'base-container') -and $nativeCapture) -or $guardedCapture)
     }
 }
 
@@ -782,7 +805,7 @@ function Assert-RequiredTier {
 
 # Network test infrastructure
 
-# Documented in docs/process-container/networking.md §2: PSEC is the only
+# Documented in docs/backends/process-container/networking.md §2: PSEC is the only
 # ProcessContainer path that receives directional egress filters, proxy peer
 # identity, or host-loopback configuration. The probe does not name the
 # process-creation contract, so the tier stands in for it — `base-container`
@@ -1049,8 +1072,8 @@ function Get-LoopbackFetchCommand {
 
 # Phase 8 — directional network policy.
 #
-# Asserts the documented contract (docs/process-container/networking.md and
-# docs/sandbox-policy/0.8.0/networking/networking.md), not the current code, so
+# Asserts the documented contract (docs/backends/process-container/networking.md and
+# docs/schema.md), not the current code, so
 # an assertion that outruns the backend fails by design. Every positive is
 # paired with a negative control on an otherwise identical config: from one run
 # on a host with no connectivity, "reached it" and "blocked by policy" look the
@@ -1228,10 +1251,11 @@ function Initialize-WpcContext {
     }
 
     if ($Fresh) {
-        Write-Host ("Host capabilities: expectedTier={0} baseContainerUsable={1} apiPresent={2} bfscfgPresent={3} bfsCompiledIn={4} supportsDeniedPaths={5} supportsEnumeratePaths={6}" -f `
+        Write-Host ("Host capabilities: expectedTier={0} baseContainerUsable={1} apiPresent={2} bfscfgPresent={3} bfsCompiledIn={4} supportsDeniedPaths={5} supportsEnumeratePaths={6} captureDenialsUsable={7} (native={8} guarded={9})" -f `
             $Script:Caps.BaselineTier, $Script:Caps.BaseContainerUsable, $Script:Caps.BaseContainerApiPresent, `
             $Script:Caps.BfscfgPresent, $Script:Caps.BfsCompiledIn, $Script:Caps.SupportsDeniedPaths, `
-            $Script:Caps.SupportsEnumeratePaths) -ForegroundColor Cyan
+            $Script:Caps.SupportsEnumeratePaths, $Script:Caps.CaptureDenialsUsable, `
+            $Script:Caps.NativeCaptureAvailable, $Script:Caps.GuardedCaptureAvailable) -ForegroundColor Cyan
     }
 }
 

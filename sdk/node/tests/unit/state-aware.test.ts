@@ -7,9 +7,7 @@ import { PassThrough } from 'node:stream';
 import {
   deprovisionContainer,
   spawnInContainer,
-  spawnInContainerAsync,
   runInContainer,
-  runInContainerAsync,
   spawnInContainerWithPty,
   provisionContainer,
   startContainer,
@@ -29,10 +27,8 @@ import {
   type BindingStateAwareRequest,
 } from '../../src/bindings/state-aware.js';
 import { _setStateAwareBindingSandboxProcessFactory } from '../../src/bindings/streaming.js';
-import { _setBindingStateAwareRunImplementation } from '../../src/bindings/run.js';
 import { MxcError, type MxcErrorFields } from '../../src/v1/errors.js';
 import { ContainerId } from '../../src/v1/lifecycle-types.js';
-import type { RunInContainerOptions } from '../../src/v1/operation-options.js';
 import {
   MxcProcess,
   type NativeLifecycleDriver,
@@ -181,7 +177,6 @@ function readStreamText(stream: NodeJS.ReadableStream | null): Promise<string> {
 
 afterEach(() => _setBindingStateAwareAsyncImplementation());
 afterEach(() => _setStateAwareBindingSandboxProcessFactory());
-afterEach(() => _setBindingStateAwareRunImplementation());
 
 describe('lifecycle execution options', () => {
   it('rejects supplied dryRun on asynchronous execution and lifecycle operations', async () => {
@@ -202,8 +197,8 @@ describe('lifecycle execution options', () => {
         () => startContainer(id, options),
         () => stopContainer(id, options),
         () => deprovisionContainer(id, options),
-        () => runInContainerAsync(id, { command: 'echo hello' }, options),
-        () => spawnInContainerAsync(id, { command: 'echo hello' }, options),
+        () => runInContainer(id, { command: 'echo hello' }, options),
+        () => spawnInContainer(id, { command: 'echo hello' }, options),
       ]) {
         await assert.rejects(
           async () => operation(),
@@ -212,8 +207,8 @@ describe('lifecycle execution options', () => {
             && /does not support dryRun/.test(error.message),
         );
       }
-      assert.throws(
-        () => spawnInContainerWithPty(id, { command: 'echo hello' }, options),
+      await assert.rejects(
+        spawnInContainerWithPty(id, { command: 'echo hello' }, options),
         /does not support dryRun/,
       );
     }
@@ -223,11 +218,11 @@ describe('lifecycle execution options', () => {
 describe('validation results', () => {
   const id = 'iso:validation' as ContainerId<'isolation_session'>;
   const calls = [
-    () => validateProvision({ containment: 'wslc' }, { experimental: true, telemetry: { enabled: false } }),
-    () => validateStart(id, { experimental: true, telemetry: { enabled: false } }),
-    () => validateStop(id, { experimental: true, telemetry: { enabled: false } }),
-    () => validateDeprovision(id, { experimental: true, telemetry: { enabled: false } }),
-    () => validateProcess(id, { command: 'echo validation' }, { experimental: true, telemetry: { enabled: false } }),
+    () => validateProvision({ containment: 'wslc' }, { telemetry: { enabled: false } }),
+    () => validateStart(id, { telemetry: { enabled: false } }),
+    () => validateStop(id, { telemetry: { enabled: false } }),
+    () => validateDeprovision(id, { telemetry: { enabled: false } }),
+    () => validateProcess(id, { command: 'echo validation' }, { telemetry: { enabled: false } }),
   ];
 
   it('preserves warnings for every phase without executing a workload', async () => {
@@ -238,7 +233,7 @@ describe('validation results', () => {
       const request = installStateAwareReply('{"result":{"warnings":["policy warning","telemetry warning"]}}');
       assert.deepStrictEqual(await call(), { warnings: ['policy warning', 'telemetry warning'] });
       assert.strictEqual(request().dryRun, true);
-      assert.strictEqual(request().experimental, true);
+      assert.strictEqual(request().experimental, false);
       assert.deepStrictEqual(requestEnvelope(request()).telemetry, { enabled: false });
     }
   });
@@ -667,18 +662,16 @@ describe('provisionContainer', () => {
   it('rejects unsupported options', async () => {
     await assert.rejects(
       () => provisionContainer({ containment: 'isolation_session', ...ACK }, {
-        executablePath: 'wxc-exec.exe',
+        experimental: true,
       } as never),
-      (err: unknown) => err instanceof MxcError && err.message.includes("does not support option 'executablePath'"),
+      (err: unknown) => err instanceof MxcError && err.message.includes("does not support option 'experimental'"),
     );
   });
 
-  it('forwards experimental authorization for explicit provision validation', async () => {
+  it('does not authorize experimental provision validation', async () => {
     const request = installStateAwareReply('{"result":{}}');
-    await validateProvision({ containment: 'isolation_session', ...ACK }, {
-      experimental: true,
-    });
-    assert.strictEqual(request().experimental, true);
+    await validateProvision({ containment: 'isolation_session', ...ACK });
+    assert.strictEqual(request().experimental, false);
     assert.strictEqual(request().dryRun, true);
   });
 });
@@ -776,81 +769,11 @@ describe('deprovisionContainer', () => {
 });
 
 describe('runInContainer', () => {
-  it('captures synchronously and forwards the exact request and invocation options', () => {
-    const output = {
-      stdout: 'out\n', stderr: 'err\n', exitCode: 7, timedOut: false,
-      warnings: ['native warning'],
-      outputMetadata: { captureDenialsError: { message: 'capture failed', etlPath: 'trace.etl' } },
-    };
-    _setBindingStateAwareRunImplementation((json, experimental) => {
-      const envelope = JSON.parse(json) as Record<string, unknown>;
-      assert.strictEqual(envelope.version, '1.0.0');
-      assert.strictEqual(envelope.phase, 'exec');
-      assert.strictEqual(envelope.sandboxId, 'iso:abc');
-      assert.deepStrictEqual(envelope.process, {
-        commandLine: 'echo hello', cwd: 'C:\\work',
-        env: ['NAME=value'], inheritDefaultEnv: false, timeout: 250,
-      });
-      assert.deepStrictEqual(envelope.telemetry, { enabled: false });
-      assert.strictEqual(experimental, true);
-      return output;
-    });
-    assert.deepStrictEqual(runInContainer(
-      'iso:abc' as ContainerId<'isolation_session'>,
-      { command: 'echo hello', workingDirectory: 'C:\\work',
-        environment: { NAME: 'value' }, inheritDefaultEnvironment: false, timeoutMs: 250 },
-      { experimental: true, telemetry: { enabled: false } },
-    ), output);
-  });
-
-  it('supports WSLC and preserves timeout results without requiring experimental opt-in', () => {
-    _setBindingStateAwareRunImplementation((json, experimental) => {
-      assert.strictEqual((JSON.parse(json) as Record<string, unknown>).sandboxId, 'wslc:abc');
-      assert.strictEqual(experimental, false);
-      return {
-        stdout: 'partial', stderr: '', exitCode: -1, timedOut: true,
-        warnings: [], outputMetadata: undefined,
-      };
-    });
-    const result = runInContainer(
-      'wslc:abc' as ContainerId<'wslc'>, { command: 'sleep 10' },
-    );
-    assert.strictEqual(result.timedOut, true);
-    assert.strictEqual(Object.hasOwn(result, 'outputMetadata'), false);
-  });
-
-  it('preserves typed native errors', () => {
-    const failure = new MxcError('stale_id', 'container expired');
-    _setBindingStateAwareRunImplementation(() => { throw failure; });
-    assert.throws(
-      () => runInContainer('iso:abc' as ContainerId<'isolation_session'>, { command: 'echo' }),
-      (error: unknown) => error === failure,
-    );
-  });
-
-  it('rejects unsupported options and identities before native execution', () => {
-    _setBindingStateAwareRunImplementation(() => { assert.fail('must not execute'); });
-    const id = 'iso:abc' as ContainerId<'isolation_session'>;
-    for (const dryRun of [true, false, undefined]) {
-      assert.throws(() => runInContainer(id, { command: 'echo' },
-        { dryRun } as RunInContainerOptions),
-        (error: unknown) => error instanceof MxcError && error.code === 'malformed_request');
-    }
-    assert.throws(() => runInContainer(id, { command: 'echo' },
-      { extra: true } as RunInContainerOptions),
-      (error: unknown) => error instanceof MxcError && error.code === 'malformed_request');
-    assert.throws(() => runInContainer(
-      'wsb:abc' as ContainerId<'isolation_session'>, { command: 'echo' }),
-      (error: unknown) => error instanceof MxcError && error.code === 'unsupported_containment');
-  });
-});
-
-describe('runInContainerAsync', () => {
   it('does not require experimental authorization for stable backends', async () => {
     installStateAwareExecBinding(
       () => new FakeStateAwareExecBinding(16, 'stable\n', ''),
     );
-    const result = await runInContainerAsync(
+    const result = await runInContainer(
       'iso:abc' as ContainerId<'isolation_session'>,
       { command: 'echo stable' },
     );
@@ -868,7 +791,7 @@ describe('runInContainerAsync', () => {
       () => new FakeStateAwareExecBinding(17, 'hello\n', '', 1, { exitCode: 0, timedOut: false }),
     );
     const id = 'iso:abc' as ContainerId<'isolation_session'>;
-    const result = await runInContainerAsync(
+    const result = await runInContainer(
       id,
       { command: 'echo hello',
 timeoutMs: 250 },
@@ -886,17 +809,16 @@ timeoutMs: 250 },
     assert.strictEqual(exec.binding().freed, true);
   });
 
-  it('forwards experimental authorization to state-aware streaming exec', async () => {
+  it('does not authorize experimental state-aware streaming exec', async () => {
     const exec = installStateAwareExecBinding(
       () => new FakeStateAwareExecBinding(17, '', ''),
     );
-    const result = await runInContainerAsync(
+    const result = await runInContainer(
       'iso:abc' as ContainerId<'isolation_session'>,
       { command: 'echo experimental' },
-      { experimental: true },
     );
     assert.strictEqual(result.exitCode, 0);
-    assert.strictEqual(exec.experimental(), true);
+    assert.strictEqual(exec.experimental(), false);
   });
 
   it('returns ExecResult on script exit != 0 when stdout is plain script output (not an error envelope)', async () => {
@@ -904,7 +826,7 @@ timeoutMs: 250 },
       () => new FakeStateAwareExecBinding(18, 'oops\n', 'err\n', 0, { exitCode: 7, timedOut: false }),
     );
     const id = 'iso:abc' as ContainerId<'isolation_session'>;
-    const result = await runInContainerAsync(
+    const result = await runInContainer(
       id,
       { command: 'fail' },
     );
@@ -923,7 +845,7 @@ timeoutMs: 250 },
     });
     const id = 'iso:prov-1' as ContainerId<'isolation_session'>;
     await assert.rejects(
-      () => runInContainerAsync(
+      () => runInContainer(
         id,
         { command: 'echo' },
         {},
@@ -973,7 +895,7 @@ timeoutMs: 250 },
       ['signal', new AbortController().signal],
     ] as const) {
       await assert.rejects(
-        () => runInContainerAsync(
+        () => runInContainer(
           id,
           { command: 'echo hi' },
           { [option]: value },
@@ -992,7 +914,7 @@ describe('spawnInContainer', () => {
       () => new FakeStateAwareExecBinding(22, 'live\n', '', 0, { exitCode: 0, timedOut: false }, ['warning']),
     );
     const id = 'iso:abc' as ContainerId<'isolation_session'>;
-    const proc = spawnInContainer(
+    const proc = await spawnInContainer(
       id,
       { command: 'echo live',
 timeoutMs: 123 },
@@ -1002,7 +924,7 @@ timeoutMs: 123 },
       assert.strictEqual(proc.id, 22);
       assert.deepStrictEqual(proc.warnings, ['warning']);
       assert.strictEqual(await readStreamText(proc.standardOutput), 'live\n');
-      assert.deepStrictEqual(await proc.waitAsync(), { exitCode: 0, timedOut: false });
+      assert.deepStrictEqual(await proc.wait(), { exitCode: 0, timedOut: false });
       assert.deepStrictEqual(exec.request().process, { commandLine: 'echo live', timeout: 123 });
       assert.strictEqual(exec.experimental(), false);
       assert.strictEqual(exec.timeout(), 123);
@@ -1014,9 +936,9 @@ timeoutMs: 123 },
   describe('spawnInContainerWithPty', () => {
     const config = { command: 'powershell.exe' };
 
-    it('rejects invalid terminal dimensions before loading native bindings', () => {
-      assert.throws(
-        () => spawnInContainerWithPty(
+    it('rejects invalid terminal dimensions before loading native bindings', async () => {
+      await assert.rejects(
+        spawnInContainerWithPty(
           'iso:abc' as ContainerId<'isolation_session'>,
           config,
           { size: { rows: 0, columns: 80 } },
@@ -1028,23 +950,22 @@ timeoutMs: 123 },
     });
   });
 
-  it('forwards experimental authorization for live exec', async () => {
+  it('does not authorize experimental live exec', async () => {
     const exec = installStateAwareExecBinding(
       () => new FakeStateAwareExecBinding(22, '', ''),
     );
-    const proc = spawnInContainer(
+    const proc = await spawnInContainer(
       'iso:abc' as ContainerId<'isolation_session'>,
       { command: 'echo live' },
-      { experimental: true },
     );
-    assert.strictEqual(exec.experimental(), true);
+    assert.strictEqual(exec.experimental(), false);
     proc.dispose();
   });
-  it('rejects any supplied dryRun because no live process exists', () => {
+  it('rejects any supplied dryRun because no live process exists', async () => {
     const id = 'iso:abc' as ContainerId<'isolation_session'>;
     for (const dryRun of [true, false, undefined]) {
-      assert.throws(
-        () => spawnInContainer(
+      await assert.rejects(
+        spawnInContainer(
           id,
           { command: 'echo live' },
           { dryRun } as never,
@@ -1054,9 +975,9 @@ timeoutMs: 123 },
     }
   });
 
-  it('rejects unsupported execution options', () => {
-    assert.throws(
-      () => spawnInContainer(
+  it('rejects unsupported execution options', async () => {
+    await assert.rejects(
+      spawnInContainer(
         'iso:abc' as ContainerId<'isolation_session'>,
         { command: 'echo done' },
         { signal: new AbortController().signal } as never,
@@ -1200,12 +1121,12 @@ describe('wslc state-aware lifecycle', () => {
       assert.strictEqual(envelope.experimental, undefined);
     });
 
-    it('runInContainerAsync runs live execution for a wslc: id', async () => {
+    it('runInContainer runs live execution for a wslc: id', async () => {
       const exec = installStateAwareExecBinding(
         () => new FakeStateAwareExecBinding(31, 'hello-from-wslc\n', ''),
       );
       const id = 'wslc:0123abcd' as ContainerId<'wslc'>;
-      const result = await runInContainerAsync(
+      const result = await runInContainer(
         id,
         { command: 'echo hello-from-wslc' },
       );

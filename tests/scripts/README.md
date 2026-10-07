@@ -1,5 +1,7 @@
 # Test Scripts
 
+> **Audience:** MXC developers
+
 This directory contains convenience scripts for running MXC end-to-end tests
 locally and in CI. The primary Rust executor E2E path is
 `cargo test -p wxc_e2e_tests`, which invokes the MXC binaries directly instead
@@ -57,6 +59,13 @@ built tree, which is the fastest way to iterate on one area:
 ```powershell
 tests\scripts\run_processcontainer_network_proxy_test.ps1 -RequireTier base-container
 ```
+
+When the host probe reports `baseContainerSupportsIdentitylessLoopbackProxy`,
+the proxy area requires workload launch and a successful proxied fetch on both
+PSEC 1.0-only hosts and hosts with PSEC 1.1 ingress support.
+A clean policy rejection is a failure on these hosts.
+Older binaries that omit this probe fact do not enable the capability-specific
+assertions; the existing proxy assertions still apply.
 
 Shared helpers live in `tests/scripts/lib/WinProcessContainer.Common.ps1`. It
 must be **dot-sourced, not imported as a module** — `Initialize-WpcContext`
@@ -125,6 +134,28 @@ npm run test:integration    # SDK integration tests
 cd src
 cargo test --workspace       # Rust unit tests
 ```
+
+### Unix PTY SDK integration tests
+
+The caller-controlled PTY contract is directly runnable on a matching host:
+
+```bash
+# Linux with Bubblewrap installed
+cd src
+cargo test -p mxc-sdk --test streaming_bubblewrap bubblewrap_pty -- --nocapture
+
+# Linux with LXC installed; run as root
+sudo --preserve-env=PATH,HOME "$(command -v cargo)" \
+  test -p mxc-sdk --test streaming_lxc lxc_pty -- --nocapture
+
+# macOS
+cd src
+cargo test -p mxc-sdk --test streaming seatbelt_pty -- --nocapture
+```
+
+The local Bubblewrap and LXC tests report a prerequisite skip when their backend
+is unavailable. Provisioned CI hosts run the same tests in backend-specific
+lanes; strict mode turns a missing prerequisite into a failure.
 
 ## Running executor E2E via Cargo
 

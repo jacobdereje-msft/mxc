@@ -1,5 +1,7 @@
 # PLM — Permissive Learning Mode
 
+> **Audience:** MXC developers
+
 `plm.exe` is the Windows-only legacy WPR trace helper for Learning Mode. It captures both `learningModeLogging` block events and `permissiveLearningMode` allow events, then delegates ETL decoding to the same actionable-output `learning_mode_windows::EtlDenialAnalyzer` used by `captureDenials`.
 
 The actionable analyzer decodes filesystem, capability, positively classified registry-read, and UI findings from both provider shapes. Registry writes and unknown registry access are retained as non-actionable verbose diagnostics. The standalone `extract-caps` command remains available only as a low-level ACE diagnostic.
@@ -335,5 +337,5 @@ recorded race) still fails closed and terminates the job.
 
 ## See also
 
-- [`docs/process-container/guide.md`](../../../docs/process-container/guide.md) — process-container backend overview
+- [Adding ProcessContainer OS features](../../../docs/development/guides/process-container-adding-os-features.md) — process-container backend overview
 - [README → Debugging → Audit Mode](../../../README.md#audit-mode-permissive-learning-mode) — `wxc-exec --audit` integration

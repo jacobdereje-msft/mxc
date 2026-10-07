@@ -177,6 +177,8 @@ public static class MxcContainer
                     probes.BaseContainerSupportsEnumeratePaths,
                 BaseContainerSupportsIngressHostLoopbackAllow =
                     probes.BaseContainerSupportsIngressHostLoopbackAllow,
+                BaseContainerSupportsIdentitylessLoopbackProxy =
+                    probes.BaseContainerSupportsIdentitylessLoopbackProxy,
                 IsolationSessionAvailable = probes.IsolationSessionAvailable,
                 HyperlightAvailable = probes.HyperlightAvailable,
                 UiCapabilities = new UiCapabilitySupport
@@ -210,7 +212,7 @@ public static class MxcContainer
                 MxcRunResult result = default;
                 var status = NativeMethods.mxc_run_json(
                     requestPtr,
-                    options?.Experimental == true ? 1 : 0,
+                    0,
                     &result);
                 try
                 {
@@ -271,7 +273,7 @@ public static class MxcContainer
                 MxcErrorDetail error = default;
                 var status = NativeMethods.mxc_spawn_json(
                     requestPtr,
-                    options?.Experimental == true ? 1 : 0,
+                    0,
                     &handle,
                     &error);
                 if (status != (int)ErrorCode.Success)
@@ -324,7 +326,7 @@ public static class MxcContainer
                 MxcErrorDetail error = default;
                 var status = NativeMethods.mxc_spawn_pty_json(
                     requestPtr,
-                    options?.Experimental == true ? 1 : 0,
+                    0,
                     terminalSize.Rows,
                     terminalSize.Columns,
                     &handle,

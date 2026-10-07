@@ -25,7 +25,7 @@ Initialize-WpcContext @PSBoundParameters
 
 # Phase 8e — runtime proxy (model 2).
 #
-# Per docs/process-container/networking.md: HTTP(S)_PROXY (both cases) point
+# Per docs/backends/process-container/networking.md: HTTP(S)_PROXY (both cases) point
 # at the loopback endpoint, NO_PROXY must not carry it, direct egress is
 # blocked, egress rules do not apply, identity-less proxy requires
 # hostLoopback allow, and no fallback to an AppContainer tier.
@@ -87,16 +87,20 @@ function Invoke-NetworkProxyAssertions {
     if ($psec) {
         $out = $envRun.Result.Stdout
         $ran = [bool]($out -match '(?im)^SystemRoot=')
-        # networking.md: hostLoopback=allow needs the PSEC 1.1 ingress contract
-        # and "is rejected when the PSEC 1.1 ingress contract is unavailable".
-        # Only two outcomes are documented, so a bare OS error is a failure even
-        # on a 1.0-only host -- the caller cannot act on E_INVALIDARG.
+        $identitylessProxyAvailable = $Script:Caps.BaseContainerSupportsIdentitylessLoopbackProxy
+        # PSEC 1.0-only hosts use the explicit identity-less proxy workaround.
+        # PSEC 1.1+ still requires the ingress support flag. A bare OS error
+        # is never a valid substitute for successful execution or rejection.
         $rejectedCleanly = Test-WasRejected $envRun
         Record-Result -Phase 'P8e' -Name 'identity-less proxy config either runs or is rejected cleanly (never a bare OS error)' `
             -Pass ($ran -or $rejectedCleanly) `
             -Detail ("ran=$ran; rejectedAtValidation=$rejectedCleanly; exit=$($envRun.Result.ExitCode); " +
                      "stderr=$(Format-Snippet $envRun.Result.Stderr)")
-        if ($ran) {
+        if ($identitylessProxyAvailable) {
+            Record-Result -Phase 'P8e' -Name 'identity-less loopback proxy-capable host launches the workload' `
+                -Pass $ran -Detail "exit=$($envRun.Result.ExitCode); ran=$ran"
+        }
+        if ($ran -or $identitylessProxyAvailable) {
             foreach ($v in @('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')) {
                 # cmd.exe `set` upper-cases nothing, but Windows env lookup is
                 # case-insensitive and duplicate-insensitive, so a variable set
@@ -223,4 +227,3 @@ function Invoke-NetworkProxyAssertions {
 
 Invoke-WpcPhase -Key 'NetworkProxy' -Body { Phase-NetworkProxy }
 Complete-WpcChild
-

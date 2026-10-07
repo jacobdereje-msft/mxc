@@ -1,5 +1,7 @@
 # Microsoft.Mxc.Sdk
 
+> **Audience:** MXC consumers
+
 `Microsoft.Mxc.Sdk` provides .NET APIs for authoring and executing MXC
 container requests through the in-process native `mxc_ffi` library. The
 versioned public API is in `Microsoft.Mxc.Sdk.V1`. All request and policy types
@@ -61,15 +63,14 @@ validated by the native engine.
 Creation methods accept their own `RunOptions`, `SpawnOptions`, or
 `SpawnWithPtyOptions` after the request. Set `SpawnWithPtyOptions.Size` to
 choose initial dimensions; it defaults to 24 rows by 80 columns. Async cancellation
-tokens come last. `Experimental` authorizes native experimental features
-without changing the SDK-owned wire contract.
+tokens come last.
 
-## Spawn with an IsolationSession terminal
+## Spawn with a caller-controlled terminal
 
-PTY execution is available only for IsolationSession on a supported Windows
-host with the native `isolation_session` feature enabled. IsolationSession
-requires explicit unrestricted networking because it cannot enforce network
-restrictions.
+PTY execution supports IsolationSession on Windows with the native
+`isolation_session` feature enabled, Bubblewrap and LXC on Linux, and Seatbelt
+direct execution on macOS. IsolationSession requires explicit unrestricted
+networking because it cannot enforce network restrictions.
 
 ```csharp
 using System.Text;
@@ -102,6 +103,10 @@ Console.WriteLine($"exit={result.ExitCode}");
 
 `SpawnWithPty` returns an `MxcPtyProcess` with merged terminal output and
 resizing support. Initial dimensions default to 24 rows by 80 columns.
+PTY stderr is merged into `Output`. Closing `Input` requests terminal EOF in
+canonical mode; raw-mode applications must use their own completion protocol.
+Seatbelt rejects PTY mode with `guiAccess` or legacy `launchMethod: "open"`.
+Unsupported combinations are rejected before sandbox creation.
 
 ## Lifecycle API
 
@@ -153,8 +158,8 @@ Use `SpawnInContainer` or `SpawnInContainerAsync` for live piped execution. The
 asynchronous methods are convenience wrappers over native operations and
 support cancellation. Backend and phase-specific policy requirements are
 described in the
-[IsolationSession](https://github.com/microsoft/mxc/blob/main/docs/isolation-session/state-aware-rust.md) and
-[WSLC](https://github.com/microsoft/mxc/blob/main/docs/wsl/wslc-state-aware.md) guides.
+[IsolationSession](https://github.com/microsoft/mxc/blob/main/docs/development/architecture/backends/isolation-session/state-aware-rust.md) and
+[WSLC](https://github.com/microsoft/mxc/blob/main/docs/backends/wslc/wslc-state-aware.md) guides.
 `MxcLifecycle.SpawnInContainerWithPty(id, request, options?)` starts an
 IsolationSession exec with a caller-controlled terminal and returns an
 `MxcPtyProcess`. Set `SpawnInContainerWithPtyOptions.Size` to choose initial
@@ -211,9 +216,9 @@ Backend/platform discovery, errors, telemetry, and helpers are also in
 | Terminal process outcome | `WaitResult` |
 
 All types above are in `Microsoft.Mxc.Sdk.V1`. See the
-[networking guide](https://github.com/microsoft/mxc/blob/main/docs/sandbox-policy/0.8.0/networking/networking.md)
+[networking guide](https://github.com/microsoft/mxc/blob/main/docs/schema.md#directional-networking-supported-contracts);
 for policy behavior and the
-[SDK API reference](https://github.com/microsoft/mxc/blob/main/docs/reference/README.md)
+[SDK API reference](https://github.com/microsoft/mxc/blob/main/docs/api-reference/README.md)
 for complete signatures and types.
 
 ## Errors, warnings, and discovery
@@ -255,6 +260,6 @@ pipeline produces the publishable NuGet package; `build.bat` creates local
 architecture-specific packages under `output\packages`.
 
 For API details, see the
-[SDK API reference](https://github.com/microsoft/mxc/blob/main/docs/reference/README.md).
+[SDK API reference](https://github.com/microsoft/mxc/blob/main/docs/api-reference/README.md).
 Build and validation commands are in the
-[pull request guide](https://github.com/microsoft/mxc/blob/main/docs/pull-requests.md).
+[pull request guide](https://github.com/microsoft/mxc/blob/main/docs/development/build-and-test/pull-requests.md).
