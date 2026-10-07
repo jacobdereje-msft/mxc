@@ -209,9 +209,7 @@ sandbox policy:
 - Analysis retains at most 10,000 unique denials and processes at most
   1,000,000 ETW events. Reaching the unique-denial bound stops adding policy
   entries but continues bounded diagnostic accounting; reaching either bound
-  sets `summary.deniedResourcesTruncated` to `true`. Missing schemas for
-  supported denial events also set this flag. Incomplete results do not produce
-  policy previews or adjusted configurations.
+  sets `summary.deniedResourcesTruncated` to `true`.
 - `resource` is the user-visible identifier for the denied resource,
   interpreted by `resourceType`: an absolute `C:\…` path for `file`, the
   AppContainer **capability name** (e.g. `internetClient`) for `capability`,
@@ -224,9 +222,9 @@ sandbox policy:
   resources instead of treating the package SID as a capability.
 - `resourceType` is one of `file`, `ui`, `network`, `capability`, `other`;
   `accessType` is one of `read`, `write`, `execute`, `unknown`. Capability
-  denials are recorded under `block`; `allow` traces can expose capability
-  checks as empty-`ObjectType` access events. Known capabilities can be recovered
-  from their DACL payload; unresolved checks remain verbose diagnostics.
+  denials are recorded under `block`; current `allow` traces expose capability
+  checks as empty-`ObjectType` access events that are omitted because they do
+  not carry a stable capability identifier.
 - `filetime` is a decimal string containing the Windows `FILETIME` value, so
   JavaScript consumers retain all 64 bits without numeric precision loss.
 
@@ -239,7 +237,7 @@ policy denial occurrences plus diagnostic outcomes omitted from the policy file:
 
 ```json
 {
-  "version": 4,
+  "version": 2,
   "signatures": [
     {
       "signature": {
@@ -270,24 +268,18 @@ policy denial occurrences plus diagnostic outcomes omitted from the policy file:
 ```
 
 Signatures are keyed by symbolic provider category, provider GUID,
-provider-scoped event ID, optional schema `eventName`, closed outcome reason,
-PID, and sorted sanitized properties. The schema name distinguishes TraceLogging
-events that share ID 0 and is separate from any payload field named `EventName`.
-It is sanitized and bounded like other values, and is omitted when unavailable.
-SIDs, capability names, GUIDs, PIDs/process identifiers, and
+provider-scoped event ID, closed outcome reason, PID, and sorted sanitized
+properties. SIDs, capability names, GUIDs, PIDs/process identifiers, and
 non-file resource values are retained. Complete file paths are replaced with
-`<REDACTED>`; a path inside a command line or rendered array causes that entire
-property value to be redacted. Standalone user/account names remain replaced
-with `<redacted-user>`. Properties whose names contain file paths are omitted.
+`<REDACTED>`; standalone user/account names remain replaced with
+`<redacted-user>`.
 Exact header timestamps and timestamp-like properties are omitted so otherwise
 identical events deduplicate, and free-form decoder errors are never serialized.
-This is an outcome summary, not an ordered event ledger: repeats become a count,
-and one source event can produce several capability-denial outcomes.
 
-Every valid policy denial is classified as `actionable` in the verbose file.
-Its first occurrence, later duplicates, and candidates observed after the
-actionable file's unique-denial bound are all retained. Those occurrences
-deduplicate under the same signature and increment its count. `accessType` and
+Every valid actionable denial is classified as `actionable` in the verbose
+file, including its first occurrence, later duplicates, and candidates observed
+after the actionable file's unique-denial bound. Those occurrences deduplicate
+under the same signature and increment its count. `accessType` and
 `resourceType` are included when denial extraction determined them; diagnostic
 outcomes without those classifications omit the fields.
 
@@ -315,64 +307,26 @@ named-object resources individually identifiable when they share a prefix
 without exceeding the per-property bound. Redaction occurs before the digest is computed, so neither retained context nor
 a digest is derived from a sensitive value.
 
-Analysis selects known Learning Mode provider/event pairs:
-
-| Provider | Event IDs |
-|---|---|
-| Microsoft-Windows-Kernel-General | 14, 27, 28 |
-| Microsoft-Windows-Privacy-Auditing-PermissiveLearningMode | 14, 27, 4907 |
-| Microsoft-Windows-LearningMode-NetworkDecision | 1 (`NetworkDecisionV1`) |
-
-Other providers and event IDs are excluded before decoding. This selection
-does not depend on resource type: unfamiliar object types within selected events
-retain their sanitized properties as verbose diagnostics, without creating
-new actionable policy grants. Raw schema-discovery visitors and the WPR capture
-profile are unchanged.
-
-`NetworkDecisionV1` uses provider `{71237669-21C3-4101-BD2F-FF38945D725A}`.
-Its sanitized payload is retained as a verbose diagnostic without creating
-network policy grants. The event has no reliable workload PID, so its signature
-uses `pid: 0` rather than the broker's header PID. Process-scoped analysis and
-guarded WPR exclude this source because they cannot safely attribute it to a job.
-Collection requires option-aware native broker capture; adding this allowlist
-entry does not enable network collection through legacy capture or WPR.
+Unknown event IDs from known Learning Mode providers are classified as
+`unsupportedEventSchema`; the real ETL path retains their provider GUID and
+PID without attempting an unsupported TDH payload decode.
 
 Per-event TDH failures use closed diagnostic reasons:
 `eventPayloadMalformed` means the payload conflicts with its declared schema,
 `decoderLimitReached` means a nesting/element/work safety bound stopped
 decoding, and `unsupportedPropertyEncoding` means the decoder cannot consume
 that property shape. When TDH exposes it, the schema-declared name is retained
-in the optional `eventName` metadata field, with no partial payload properties.
-Free-form decoder errors are
-never serialized. Failure to obtain the event schema is retained as
-`schemaUnavailable` rather than aborting the analysis, and marks actionable
-results incomplete when the event belongs to a supported denial schema.
-Missing manifest schemas share the 4,096-entry schema cache with successful
-lookups; TraceLogging metadata is decoded per event.
-For brokered Event 28, scoped analysis marks the result incomplete even when
-the missing schema prevents reading its workload PID; unattributed event
-contents are not retained.
+as the bounded `EventName` signature property. Free-form decoder errors are
+never serialized. Failure to obtain the event schema remains a fatal analysis
+error rather than being represented as a verbose logging signature.
 
 To keep diagnostics bounded, verbose logging retains at most 4,096 distinct
-signatures and 16 MiB of compact signature data, with 24 sorted properties per
-signature and 256 characters per property value.
-`overflowOccurrences` and `aggregateGroupsTruncated` indicate that
+signatures, 24 sorted properties per signature, and 256 characters per property
+value. `overflowOccurrences` and `aggregateGroupsTruncated` indicate that
 additional diagnostic groups were omitted. `actionableOverflowOccurrences`
 counts omitted actionable-denial occurrences, while `processedEventsTruncated`
 indicates that the 1,000,000-event limit prevented complete accounting. The
 actionable file itself is never reduced to make room for verbose logging.
-The existing 64 MiB guarded analysis frame can also move verbose groups into
-overflow accounting. These bounds are retained; the file does not claim complete
-event-by-event coverage.
-
-Guarded WPR keeps the selected Learning Mode events from the exact job-attested
-process lifetimes, including brokered capability attribution.
-Required ETL headers remain in the retained trace. Its generated
-relogging header is excluded from analysis so it does not add a diagnostic that
-was absent from the source. A schema lookup failure while scoping brokered
-Event 28 fails the capture, because its workload PID cannot be established.
-Neither the unattributed event nor a potentially incomplete filtered trace is
-returned. The host-wide source ETL is not transferred.
 
 The actionable and verbose logging files fail together: MXC stages both and reports
 capture failure unless both final artifacts are committed. The verbose logging path
@@ -384,9 +338,7 @@ When stable telemetry is enabled and authorized, MXC may validate, compact, and
 send this redacted verbose document through `Microsoft.MXC/MXC.VerboseDenials`. Each
 event contains a valid JSON array of complete signatures and document
 reconstruction metadata. Before emission, MXC derives provider GUIDs from the
-closed provider enum and drops every verbose property name and value. For `other`,
-the telemetry GUID is empty. Matching groups are combined again after these
-values and the schema `eventName` are removed. MXC does
+closed provider enum and drops every verbose property name and value. MXC does
 not send the actionable denials file, workload-derived properties, or raw ETL
 through telemetry. See [MXC telemetry](../telemetry/telemetry.md).
 
@@ -422,10 +374,9 @@ WPR's source ETL is host-wide, so the elevated guarded-WPR helper never
 transfers that file across the privilege boundary for `captureDenials` or
 `--audit`. After the sandbox process tree terminates, the helper uses the
 retained, job-attested process handles and their exact PID/creation/exit
-`FILETIME` ranges to relog a second ETL. The retained ETL contains selected
-Learning Mode events attributed to those process generations, plus required ETL headers.
-Brokered capability events use their payload `ProcessId` rather than the
-broker's header PID. Guarded analysis and
+`FILETIME` ranges to relog a second ETL. The
+retained ETL contains only supported Learning Mode events whose event header
+falls inside one of those attested process generations. Guarded analysis and
 retention both consume that same filtered ETL; filtering failure transfers no
 trace. The host-wide source remains in protected elevated scratch and is
 deleted with that scratch. The unelevated caller writes the filtered retained

@@ -17,7 +17,7 @@ use windows::Win32::System::Diagnostics::Etw::{
 };
 
 use crate::learning_mode_windows::etl_decode::select_learning_mode_events_for_relogging;
-use crate::learning_mode_windows::extractors::is_learning_mode_event;
+use crate::learning_mode_windows::extractors::{is_learning_mode_event, NETWORK_DECISION_PROVIDER};
 use crate::learning_mode_windows::process_lifetime::{
     attested_process_lifetimes, JobMembershipSnapshot,
 };
@@ -90,13 +90,16 @@ impl RelogSelectionState {
         }
     }
 
-    fn observe_event(&self, pid: u32) -> bool {
+    fn observe_event(&self, pid: Option<u32>) -> bool {
         let event_index = self.event_cursor.fetch_add(1, Ordering::Relaxed);
         let selected_index = self.selected_event_cursor.load(Ordering::Relaxed);
         if self.selected_event_indices.get(selected_index) != Some(&event_index) {
             return false;
         }
 
+        let Some(pid) = pid else {
+            return false;
+        };
         if self.selected_event_pids.get(selected_index) != Some(&pid)
             || !self.attested_pids.contains(&pid)
         {
@@ -124,13 +127,9 @@ impl ITraceEventCallback_Impl for ProcessScopedTraceFilter_Impl {
     ) -> windows::core::Result<()> {
         let header_event = header_event.ok()?;
         let relogger = relogger.ok()?;
-        // SAFETY: Trace Relogger keeps the header and its interfaces valid
-        // throughout this synchronous callback.
-        let record = unsafe { header_event.GetEventRecord()? };
-        let record = unsafe { record.as_ref() }.ok_or_else(|| {
-            windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER)
-        })?;
-        self.selection.observe_event(record.EventHeader.ProcessId);
+        self.selection.observe_event(None);
+        // SAFETY: both interfaces are valid for this synchronous callback.
+        // The trace header is required for a standalone output ETL.
         unsafe { relogger.Inject(header_event)? };
         Ok(())
     }
@@ -155,9 +154,11 @@ impl ITraceEventCallback_Impl for ProcessScopedTraceFilter_Impl {
             ));
         };
         let header = &record.EventHeader;
-        let is_supported_capability_event = header.EventDescriptor.Id
-            == crate::learning_mode_windows::extractors::CAPABILITY_DENIAL_EVENT_ID
-            && is_learning_mode_event(header.ProviderId, header.EventDescriptor.Id);
+        let selectable = is_learning_mode_event(header.ProviderId, header.EventDescriptor.Id)
+            && header.ProviderId != NETWORK_DECISION_PROVIDER;
+        let is_supported_capability_event = selectable
+            && header.EventDescriptor.Id
+                == crate::learning_mode_windows::extractors::CAPABILITY_DENIAL_EVENT_ID;
         let effective_pid = if is_supported_capability_event {
             let payload_pid = self
                 .schema_cache
@@ -181,7 +182,10 @@ impl ITraceEventCallback_Impl for ProcessScopedTraceFilter_Impl {
         } else {
             header.ProcessId
         };
-        if self.selection.observe_event(effective_pid) {
+        if self
+            .selection
+            .observe_event(selectable.then_some(effective_pid))
+        {
             // SAFETY: both interfaces are valid for this synchronous callback,
             // and Inject clones the event into the output trace.
             unsafe { relogger.Inject(event)? };
@@ -397,8 +401,6 @@ mod tests {
         let mut storage = vec![0u64; 512];
         let properties = storage.as_mut_ptr().cast::<EVENT_TRACE_PROPERTIES>();
         let mut session = CONTROLTRACE_HANDLE::default();
-        // SAFETY: the aligned buffer holds both null-terminated strings and
-        // outlives the synchronous ETW calls.
         unsafe {
             (*properties).Wnode.BufferSize = (storage.len() * 8) as u32;
             (*properties).Wnode.Guid = provider;
@@ -540,7 +542,7 @@ mod tests {
     fn selected_ordinal_with_foreign_pid_is_not_injected() {
         let selection = RelogSelectionState::new(vec![0], vec![42], &[lifetime(42)]);
 
-        assert!(!selection.observe_event(99));
+        assert!(!selection.observe_event(Some(99)));
         assert_eq!(selection.consumed_event_count(), 1);
         assert_eq!(
             selection.consumed_selected_event_count(),
@@ -550,10 +552,19 @@ mod tests {
     }
 
     #[test]
+    fn selected_ordinal_with_unrelated_event_is_not_injected() {
+        let selection = RelogSelectionState::new(vec![0], vec![42], &[lifetime(42)]);
+
+        assert!(!selection.observe_event(None));
+        assert_eq!(selection.consumed_event_count(), 1);
+        assert_eq!(selection.consumed_selected_event_count(), 0);
+    }
+
+    #[test]
     fn selected_ordinal_with_attested_pid_is_injected() {
         let selection = RelogSelectionState::new(vec![0], vec![42], &[lifetime(42)]);
 
-        assert!(selection.observe_event(42));
+        assert!(selection.observe_event(Some(42)));
         assert_eq!(selection.consumed_event_count(), 1);
         assert_eq!(selection.consumed_selected_event_count(), 1);
     }

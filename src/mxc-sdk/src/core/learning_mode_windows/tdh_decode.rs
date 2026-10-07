@@ -197,8 +197,6 @@ impl TdhInfoBuffer {
 
 /// Decodes an `EVENT_RECORD` into `DecodedEventParts`.
 ///
-/// Returns a schema error when TDH cannot describe the event.
-///
 /// # Safety
 /// `event_record` must point to a valid `EVENT_RECORD` provided by the
 /// ETW callback; the caller must not retain references to its fields

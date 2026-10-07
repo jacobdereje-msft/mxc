@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Sealed-ETL decoder: turns the `.etl` delivered by the Learning Mode trace API
-//! into cross-platform [`DeniedResource`]s.
+//! produces into cross-platform [`DeniedResource`]s.
 //!
 //! The trace is opened in **file mode** (`EVENT_TRACE_LOGFILEW.LogFileName`,
 //! without `PROCESS_TRACE_MODE_REAL_TIME`). `ProcessTrace` walks every
@@ -18,11 +18,11 @@
 //! The diagnostic console has a separate real-time, display-oriented ETW
 //! consumer in `tools/mxc_diagnostic_console`. It is a binary-private module
 //! that owns trace sessions and channels arbitrary provider events to a UI.
-//! This backend reads sealed files synchronously and keeps bounded, deduplicated
-//! diagnostics for every resource type in selected Learning Mode events.
-//! Only known schemas produce actionable denials. Depending on the tool would
-//! invert the workspace dependency direction; shared generic TDH primitives can
-//! be extracted later if another runtime consumer needs them.
+//! This backend instead reads sealed files synchronously, filters a fixed
+//! provider/event vocabulary, bounds results, and skips malformed individual
+//! events without invalidating the rest of the capture. Depending on the tool would invert the workspace dependency
+//! direction; shared generic TDH primitives can be extracted later if another
+//! runtime consumer needs them.
 
 use std::collections::{HashMap, HashSet};
 use std::os::windows::ffi::OsStrExt;
@@ -442,9 +442,6 @@ impl<'visitor> Accumulator<'visitor> {
     }
 
     /// Handles a TDH decode failure for one event.
-    ///
-    /// Analysis records a closed diagnostic reason and continues. Raw diagnostic
-    /// visitors require every event to decode successfully and fail instead.
     fn record_event_decode_error(
         &mut self,
         provider: windows::core::GUID,
@@ -480,7 +477,9 @@ impl<'visitor> Accumulator<'visitor> {
             }
             None => VerboseLoggingOutcomeReason::SchemaUnavailable,
         };
-        if reason == VerboseLoggingOutcomeReason::SchemaUnavailable {
+        if reason == VerboseLoggingOutcomeReason::SchemaUnavailable
+            && provider != NETWORK_DECISION_PROVIDER
+        {
             self.truncated = true;
         }
         let event = (event_id, error.event_name());
@@ -574,14 +573,6 @@ impl EtlDenialAnalyzer {
         self.analyze_for_process_lifetimes(source_path, &process_lifetimes)
     }
 
-    /// Analyzes a relogged trace for exact job-attested process generations.
-    ///
-    /// The relogger's generated transport header is not a source observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AnalyzeError`] when job evidence is invalid or the trace cannot
-    /// be decoded.
     pub fn analyze_relogged_for_job_membership(
         &self,
         source_path: &Path,
@@ -678,7 +669,7 @@ pub fn visit_raw_events(
     Ok(accumulator.raw_event_count)
 }
 
-/// Builds a bounded decision vector for selected in-scope Learning Mode events in
+/// Builds a bounded decision vector for known-provider Learning Mode events in
 /// source order. `ProcessTrace` normalizes each timestamp to FILETIME before
 /// the exact process-generation test, so Trace Relogger can replay these
 /// decisions without comparing its raw trace-clock timestamps.
@@ -1039,7 +1030,12 @@ fn select_event_for_relogging(
     acc.relog_selected_event_pids.push(pid);
 }
 
-/// Extracts known denials and retains other resource types as diagnostics.
+/// Extracts denials from one decoded, in-vocabulary event and feeds them
+/// (or their closed outcome reason) into `acc`.
+///
+/// Re-checks the provider/event vocabulary so it stays a single source of
+/// truth for both the real ETW path (which gates before decoding, above)
+/// and pure-composition tests that hand this already-"decoded" fixtures.
 fn handle_decoded_event(
     parts: &DecodedEventParts,
     header_pid: u32,
@@ -1380,9 +1376,7 @@ mod tests {
             ),
         ] {
             for time in [100, 200] {
-                // SAFETY: the initialized record and payload remain live
-                // throughout the synchronous callback.
-                let mut record: EVENT_RECORD = unsafe { core::mem::zeroed() };
+                let mut record = EVENT_RECORD::default();
                 record.EventHeader.ProviderId = provider;
                 record.EventHeader.EventDescriptor.Id = event_id;
                 record.EventHeader.EventDescriptor.Version = u8::MAX;
@@ -1925,16 +1919,17 @@ mod tests {
     fn schema_failure_completeness_follows_the_supported_event_vocabulary() {
         let kernel = crate::learning_mode_windows::extractors::KERNEL_GENERAL_PROVIDER;
         let privacy = crate::learning_mode_windows::extractors::PRIVACY_LEARNING_MODE_PROVIDER;
-        for (provider, event_id, incomplete) in [
-            (kernel, 14, true),
-            (kernel, 27, true),
-            (kernel, 28, true),
-            (privacy, 14, true),
-            (privacy, 27, true),
-            (privacy, 4907, true),
-            (kernel, 999, false),
-            (privacy, 28, false),
-            (windows::core::GUID::from_u128(1), 14, false),
+        for (provider, event_id, retained, incomplete) in [
+            (kernel, 14, true, true),
+            (kernel, 27, true, true),
+            (kernel, 28, true, true),
+            (privacy, 14, true, true),
+            (privacy, 27, true, true),
+            (privacy, 4907, true, true),
+            (NETWORK_DECISION_PROVIDER, 1, true, false),
+            (kernel, 999, false, false),
+            (privacy, 28, false, false),
+            (windows::core::GUID::from_u128(1), 14, false, false),
         ] {
             let mut accumulator = Accumulator::analyze();
             accumulator.record_event_decode_error(
@@ -1963,13 +1958,13 @@ mod tests {
             assert_eq!(analysis.denials[0].resource, r"C:\kept.txt");
             assert_eq!(
                 analysis.verbose_logging.total_occurrences,
-                1 + u64::from(incomplete)
+                1 + u64::from(retained)
             );
             assert_eq!(
                 analysis.verbose_logging.signatures.iter().any(|group| {
                     group.signature.reason == VerboseLoggingOutcomeReason::SchemaUnavailable
                 }),
-                incomplete
+                retained
             );
             let mut bytes = Vec::new();
             let summary = crate::learning_mode_core::DenialSummary::new(
@@ -2618,7 +2613,6 @@ mod tests {
         assert!(analysis.verbose_logging.is_empty());
     }
 
-    /// Resource exclusions remain diagnostic; unrelated event IDs are ignored.
     #[test]
     fn non_actionable_events_are_dropped() {
         let events = vec![

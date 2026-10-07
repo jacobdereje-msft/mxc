@@ -20,9 +20,8 @@
 //!
 //! The learning-mode ETL carries a set of event IDs that map onto the
 //! resource types we surface. This list grows as more denial sources are
-//! decoded; provider/event pairs outside this vocabulary are excluded.
-//! Every resource type within these events remains eligible for verbose
-//! diagnostics. The IDs handled today:
+//! decoded; event IDs outside this vocabulary are excluded rather than
+//! extracted. The IDs handled today:
 //!
 //! - **14 / 4907 — access check** — the primary denial event
 //!   (`ObjectType` / `ObjectName` / `AccessMask`). `ObjectType` selects the
@@ -33,8 +32,8 @@
 //!   access are retained only as verbose diagnostics. Named Section,
 //!   SymbolicLink, and Timer objects are likewise verbose-only because MXC has
 //!   no corresponding policy grants.
-//!   Other object types remain verbose diagnostics until their access-mask
-//!   vocabulary is understood. The [`AccessType`] is derived from the
+//!   Other object types are dropped until their access-mask vocabulary is
+//!   understood. The [`AccessType`] is derived from the
 //!   `AccessMask` field (see [`access_type_from_mask`]). Emitted under both
 //!   learning modes (`block` → `Mode="Normal"`, `allow` →
 //!   `Mode="Permissive"`).
@@ -48,8 +47,6 @@
 //!   [`ResourceType::Capability`], with the capability name resolved from the
 //!   capability SID via [`crate::learning_mode_windows::capability_names`] (well-known SID → friendly
 //!   name; custom hashed capabilities fall back to the SID string).
-//! - **1 — `NetworkDecisionV1`** — the dedicated network-decision provider's
-//!   native-capture event. Retained as verbose diagnostics without policy grants.
 
 use crate::learning_mode_core::{
     AccessType, ResourceType, VerboseLoggingOutcomeReason, VerboseLoggingProvider,
@@ -73,7 +70,6 @@ pub(crate) const PRIVACY_LEARNING_MODE_PROVIDER: GUID = GUID {
     data4: [0xad, 0xc0, 0x4b, 0x18, 0x61, 0x70, 0xe7, 0x60],
 };
 
-/// Microsoft-Windows-LearningMode-NetworkDecision.
 pub(crate) const NETWORK_DECISION_PROVIDER: GUID =
     GUID::from_u128(0x71237669_21c3_4101_bd2f_ff38945d725a);
 pub(crate) const NETWORK_DECISION_EVENT_ID: u16 = 1;
@@ -94,7 +90,6 @@ pub struct DecodedEventParts {
     pub provider: GUID,
     /// Originating ETW event ID.
     pub event_id: u16,
-    /// Schema-declared event name.
     pub event_name: Option<String>,
     /// `(name, value)` pairs from the decoded payload. String values are
     /// often TDH-quoted; extractors trim the surrounding quotes.
@@ -263,7 +258,9 @@ pub(crate) fn effective_capability_event_pid(process_id: Option<&str>) -> Option
 
 /// Maps a raw ETW provider GUID to its symbolic verbose logging category.
 ///
-/// Returns `None` outside the Learning Mode provider vocabulary.
+/// Returns `None` for providers outside the Learning Mode vocabulary; those
+/// events are ignored entirely (not aggregated), since they are unrelated
+/// host traffic rather than an excluded Learning Mode outcome.
 pub(crate) fn verbose_logging_provider_for_guid(provider: GUID) -> Option<VerboseLoggingProvider> {
     if provider == KERNEL_GENERAL_PROVIDER {
         Some(VerboseLoggingProvider::KernelGeneral)

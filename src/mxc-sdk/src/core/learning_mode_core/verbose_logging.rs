@@ -17,11 +17,11 @@ pub const MAX_VERBOSE_LOGGING_GROUPS: usize = 4_096;
 /// 64 MiB frame limit for actionable denials and envelope overhead.
 pub const MAX_VERBOSE_LOGGING_SIGNATURE_BYTES: usize = 16 * 1024 * 1024;
 
-/// Stable category for a Learning Mode ETW provider.
+/// Stable category for a known Learning Mode ETW provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VerboseLoggingProvider {
-    /// Any other provider, identified by its GUID in the local output.
+    /// Any other provider.
     Other,
     /// Microsoft-Windows-Kernel-General.
     KernelGeneral,
@@ -37,7 +37,7 @@ pub enum VerboseLoggingProvider {
 pub enum VerboseLoggingOutcomeReason {
     /// The event produced a valid actionable denial.
     Actionable,
-    /// No actionable extractor supports this provider/event pair.
+    /// The provider is known, but the event ID is not a supported denial schema.
     UnsupportedEventSchema,
     /// TDH could not resolve the event schema.
     SchemaUnavailable,
@@ -79,7 +79,7 @@ pub struct VerboseLoggingSignature {
     pub provider_guid: String,
     /// Provider-scoped ETW schema identifier.
     pub event_id: u16,
-    /// Sanitized schema name, separate from payload properties.
+    /// Sanitized schema name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_name: Option<String>,
     /// Closed exclusion category.
