@@ -35,7 +35,7 @@ pub enum VerboseLoggingOutcomeReason {
     Actionable,
     /// The provider is known, but the event ID is not a supported denial schema.
     UnsupportedEventSchema,
-    /// The event payload conflicted with its declared TDH schema.
+    /// The event payload was malformed or conflicted with its declared TDH schema.
     EventPayloadMalformed,
     /// A decoder safety bound prevented full payload processing.
     DecoderLimitReached,

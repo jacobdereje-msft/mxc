@@ -638,7 +638,10 @@ pub(crate) fn sanitize_properties(props: &[(String, String)]) -> Vec<(String, St
 /// [`VerboseLoggingOutcomeReason::MissingObjectName`]; capability: an
 /// unidentified brokered check,
 /// [`VerboseLoggingOutcomeReason::UnresolvedCapability`] — [`crate::learning_mode_windows::capability_dacl`]
-/// may still recover it from the event's DACL payload), or a self-access,
+/// may still recover it from the event's DACL payload), a COM check
+/// ([`VerboseLoggingOutcomeReason::ComActivation`] or
+/// [`VerboseLoggingOutcomeReason::ComInterfaceCall`]; an invalid CLSID/IID is
+/// [`VerboseLoggingOutcomeReason::EventPayloadMalformed`]), or a self-access,
 /// non-read registry, or recognized named-object check that isn't actionable
 /// ([`VerboseLoggingOutcomeReason::NotActionable`]).
 pub fn build_denial_from_access_check(
@@ -1432,6 +1435,10 @@ mod tests {
             (
                 Some("\"00000132-0000-0000-C000-000000000046}\""),
                 VerboseLoggingOutcomeReason::EventPayloadMalformed,
+            ),
+            (
+                Some("\"00000132-0000-0000-C000-000000000046\""),
+                VerboseLoggingOutcomeReason::ComInterfaceCall,
             ),
         ] {
             let mut properties = vec![("ObjectType", COM_CALL_OBJECT_TYPE)];

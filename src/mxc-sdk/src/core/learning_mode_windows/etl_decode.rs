@@ -1863,7 +1863,7 @@ mod tests {
                     ("AccessMask", "0x1"),
                 ],
             ),
-            kernel_event(
+            permissive_event(
                 14,
                 101,
                 2,
@@ -1874,8 +1874,8 @@ mod tests {
                     ("AccessMask", "0xffffffff"),
                 ],
             ),
-            kernel_event(
-                14,
+            permissive_event(
+                4907,
                 102,
                 3,
                 &[
@@ -1906,6 +1906,10 @@ mod tests {
         assert!(activation_signatures
             .iter()
             .any(|group| property(&group.signature, "ObjectName") == activation_clsid));
+        assert!(activation_signatures.iter().any(|group| {
+            group.signature.provider
+                == VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode
+        }));
 
         let call = analysis
             .verbose_logging
@@ -1917,9 +1921,55 @@ mod tests {
             call.signature.reason,
             VerboseLoggingOutcomeReason::ComInterfaceCall
         );
+        assert_eq!(
+            call.signature.provider,
+            VerboseLoggingProvider::PrivacyAuditingPermissiveLearningMode
+        );
+        assert_eq!(call.signature.event_id, 4907);
         assert_eq!(call.signature.resource_type, Some(ResourceType::Other));
         assert!(call.signature.access_type.is_none());
         assert_eq!(property(&call.signature, "ObjectName"), call_iid);
+    }
+
+    #[test]
+    fn com_checks_do_not_change_actionable_output() {
+        let file = || {
+            kernel_event(
+                14,
+                100,
+                2,
+                &[
+                    ("ObjectType", "\"File\""),
+                    ("ObjectName", r"C:\kept.txt"),
+                    ("AccessMask", "0x1"),
+                ],
+            )
+        };
+        let com = |filetime| {
+            kernel_event(
+                14,
+                100,
+                filetime,
+                &[
+                    ("ObjectType", "\"ComActivationForClass\""),
+                    ("ObjectName", "{A47979D2-C419-11D9-A5B4-001185AD2B89}"),
+                ],
+            )
+        };
+
+        let without = resources_from_events(&[file()]);
+        let with = resources_from_events(&[com(1), file(), com(3)]);
+
+        assert_eq!(without.denials.len(), 1);
+        assert_eq!(with.denials, without.denials);
+        assert_eq!(
+            with.verbose_logging.signatures.len(),
+            without.verbose_logging.signatures.len() + 1
+        );
+        assert_eq!(
+            with.verbose_logging.total_occurrences,
+            without.verbose_logging.total_occurrences + 2
+        );
     }
 
     #[test]
@@ -1931,7 +1981,7 @@ mod tests {
             &[
                 ("Mode", "\"Normal\""),
                 ("ObjectType", "\"ComActivationForClass\""),
-                ("ObjectName", "\"not-a-clsid\""),
+                ("ObjectName", r"C:\Users\alice\secret.txt"),
                 ("AccessMask", "0x1"),
             ],
         )];
@@ -1948,7 +1998,10 @@ mod tests {
         assert_eq!(signature.resource_type, Some(ResourceType::Other));
         assert!(signature.access_type.is_none());
         assert_eq!(property(signature, "ObjectType"), "ComActivationForClass");
-        assert_eq!(property(signature, "ObjectName"), "not-a-clsid");
+        assert_eq!(
+            property(signature, "ObjectName"),
+            crate::learning_mode_windows::extractors::REDACTED_PATH
+        );
     }
 
     #[test]
