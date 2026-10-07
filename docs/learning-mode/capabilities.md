@@ -235,7 +235,7 @@ policy denial occurrences plus diagnostic outcomes omitted from the policy file:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "signatures": [
     {
       "signature": {
@@ -294,6 +294,9 @@ reason and their sanitized event properties:
   converted to a safe absolute DOS or UNC path. For example,
   `\Device\MountPointManager` is useful Devices-namespace evidence, but it is
   not a directly authorable filesystem grant.
+- `comActivation` and `comInterfaceCall` mean a classic COM class activation
+  or interface call was denied. The CLSID or IID is retained; a malformed
+  identifier is reported as `eventPayloadMalformed`.
 - `unsupportedObjectType` means the event names a resource outside the
   supported diagnostic model. Examples include `\BaseNamedObjects` as a
   Directory, ALPC Ports such as
