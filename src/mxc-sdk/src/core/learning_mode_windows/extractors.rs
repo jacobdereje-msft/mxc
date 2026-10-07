@@ -443,6 +443,9 @@ fn looks_like_file_path_property(name: &str, value: &str, object_type: Option<&s
 
 fn contains_file_path(value: &str) -> bool {
     value.match_indices(['\\', ':']).any(|(offset, marker)| {
+        if value[offset..].starts_with(r"\\\\") {
+            return false;
+        }
         let offset = if marker == ":" {
             offset.saturating_sub(1)
         } else {
@@ -480,7 +483,9 @@ fn looks_like_dos_device_filesystem_path(value: &str) -> bool {
     let Some(volume) = strip_prefix_ignore_ascii_case(rest, "Volume{") else {
         return false;
     };
-    volume.contains(r"}\")
+    volume
+        .split_once('\\')
+        .is_some_and(|(guid, _)| guid.ends_with('}'))
 }
 
 fn looks_like_drive_absolute_path(value: &str) -> bool {
@@ -1792,6 +1797,11 @@ mod tests {
         let prefix = "ordinary text ".repeat(4096);
         assert!(!contains_file_path(&prefix));
         assert!(contains_file_path(&format!("{prefix}C:\\private.txt")));
+        assert!(!contains_file_path(&format!(
+            "{}server\\pipe\\mxc",
+            "\\".repeat(32 * 1024)
+        )));
+        assert!(!contains_file_path(&r"\??\Volume{".repeat(4096)));
     }
 
     #[test]
