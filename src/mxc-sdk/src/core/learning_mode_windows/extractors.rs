@@ -78,6 +78,8 @@ pub(crate) const ACCESS_CHECK_EVENT_ID: u16 = 14;
 pub(crate) const LEARNING_MODE_VIOLATION_EVENT_ID: u16 = 27;
 pub(crate) const CAPABILITY_DENIAL_EVENT_ID: u16 = 28;
 pub(crate) const PRIVACY_ACCESS_CHECK_EVENT_ID: u16 = 4907;
+const COM_ACTIVATION_OBJECT_TYPE: &str = "ComActivationForClass";
+const COM_CALL_OBJECT_TYPE: &str = "ComCallOnInterface";
 
 /// Pre-decoded event payload handed to the extractors.
 ///
@@ -200,6 +202,9 @@ pub(crate) fn verbose_logging_classification(
                     ),
                     Some(ResourceType::Other),
                 ),
+                object_type if com_outcome_reason(object_type).is_some() => {
+                    (None, Some(ResourceType::Other))
+                }
                 "" => (Some(AccessType::Unknown), Some(ResourceType::Capability)),
                 _ => (None, None),
             }
@@ -436,10 +441,13 @@ fn looks_like_file_path_property(name: &str, value: &str, object_type: Option<&s
         return true;
     }
 
-    if (normalized.equals("objectname") || normalized.equals("resource"))
-        && object_type.is_some_and(|object_type| object_type.eq_ignore_ascii_case("File"))
-    {
-        return true;
+    if normalized.equals("objectname") || normalized.equals("resource") {
+        if object_type.is_some_and(|object_type| com_outcome_reason(object_type).is_some()) {
+            return !is_guid_identifier(value);
+        }
+        if object_type.is_some_and(|object_type| object_type.eq_ignore_ascii_case("File")) {
+            return true;
+        }
     }
 
     contains_file_path(value)
@@ -685,7 +693,10 @@ pub(crate) fn sanitize_event_name(name: Option<&str>) -> Option<String> {
 /// [`VerboseLoggingOutcomeReason::MissingObjectName`]; capability: an
 /// unidentified brokered check,
 /// [`VerboseLoggingOutcomeReason::UnresolvedCapability`] — [`crate::learning_mode_windows::capability_dacl`]
-/// may still recover it from the event's DACL payload), or a self-access,
+/// may still recover it from the event's DACL payload), a COM check
+/// ([`VerboseLoggingOutcomeReason::ComActivation`] or
+/// [`VerboseLoggingOutcomeReason::ComInterfaceCall`]; an invalid CLSID/IID is
+/// [`VerboseLoggingOutcomeReason::EventPayloadMalformed`]), or a self-access,
 /// non-read registry, or recognized named-object check that isn't actionable
 /// ([`VerboseLoggingOutcomeReason::NotActionable`]).
 pub fn build_denial_from_access_check(
@@ -697,6 +708,7 @@ pub fn build_denial_from_access_check(
     let object_type = find_prop(&parts.props, "ObjectType")
         .ok_or(VerboseLoggingOutcomeReason::MissingObjectType)?;
     let object_type_str = object_type.trim_matches('"');
+    let com_reason = com_outcome_reason(object_type_str);
 
     let resource_type = match object_type_str {
         "File" => ResourceType::File,
@@ -704,6 +716,7 @@ pub fn build_denial_from_access_check(
         "Section" | "SymbolicLink" | "Timer" => ResourceType::Other,
         // A present-but-empty object type is a brokered-capability check.
         "" => ResourceType::Capability,
+        _ if com_reason.is_some() => ResourceType::Other,
         _ => return Err(VerboseLoggingOutcomeReason::UnsupportedObjectType),
     };
 
@@ -719,6 +732,13 @@ pub fn build_denial_from_access_check(
         (_, None) => return Err(VerboseLoggingOutcomeReason::MissingObjectName),
         (_, Some(name)) => name,
     };
+
+    if let Some(reason) = com_reason {
+        if !is_guid_identifier(&object_name) {
+            return Err(VerboseLoggingOutcomeReason::EventPayloadMalformed);
+        }
+        return Err(reason);
+    }
 
     if resource_type == ResourceType::File {
         let app_path = find_prop(&parts.props, "AppPath")
@@ -1054,6 +1074,22 @@ fn named_object_access_type(object_type: &str, mask: u32) -> AccessType {
 
 fn find_prop<'a>(props: &'a [(String, String)], name: &str) -> Option<&'a String> {
     props.iter().find(|(k, _)| k == name).map(|(_, v)| v)
+}
+
+fn com_outcome_reason(object_type: &str) -> Option<VerboseLoggingOutcomeReason> {
+    match object_type {
+        COM_ACTIVATION_OBJECT_TYPE => Some(VerboseLoggingOutcomeReason::ComActivation),
+        COM_CALL_OBJECT_TYPE => Some(VerboseLoggingOutcomeReason::ComInterfaceCall),
+        _ => None,
+    }
+}
+
+fn is_guid_identifier(value: &str) -> bool {
+    let value = value
+        .strip_prefix('{')
+        .and_then(|value| value.strip_suffix('}'))
+        .unwrap_or(value);
+    GUID::try_from(value).is_ok()
 }
 
 #[cfg(test)]
@@ -1403,6 +1439,92 @@ mod tests {
                 (Some(expected_access), Some(ResourceType::Other))
             );
         }
+    }
+
+    #[test]
+    fn access_check_com_denials_use_distinct_verbose_reasons() {
+        for (object_type, object_name, mode, expected_reason) in [
+            (
+                COM_ACTIVATION_OBJECT_TYPE,
+                "{A47979D2-C419-11D9-A5B4-001185AD2B89}",
+                "\"Normal\"",
+                VerboseLoggingOutcomeReason::ComActivation,
+            ),
+            (
+                COM_CALL_OBJECT_TYPE,
+                "{00000132-0000-0000-C000-000000000046}",
+                "\"Permissive\"",
+                VerboseLoggingOutcomeReason::ComInterfaceCall,
+            ),
+        ] {
+            let p = parts(
+                14,
+                &[
+                    ("Mode", mode),
+                    ("ObjectType", object_type),
+                    ("ObjectName", object_name),
+                    ("AccessMask", "0xffffffff"),
+                ],
+            );
+
+            assert_eq!(extract_denial(&p, 42, FIXED_FILETIME), Err(expected_reason));
+            assert_eq!(
+                verbose_logging_classification(&p),
+                (None, Some(ResourceType::Other))
+            );
+        }
+    }
+
+    #[test]
+    fn access_check_com_denials_require_guid_identifier() {
+        for (object_name, expected) in [
+            (None, VerboseLoggingOutcomeReason::MissingObjectName),
+            (Some("\"\""), VerboseLoggingOutcomeReason::MissingObjectName),
+            (
+                Some("\"not-a-guid\""),
+                VerboseLoggingOutcomeReason::EventPayloadMalformed,
+            ),
+            (
+                Some("\"{00000132-0000-0000-C000-000000000046\""),
+                VerboseLoggingOutcomeReason::EventPayloadMalformed,
+            ),
+            (
+                Some("\"00000132-0000-0000-C000-000000000046}\""),
+                VerboseLoggingOutcomeReason::EventPayloadMalformed,
+            ),
+            (
+                Some("\"00000132-0000-0000-C000-000000000046\""),
+                VerboseLoggingOutcomeReason::ComInterfaceCall,
+            ),
+        ] {
+            let mut properties = vec![("ObjectType", COM_CALL_OBJECT_TYPE)];
+            if let Some(object_name) = object_name {
+                properties.push(("ObjectName", object_name));
+            }
+            let p = parts(14, &properties);
+
+            assert_eq!(extract_denial(&p, 42, FIXED_FILETIME), Err(expected));
+            assert_eq!(
+                verbose_logging_classification(&p),
+                (None, Some(ResourceType::Other))
+            );
+        }
+    }
+
+    #[test]
+    fn access_check_rpc_interface_remains_unsupported() {
+        let p = parts(
+            14,
+            &[
+                ("ObjectType", "\"RPC Interface\""),
+                ("ObjectName", "\"f6beaff7-1e19-4fbb-9f8f-b89e2018337c\""),
+            ],
+        );
+        assert_eq!(
+            extract_denial(&p, 1, FIXED_FILETIME),
+            Err(VerboseLoggingOutcomeReason::UnsupportedObjectType)
+        );
+        assert_eq!(verbose_logging_classification(&p), (None, None));
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub enum VerboseLoggingOutcomeReason {
     UnsupportedEventSchema,
     /// TDH could not resolve the event schema.
     SchemaUnavailable,
-    /// The event payload conflicted with its declared TDH schema.
+    /// The event payload was malformed or conflicted with its declared TDH schema.
     EventPayloadMalformed,
     /// A decoder safety bound prevented full payload processing.
     DecoderLimitReached,
@@ -55,6 +55,10 @@ pub enum VerboseLoggingOutcomeReason {
     UnusableResourcePath,
     /// A capability event did not contain a usable capability denial.
     UnresolvedCapability,
+    /// Classic COM class activation.
+    ComActivation,
+    /// Classic COM interface call.
+    ComInterfaceCall,
     /// The event was valid but did not describe an actionable denial.
     NotActionable,
 }
@@ -479,6 +483,36 @@ mod tests {
     }
 
     #[test]
+    fn com_signature_overflow_is_not_counted_as_actionable() {
+        let mut summary = VerboseLoggingSummary::default();
+        let mut signature: VerboseLoggingSignature = serde_json::from_value(serde_json::json!({
+            "provider": "kernelGeneral",
+            "providerGuid": "kernel",
+            "eventId": 0,
+            "reason": "unsupportedEventSchema",
+            "pid": 1,
+            "properties": []
+        }))
+        .unwrap();
+        for event_id in 0..MAX_VERBOSE_LOGGING_GROUPS as u16 {
+            signature.event_id = event_id;
+            summary.record(signature.clone());
+        }
+
+        signature.event_id = u16::MAX;
+        signature.reason = VerboseLoggingOutcomeReason::ComActivation;
+        signature.resource_type = Some(crate::learning_mode_core::ResourceType::Other);
+        summary.record(signature);
+
+        assert_eq!(summary.overflow_occurrences, 1);
+        assert_eq!(summary.actionable_overflow_occurrences, 0);
+        assert!(!summary
+            .signatures
+            .iter()
+            .any(|group| { group.signature.reason == VerboseLoggingOutcomeReason::ComActivation }));
+    }
+
+    #[test]
     fn byte_budget_leaves_guarded_analysis_protocol_headroom() {
         let mut summary = VerboseLoggingSummary::default();
         let mut retained_bytes = 0;
@@ -577,6 +611,20 @@ mod tests {
         assert_eq!(value["signatures"][0]["signature"]["reason"], "actionable");
         assert_eq!(value["summary"]["actionableOverflowOccurrences"], 2);
         assert_eq!(value["summary"]["actionableLimitReached"], true);
+    }
+
+    #[test]
+    fn document_serializes_distinct_nonactionable_com_reasons() {
+        for (reason, expected) in [
+            (VerboseLoggingOutcomeReason::ComActivation, "comActivation"),
+            (
+                VerboseLoggingOutcomeReason::ComInterfaceCall,
+                "comInterfaceCall",
+            ),
+        ] {
+            assert!(!reason.is_actionable());
+            assert_eq!(serde_json::to_value(reason).unwrap(), expected);
+        }
     }
 
     #[test]
