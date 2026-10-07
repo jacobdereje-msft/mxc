@@ -1,5 +1,7 @@
 # Node V1 types
 
+> **Audience:** MXC consumers
+
 Public entrypoint: `@microsoft/mxc-sdk/v1`. [Operations](api.md) | [Overview](README.md)
 
 Declarations include public fields, variants, constructors, and members. Inherited SDK members remain defined on their base type; implementation-only helpers and external framework APIs are not expanded.
@@ -214,7 +216,6 @@ Invocation controls for releasing a container.
 
 ```typescript
 export interface DeprovisionOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
 }
 ```
@@ -450,7 +451,7 @@ export class MxcProcess {
   get standardError(): Readable | null;
   get warnings(): readonly string[];
   get outputMetadata(): ExecutionMetadata | undefined;
-  waitAsync(): Promise<WaitResult>;
+  wait(): Promise<WaitResult>;
   kill(): void;
   dispose(): void;
 }
@@ -668,7 +669,6 @@ Invocation controls for provisioning a container.
 
 ```typescript
 export interface ProvisionOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
 }
 ```
@@ -704,7 +704,6 @@ Invocation controls for captured execution in an existing container.
 
 ```typescript
 export interface RunInContainerOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
 }
 ```
@@ -712,11 +711,10 @@ export interface RunInContainerOptions {
 
 ## `@microsoft/mxc-sdk/v1::RunOptions`
 
-Invocation controls for run and runAsync.
+Invocation controls for run.
 
 ```typescript
 export interface RunOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
 }
 ```
@@ -763,7 +761,6 @@ Invocation controls for live execution in an existing container.
 
 ```typescript
 export interface SpawnInContainerOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
 }
 ```
@@ -775,7 +772,6 @@ Invocation controls for a terminal in an existing container.
 
 ```typescript
 export interface SpawnInContainerWithPtyOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
   size?: MxcPtySize;
 }
@@ -784,11 +780,10 @@ export interface SpawnInContainerWithPtyOptions {
 
 ## `@microsoft/mxc-sdk/v1::SpawnOptions`
 
-Invocation controls for spawn and spawnAsync.
+Invocation controls for spawn.
 
 ```typescript
 export interface SpawnOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
 }
 ```
@@ -800,7 +795,6 @@ Invocation controls for spawning a caller-controlled terminal.
 
 ```typescript
 export interface SpawnWithPtyOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
   size?: MxcPtySize;
 }
@@ -814,7 +808,6 @@ Invocation controls for starting a container.
 
 ```typescript
 export interface StartOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
 }
 ```
@@ -828,7 +821,6 @@ Invocation controls for stopping a container.
 
 ```typescript
 export interface StopOptions {
-  experimental?: boolean;
   telemetry?: TelemetryConfig;
 }
 ```

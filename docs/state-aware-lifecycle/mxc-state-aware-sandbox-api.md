@@ -1,5 +1,7 @@
 # MXC State-Aware Sandbox API
 
+> **Audience:** MXC consumers and developers
+
 *Detailed design proposal. Compiled 2026-04-28.*
 
 ## Contents
@@ -62,7 +64,7 @@ elaborates.
 
 | MXC layer | What's new | What's unchanged |
 |---|---|---|
-| TypeScript SDK (§6) | Five lifecycle functions: `provisionContainer`, `startContainer`, `spawnInContainer` / `runInContainerAsync`, `stopContainer`, `deprovisionContainer`, plus `spawnInContainerWithPty` for a caller-controlled interactive terminal when supported by the selected backend. Branded `SandboxId<C>` type tagging ids by backend (`containment` named once at provision, inferred from the id thereafter). Per-(backend, phase) typed `*Config` interfaces (e.g. `IsolationSessionProvisionConfig`) that absorb cross-cutting fields directly — no separate policy parameter. Per-phase typed `*Result` types per backend. `AbortSignal` cancellation for promise-returning operations via the existing `SandboxSpawnOptions`; live exec callers use `MxcProcess.kill()` or dispose the returned `MxcPtyProcess`. Typed `MxcError` class carrying a closed-enum `code`. | `spawnSandbox` family preserved. `ContainmentBackend` extension mechanism reused. The existing wire-format-aligned `ProcessConfig` / `FilesystemConfig` / `NetworkConfig` / `UiConfig` interfaces from `sdk/node/src/types.ts` are reused as field types inside the new state-aware Configs. `SandboxSpawnOptions` reused as the third-arg options bag (gains `signal?: AbortSignal`). Existing typed `*Config` naming convention reused. |
+| TypeScript SDK (§6) | Five lifecycle functions: `provisionContainer`, `startContainer`, `spawnInContainer` / `runInContainer`, `stopContainer`, `deprovisionContainer`, plus `spawnInContainerWithPty` for a caller-controlled interactive terminal when supported by the selected backend. Branded `SandboxId<C>` type tagging ids by backend (`containment` named once at provision, inferred from the id thereafter). Per-(backend, phase) typed `*Config` interfaces (e.g. `IsolationSessionProvisionConfig`) that absorb cross-cutting fields directly — no separate policy parameter. Per-phase typed `*Result` types per backend. `AbortSignal` cancellation for promise-returning operations via the existing `SandboxSpawnOptions`; live exec callers use `MxcProcess.kill()` or dispose the returned `MxcPtyProcess`. Typed `MxcError` class carrying a closed-enum `code`. | `spawnSandbox` family preserved. `ContainmentBackend` extension mechanism reused. The existing wire-format-aligned `ProcessConfig` / `FilesystemConfig` / `NetworkConfig` / `UiConfig` interfaces from `sdk/node/src/types.ts` are reused as field types inside the new state-aware Configs. `SandboxSpawnOptions` reused as the third-arg options bag (gains `signal?: AbortSignal`). Existing typed `*Config` naming convention reused. |
 | JSON wire format (§7) | Top-level `phase` discriminator. Top-level `sandboxId`. `containment` carried on provision only; non-provision phases route via the `sandboxId` prefix. Per-phase nesting under each backend's permanent top-level section. Named envelope types as a TypeScript discriminated union over `phase`. Exact registered roots admit only the cross-cutting fields supported by each backend and phase. | One-shot remains the no-`phase` request mode and uses its own exact versioned roots. |
 | Rust executor (§9) | Exact registered request contracts selected by version, phase, and provision containment; typed neutral operations; checked backend binding; and `StatefulSandboxBackend` dispatch. | `ScriptRunner` trait. Existing one-shot dispatch path. Existing backends function without modification. |
 | Error model (§8) | Closed enum of 12 error codes. `MxcError` class with `code: ErrorCode`. `details` open object as escape hatch for backend-specific structured information. Exact-root structural failures precede backend validation. | One-shot retains its existing response surface, while exact-contract failures use that surface's structural-error mapping. |
@@ -192,7 +194,7 @@ unrecognised prefix, and this is by design:
 | ----------------------- | ------------------------------------------------ |
 | SDK (TypeScript)        | Throws `MxcError { code: 'malformed_id' }` before invoking `mxc_run_state_aware_json` or `mxc_exec_state_aware_json`. The SDK matches the prefix against the closed `StateAwareContainmentBackend` union it was compiled with; an unknown prefix is treated as a malformed id. See `sdk/node/src/state-aware-helper.ts`. |
 | SDK (Rust)              | `SandboxId::parse` accepts a syntactically valid opaque id without interpreting its prefix. Dispatch returns `MxcError { code: 'unsupported_containment' }` when that prefix is not registered. Empty ids, ids without prefix structure, and ids containing NUL are `malformed_id`. |
-| Native FFI entry points | Return `MxcError { code: 'unsupported_containment' }`. The Rust dispatcher parses the prefix successfully but the prefix-to-backend lookup table has no entry for it. See `src/core/wxc_common/src/state_aware_dispatch.rs`. |
+| Native FFI entry points | Return `MxcError { code: 'unsupported_containment' }`. The Rust dispatcher parses the prefix successfully but the prefix-to-backend lookup table has no entry for it. See `src/mxc-sdk/src/tools/mxc_common/state_aware_dispatch.rs`. |
 
 A recognised prefix with a malformed body is `malformed_id` from both sources
 (§8). The same prefix is exposed on the `StatefulSandboxBackend` trait as
@@ -297,13 +299,13 @@ Backend and phase semantics are validated by the native engine.
 
 | Operation | Input order | Return |
 |---|---|---|
-| `run` / `runAsync` | `ContainerRequest`, `RunOptions?` | `ExecutionResult` / promise |
-| `spawn` / `spawnAsync` | `ContainerRequest`, `SpawnOptions?` | `MxcProcess` / promise |
+| `run` | `ContainerRequest`, `RunOptions?` | `Promise<ExecutionResult>` |
+| `spawn` | `ContainerRequest`, `SpawnOptions?` | `Promise<MxcProcess>` |
 | `spawnWithPty` | `ContainerRequest`, `SpawnWithPtyOptions?` (includes `size`) | `Promise<MxcPtyProcess>` |
 | `provisionContainer` | `ProvisionRequest`, `ProvisionOptions?` | `Promise<ProvisionResult>` |
 | `startContainer` | `ContainerId`, `StartOptions?` | `Promise<LifecycleResult>` |
-| `spawnInContainer` / `spawnInContainerAsync` | `ContainerId`, `ExecutionRequest`, `SpawnInContainerOptions?` | `MxcProcess` / promise |
-| `runInContainer` / `runInContainerAsync` | `ContainerId`, `ExecutionRequest`, `RunInContainerOptions?` | `ExecutionResult` / promise |
+| `spawnInContainer` | `ContainerId`, `ExecutionRequest`, `SpawnInContainerOptions?` | `Promise<MxcProcess>` |
+| `runInContainer` | `ContainerId`, `ExecutionRequest`, `RunInContainerOptions?` | `Promise<ExecutionResult>` |
 | `spawnInContainerWithPty` | `ContainerId`, `ExecutionRequest`, `SpawnInContainerWithPtyOptions?` (includes `size`) | `Promise<MxcPtyProcess>` |
 | `stopContainer` | `ContainerId`, `StopOptions?` | `Promise<LifecycleResult>` |
 | `deprovisionContainer` | `ContainerId`, `DeprovisionOptions?` | `Promise<LifecycleResult>` |
@@ -316,9 +318,7 @@ administrative restriction. Options do not change the owned wire contract.
 `validateProvision`, `validateStart`, `validateStop`, `validateDeprovision`,
 and `validateProcess` use native dry-run validation and return no execution
 result. There is no `dryRun` execution option or public attached-exec API.
-Captured execution has synchronous and asynchronous forms. `runInContainer`
-blocks Node's event loop while native execution drains both output streams;
-`runInContainerAsync` drains them asynchronously. Live processes own wait,
+Captured and streaming execution are asynchronous. Live processes own wait,
 kill, and disposal.
 IsolationSession has stdin; WSLC currently provides stdout/stderr only.
 
@@ -326,7 +326,7 @@ IsolationSession has stdin; WSLC currently provides stdout/stderr only.
 
 ```typescript
 import {
-  provisionContainer, startContainer, runInContainerAsync,
+  provisionContainer, startContainer, runInContainer,
   stopContainer, deprovisionContainer,
 } from '@microsoft/mxc-sdk/v1';
 
@@ -338,7 +338,7 @@ const { containerId } = await provisionContainer({
   },
 });
 await startContainer(containerId);
-const result = await runInContainerAsync(containerId, {
+const result = await runInContainer(containerId, {
   command: 'echo hello',
   timeoutMs: 5000,
 });
@@ -741,7 +741,7 @@ backend.start(
 #### Phase 3 — exec (buffered)
 
 ```typescript
-const r = await runInContainerAsync(
+const r = await runInContainer(
   sandboxId,
   { command: 'echo hello', timeoutMs: 5000 },
 );
@@ -926,7 +926,7 @@ implements one trait, the other, or both, depending on its declared participatio
 
 ### 9.1 Exact request contracts and the shared execution model
 
-`src/core/wxc_common/src/config_deserialize.rs` performs path-aware JSON
+`src/mxc-sdk/src/tools/mxc_common/config_deserialize.rs` performs path-aware JSON
 deserialization into the exact contract selected by version, phase, and
 provision containment. Published v0.9 and v1.0 plus development v1.1 select
 one-shot, `provision`, `start`, `exec`, `stop`, or `deprovision`; provision
@@ -1135,7 +1135,7 @@ pub trait StatefulSandboxBackend {
     /// workload is arbitrary and may not be idempotent, so a refusal issued
     /// after the fact reports "unsupported" for something that has already
     /// taken effect and whose output has already gone somewhere the caller
-    /// never asked for. `wxc_common::state_aware_backend::unsupported_piped_exec`
+    /// never asked for. `mxc_common::state_aware_backend::unsupported_piped_exec`
     /// is the shared refusal.
     fn exec(
         &mut self,
@@ -1269,7 +1269,7 @@ pub enum ExecOutcome {
 ```
 
 Trait methods take `&ExecutionRequest` (the existing one-shot domain model from
-`wxc_common::models`, populated by the same `normalize_common_request_ir`
+`mxc_common::models`, populated by the same `normalize_common_request_ir`
 parser path that serves one-shot calls), plus `sandbox_id` for non-provision
 phases and an optional backend-specific typed config
 (`Self::<Phase>Config`). Cross-cutting policy fields
@@ -1286,7 +1286,7 @@ descriptor on Linux. The executor's outer driver reads from `ExecHandle.stdout` 
 `stderr`, awaits exit via `waiter`, and calls `terminator` to tear the exec down.
 It does **not** write to `stdin`.
 
-`mint_random_token()` is a small helper in `wxc_common` that produces a short hex string
+`mint_random_token()` is a small helper in `mxc_common` that produces a short hex string
 (mirroring the SDK's `randomBytes`-based id minting in `sandbox.ts`); it is used by the
 default `provision` body to construct synthetic ids for stateless-underneath backends.
 
@@ -1454,7 +1454,7 @@ registered prefix table. Mismatches surface as `unsupported_containment` (unreco
 prefix) or `malformed_id` (no prefix structure) per §8.
 
 `bind_isolation_session`, `bind_windows_sandbox`, and `bind_wslc` live in
-`wxc_common::state_aware_binding`, without backend crate dependencies. The engine
+`mxc_common::state_aware_binding`, without backend crate dependencies. The engine
 chooses a concrete backend after its existing routing/opt-in/availability gates.
 An incompatible payload/backend pair is `malformed_request`, never `None`.
 Binding is a static conversion, not JSON serialization, reparsing, or downcasting.
@@ -1527,7 +1527,7 @@ agent user").
 ### 10.2 Backend-side config typing
 
 A state-aware backend declares runtime configuration as trait associated types.
-IsolationSession and WSLC provision types live in `wxc_common::models`, keeping
+IsolationSession and WSLC provision types live in `mxc_common::models`, keeping
 neutral operations and binding independent of backend crates. Exact contract
 types separately define the JSON shape under each permanent top-level
 `<backend>.<phase>` section; adapters map their fields exhaustively to runtime
@@ -1888,7 +1888,7 @@ path forward.
 - **Detached or long-running execs.** A model where `exec` returns a process id and
   the spawned process outlives the SDK call. The JS-async fire-and-forget pattern
   (don't `await`
-  `runInContainerAsync`) IS supported via the existing functions — the spawned process
+  `runInContainer`) IS supported via the existing functions — the spawned process
   is tethered to the SDK consumer's lifetime, but the caller can move on without
   awaiting. True OS-level detachment (process owned by the OS service, independent of any
   caller) needs a different SDK contract (e.g., a future `spawnInContainerDetached`

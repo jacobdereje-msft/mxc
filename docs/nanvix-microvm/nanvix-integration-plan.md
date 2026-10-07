@@ -1,5 +1,7 @@
 # MXC NanVix Integration — Design Document
 
+> **Audience:** MXC developers
+
 ## Problem
 
 MXC (Microsoft eXecution Container) runs untrusted code in sandboxed environments. Today it supports multiple backends: **AppContainer** (process-level isolation), **Windows Sandbox** (full VM), **LXC** and **WSLC** (Linux containers via WSL).
@@ -110,7 +112,7 @@ mxc/src/
 ├── wxc/
 │   ├── Cargo.toml                    # UNCHANGED
 │   └── src/main.rs                   # Add NanVix match arm (2 lines)
-├── wxc_common/
+├── mxc_common/
 │   ├── Cargo.toml                    # UNCHANGED
 │   └── src/
 │       ├── lib.rs                    # Add: pub mod nanvix_runner (1 line)
@@ -124,8 +126,8 @@ mxc/src/
 │       ├── script_runner.rs          # UNCHANGED
 │       └── ...                       # All other modules UNCHANGED
 ├── wxc_test_driver/                  # UNCHANGED
-├── wxc_windows_sandbox_guest/        # UNCHANGED
-└── wxc_windows_sandbox_daemon/       # UNCHANGED
+├── mxc-sdk/src/bin/windows_sandbox_guest/   # UNCHANGED
+└── mxc-sdk/src/bin/windows_sandbox_daemon/  # UNCHANGED
 
 mxc/docs/nanvix-microvm/
 └── nanvix-integration-plan.md        # NEW — this document

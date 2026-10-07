@@ -1,5 +1,7 @@
 # Telemetry consent design
 
+> **Audience:** MXC developers
+
 This document defines the implemented Windows telemetry-consent contract.
 MXC ships the canonical consent resource, persistent consent storage, and
 consent-management APIs described below. Telemetry remains off by default and
@@ -27,8 +29,8 @@ collection but can never opt a user in.
 ## Canonical consent resource
 
 The immutable, versioned authoring resource is
-`src/core/wxc_common/resources/telemetry/consent/en-US.json`. The build embeds
-it in `wxc_common::telemetry::consent_prompt`. Every EXE and SDK presenter must
+`src/mxc-sdk/resources/telemetry/consent/en-US.json`. The build embeds
+it in `mxc_common::telemetry::consent_prompt`. Every EXE and SDK presenter must
 show every supplied field verbatim. Hosts control layout, accessibility, and
 native UI, but may not substitute wording.
 

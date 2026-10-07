@@ -1,5 +1,7 @@
 # MXC IsolationSession Backend — State-Aware (TypeScript)
 
+> **Audience:** MXC developers
+
 This document describes the IsolationSession backend's TypeScript SDK surface under
 the state-aware lifecycle API. It is the SDK companion to the
 [Rust backend guide](state-aware-rust.md).
@@ -87,10 +89,9 @@ experimental authorization and telemetry.
 | `timeoutMs` | number | Workload timeout in milliseconds. |
 | `telemetry` | `TelemetryConfig` | Per-request telemetry setting; invocation options override it when supplied. |
 
-`spawnInContainer` / `spawnInContainerAsync` return `MxcProcess`;
-`runInContainer` / `runInContainerAsync` return `ExecutionResult`. The synchronous
-form blocks Node's event loop until native execution finishes. Their options are
-`SpawnInContainerOptions` and `RunInContainerOptions`.
+`spawnInContainer` returns `Promise<MxcProcess>` and `runInContainer` returns
+`Promise<ExecutionResult>`. Their options are `SpawnInContainerOptions` and
+`RunInContainerOptions`.
 `spawnInContainerWithPty` takes `SpawnInContainerWithPtyOptions`, including
 optional initial terminal `size`, and returns `Promise<MxcPtyProcess>`.
 
@@ -105,7 +106,7 @@ and telemetry. Neither phase returns metadata.
 import {
   provisionContainer,
   startContainer,
-  runInContainerAsync,
+  runInContainer,
   stopContainer,
   deprovisionContainer,
 } from '@microsoft/mxc-sdk/v1';
@@ -123,7 +124,7 @@ const { containerId } = await provisionContainer(
 );
 
 await startContainer(containerId);
-const r = await runInContainerAsync(
+const r = await runInContainer(
   containerId,
   { command: 'echo hi' },
 );

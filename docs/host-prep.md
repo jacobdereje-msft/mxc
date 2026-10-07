@@ -1,5 +1,7 @@
 # Host preparation: `wxc-host-prep.exe`
 
+> **Audience:** MXC consumers
+
 `wxc-host-prep.exe` is a Windows-only, privileged-by-manifest binary
 that owns the one-time host setup steps MXC requires before
 AppContainer- and other sandboxed workloads can run reliably. It is
@@ -256,7 +258,7 @@ that captures stdout/stderr itself.
   `unprepare-system-drive` use the same
   `GetNamedSecurityInfoW` → `SetEntriesInAclW` →
   `SetNamedSecurityInfoW` sequence as
-  `wxc_common::filesystem_dacl`. Apply ACEs are *not* tracked by
+  `mxc_common::filesystem_dacl`. Apply ACEs are *not* tracked by
   `DaclManager` — the change is intentionally persistent across
   process exit. The precise-revoke path scans the existing DACL
   via `GetAce` to find ACEs matching our exact tuple, then issues

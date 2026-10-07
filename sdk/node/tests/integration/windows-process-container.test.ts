@@ -39,7 +39,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
     }
   });
 
-  for (const [name, operation] of [['run', sdk.run], ['runAsync', sdk.runAsync]] as const) {
+  for (const [name, operation] of [['run', sdk.run]] as const) {
     it(`public ${name} captures output and the workload exit code`, { skip: sandboxSkipReason }, async () => {
       const result = await operation({
         containment: { type: 'processcontainer' },
@@ -54,7 +54,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
     });
   }
 
-  for (const [name, operation] of [['spawn', sdk.spawn], ['spawnAsync', sdk.spawnAsync]] as const) {
+  for (const [name, operation] of [['spawn', sdk.spawn]] as const) {
     it(`public ${name} returns an SDK process with live standard streams`, { skip: sandboxSkipReason }, async () => {
       const handle = await operation({
         containment: { type: 'processcontainer' },
@@ -73,7 +73,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
         };
         const output = read(stdout);
         const error = read(stderr);
-        const result = await handle.waitAsync();
+        const result = await handle.wait();
         assert.strictEqual(result.exitCode, 9);
         assert.strictEqual(result.timedOut, false);
         assert.ok((await output).includes('PUBLIC_SPAWN_OK'));
@@ -84,6 +84,30 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
       }
     });
   }
+
+  it('public spawnWithPty supports interactive ProcessContainer I/O', { skip: sandboxSkipReason }, async () => {
+    const terminal = await sdk.spawnWithPty({
+      containment: { type: 'processcontainer' },
+      command: 'cmd.exe',
+      timeoutMs: 30000,
+    });
+    try {
+      assert.ok(terminal.id > 0);
+      const output = (async (): Promise<string> => {
+        let text = '';
+        for await (const chunk of terminal.output) text += chunk.toString();
+        return text;
+      })();
+      terminal.input.write('echo PUBLIC_PTY_OK\r\nexit /b 13\r\n');
+
+      const result = await terminal.wait();
+      assert.strictEqual(result.exitCode, 13);
+      assert.strictEqual(result.timedOut, false);
+      assert.ok((await output).includes('PUBLIC_PTY_OK'));
+    } finally {
+      terminal.dispose();
+    }
+  });
 
   it('should execute cmd.exe in process container', { skip: sandboxSkipReason }, async () => {
     const result = await sdk.runRequestForTest(
@@ -194,7 +218,7 @@ describe(`Windows Process Container (schema ${schemaVersion})`, {
       }
     });
 
-    for (const [name, operation] of [['run', sdk.run], ['runAsync', sdk.runAsync]] as const) {
+    for (const [name, operation] of [['run', sdk.run]] as const) {
       it(`public ${name} routes traffic through an unpackaged proxy`, async () => {
         assert.ok(proxyExpectedBody);
         tempDir = createTempDir('mxc-proxy-test');

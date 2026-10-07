@@ -1,5 +1,7 @@
 # Validation (E2E) test infrastructure
 
+> **Audience:** MXC developers
+
 How MXC runs its backend end-to-end suites across real operating systems, what
 each job covers today, and what to change when you need to add, remove, or
 retire something.
@@ -63,8 +65,8 @@ test jobs only ever `download-artifact`.
 |-----|--------------|
 | `dependency-feed-check` | Resolves the locked crate graph through the public `MxcDependencies` feed. Gates the builds. |
 | `windows` | `Build.Windows.Job.yml` — x64 + arm64 release build, unit tests, uploads `wxc-binaries-<target>`. |
-| `linux` | `Build.Linux.Job.yml` — x64 + arm64 release build, unit tests, `wxc_e2e_tests`, uploads `lxc-binaries-<target>`. |
-| `macos` | `Build.MacOS.Job.yml` — arm64 release build, unit + `wxc_e2e_tests`, uploads `mxc-binaries-aarch64-apple-darwin`. |
+| `linux` | `Build.Linux.Job.yml` — x64 + arm64 release build, unit tests, Bubblewrap SDK streaming/PTY tests, `wxc_e2e_tests`, uploads `lxc-binaries-<target>`. |
+| `macos` | `Build.MacOS.Job.yml` — arm64 release build, unit tests, Seatbelt SDK streaming/PTY tests, `wxc_e2e_tests`, uploads `mxc-binaries-aarch64-apple-darwin`. |
 | `isolation-session-bundle` | `Package.IsolationSession.TestBundle.Job.yml` — uploads `isolation-session-test-bundle-<target>` for x64 + arm64. |
 | `test-nightly` | Calls the matrix job with `plan: nightly`. Runs on every schedule tick and on a `nightly` dispatch. |
 | `test-weekly` | Calls the matrix job with `plan: weekly`. Runs only on the Sunday cron and on a `weekly` dispatch. |
@@ -114,6 +116,7 @@ Current platforms:
 |-------------|--------|----------|------------|--------------------------|------------|
 | `windows-prerelease-process-container` | windows | `1es-mxc-windows-prerelease-t1-x64` | `1es-mxc-windows-prerelease-t1-arm64` | process-t1, isolation-session, wslc, windows-sandbox, microvm | process-t1, isolation-session |
 | `windows-prerelease-isolation-session` | windows | `1es-mxc-e2e-win-prerelease-isolationsesh-x64` | `1es-mxc-e2e-win-prerelease-isolationsesh-arm64` | same as above | same as above |
+| `windows-26h2` | windows | `1es-mxc-windows-26h2-pro-x64` | `1es-mxc-windows-26h2-pro-arm64` | process-t1, wslc, windows-sandbox, microvm | process-t1, isolation-session |
 | `windows-prerelease-26h1` | windows | `1es-mxc-windows-prerelease-26h1-x64` | `1es-mxc-windows-prerelease-26h1-arm64` | process-t1, isolation-session, wslc, windows-sandbox, microvm | process-t1, isolation-session |
 | `windows-25h2` | windows | `1es-mxc-e2e-windows-25h2-pro-x64` | `1es-mxc-e2e-windows-25h2-pro-arm64` | process-t1, wslc, windows-sandbox, microvm | process-t1, isolation-session |
 | `windows-24h2` | windows | `1es-mxc-e2e-windows-24h2-pro-x64` | `1es-mxc-e2e-windows-24h2-pro-arm64` | process-t1, wslc, windows-sandbox, microvm | process-t1, isolation-session |
@@ -252,7 +255,7 @@ every entry.
   VirtualMachinePlatform optional features to be baked into the image, then
   installs/updates the WSL runtime (including the pre-release ring) up to the
   minimum version parsed from `WSLC_SDK_VERSION` in
-  `src/backends/wslc/common/build.rs`.
+  `src/mxc-sdk/build/build_wslc_common.rs`.
 - everything else — prints a "no prerequisites yet" line.
 
 Windows optional features are **verified, never enabled**: turning one on needs a

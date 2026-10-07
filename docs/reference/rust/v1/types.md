@@ -1,5 +1,7 @@
 # Rust V1 types
 
+> **Audience:** MXC consumers
+
 Public entrypoint: `mxc_sdk::v1`. [Operations](api.md) | [Overview](README.md)
 
 Declarations include public fields, variants, constructors, and members. Inherited SDK members remain defined on their base type; implementation-only helpers and external framework APIs are not expanded.
@@ -163,7 +165,6 @@ Invocation controls for releasing a container.
 
 ```rust
 pub struct DeprovisionOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
 }
 ```
@@ -629,7 +630,6 @@ Invocation controls for provisioning a container.
 
 ```rust
 pub struct ProvisionOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
 }
 ```
@@ -685,7 +685,6 @@ Invocation controls for captured execution in an existing container.
 
 ```rust
 pub struct RunInContainerOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
 }
 ```
@@ -697,7 +696,6 @@ Invocation controls for captured container execution.
 
 ```rust
 pub struct RunOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
 }
 ```
@@ -709,7 +707,6 @@ Invocation controls for live execution in an existing container.
 
 ```rust
 pub struct SpawnInContainerOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
 }
 ```
@@ -721,7 +718,6 @@ Invocation controls for a terminal in an existing container.
 
 ```rust
 pub struct SpawnInContainerWithPtyOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
   pub size: MxcPtySize,
 }
@@ -734,7 +730,6 @@ Invocation controls for spawning a live process.
 
 ```rust
 pub struct SpawnOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
 }
 ```
@@ -746,7 +741,6 @@ Invocation controls for spawning a caller-controlled terminal.
 
 ```rust
 pub struct SpawnWithPtyOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
   pub size: MxcPtySize,
 }
@@ -759,7 +753,6 @@ Invocation controls for starting a container.
 
 ```rust
 pub struct StartOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
 }
 ```
@@ -771,7 +764,6 @@ Invocation controls for stopping a container.
 
 ```rust
 pub struct StopOptions {
-  pub experimental: bool,
   pub telemetry: Option<TelemetryConfig>,
 }
 ```
@@ -1131,8 +1123,8 @@ pub struct ConsentPrompt {
   pub learn_more_url: &'static str,
 }
 
-impl From<&wxc_common::telemetry::consent_prompt::ConsentPrompt> for ConsentPrompt {
-  fn from(value: &wxc_common::telemetry::consent_prompt::ConsentPrompt) -> Self;
+impl From<&mxc_sdk::mxc_common::telemetry::consent_prompt::ConsentPrompt> for ConsentPrompt {
+  fn from(value: &mxc_sdk::mxc_common::telemetry::consent_prompt::ConsentPrompt) -> Self;
 }
 ```
 

@@ -1,5 +1,7 @@
 # MXC Contributor's Guide
 
+> **Audience:** MXC developers
+
 Below is our guidance for how to report issues, propose new features, and submit contributions via Pull Requests (PRs).
 
 ## Open Development Workflow
@@ -95,6 +97,16 @@ Some issues are quick and simple to describe. Once a team member has agreed with
 
 Some changes require careful thought and a written design before implementation. For these, we'll request a short design document — typically a markdown file under `docs/` or a detailed comment on the issue describing the proposed configuration schema changes, runner behavior, or SDK API surface. Driving towards agreement in writing, before any code is written, often results in simpler code and less wasted effort.
 
+### Documentation audiences
+
+Human-facing Markdown documentation includes one visible audience marker immediately below its title:
+
+- `> **Audience:** MXC consumers` for people configuring, embedding, or operating MXC.
+- `> **Audience:** MXC developers` for repository design, architecture, build, test, and maintenance material.
+- `> **Audience:** MXC consumers and developers` when a document genuinely serves both groups.
+
+Do not add these markers to legal text, GitHub templates or workflow prompts, or agent instruction files.
+
 ### Experimental features
 
 New, in-development features use their permanent JSON locations in the mutable
@@ -132,7 +144,7 @@ Once you've discussed your proposed change with a team member and agreed on an a
 ### Project layout
 
 ```
-src/                Rust workspace (wxc-exec, lxc-exec, mxc-exec-mac, wxc_common, etc.)
+src/                Rust workspace (wxc-exec, lxc-exec, mxc-exec-mac, mxc_common, etc.)
 sdk/                TypeScript SDK (@microsoft/mxc-sdk)
 docs/               Schema and configuration documentation
 tests/              Test collateral (examples, configs, scripts)
@@ -239,16 +251,16 @@ Testing is a key component in the development workflow. We expect contributors t
 ```bash
 # Rust unit tests (from src/)
 cargo test --workspace
-cargo test -p wxc_common                    # Single crate
-cargo test -p wxc_common -- config_parser   # Filter by test name
+cargo test -p mxc-sdk --lib                         # Consolidated library unit tests
+cargo test -p mxc-sdk --lib -- config_parser        # Filter by test name
 
 # SDK unit and integration tests (from sdk/node/)
 npm test
 npm run test:integration
 
 # Rust end-to-end tests against the built binaries (from src/)
-cargo test -p wxc_e2e_tests                 # Invokes MXC binaries directly
-cargo test -p wxc_e2e_tests -- --ignored    # Include stress tests
+cargo test -p mxc-sdk --test 'wxc_e2e_tests_*'              # Invokes MXC binaries directly
+cargo test -p mxc-sdk --test 'wxc_e2e_tests_*' -- --ignored # Include stress tests
 ```
 
 PowerShell and shell helper scripts that drive the executor end-to-end live under `tests/scripts/` and require a local build. See the [README](./README.md) and the [SDK README](./sdk/node/README.md) for more.

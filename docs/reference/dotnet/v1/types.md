@@ -1,5 +1,7 @@
 # .NET V1 types
 
+> **Audience:** MXC consumers
+
 Public entrypoint: `Microsoft.Mxc.Sdk.V1`. [Operations](api.md) | [Overview](README.md)
 
 Declarations include public fields, variants, constructors, and members. Inherited SDK members remain defined on their base type; implementation-only helpers and external framework APIs are not expanded.
@@ -323,7 +325,6 @@ public sealed class DeprovisionOptions
 {
     public DeprovisionOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
 }
 ```
@@ -1101,7 +1102,6 @@ public sealed class ProvisionOptions
 {
     public ProvisionOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
 }
 ```
@@ -1168,7 +1168,6 @@ public sealed class RunInContainerOptions
 {
     public RunInContainerOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
 }
 ```
@@ -1183,7 +1182,6 @@ public sealed class RunOptions
 {
     public RunOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
 }
 ```
@@ -1227,7 +1225,6 @@ public sealed class SpawnInContainerOptions
 {
     public SpawnInContainerOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
 }
 ```
@@ -1242,7 +1239,6 @@ public sealed class SpawnInContainerWithPtyOptions
 {
     public SpawnInContainerWithPtyOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
     public MxcPtySize? Size { get; set; }
 }
@@ -1258,7 +1254,6 @@ public sealed class SpawnOptions
 {
     public SpawnOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
 }
 ```
@@ -1273,7 +1268,6 @@ public sealed class SpawnWithPtyOptions
 {
     public SpawnWithPtyOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
     public MxcPtySize? Size { get; set; }
 }
@@ -1289,7 +1283,6 @@ public sealed class StartOptions
 {
     public StartOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
 }
 ```
@@ -1304,7 +1297,6 @@ public sealed class StopOptions
 {
     public StopOptions();
 
-    public bool Experimental { get; set; }
     public TelemetryConfig? Telemetry { get; set; }
 }
 ```

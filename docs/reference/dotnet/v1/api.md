@@ -1,5 +1,7 @@
 # .NET V1 operation signatures
 
+> **Audience:** MXC consumers
+
 Public entrypoint: `Microsoft.Mxc.Sdk.V1`. [Types](types.md) | [Overview](README.md)
 
 Signatures describe the typed consumer API and omit implementation bodies.
@@ -15,7 +17,10 @@ Callers do not supply JSON or a schema version.
 
 Creation takes `ContainerRequest` and operation options. Existing-container
 execution takes the `ContainerId` returned by provision, `ExecutionRequest`,
-and operation options. PTY support is IsolationSession-only. Terminal handles
+and operation options. One-shot PTY support covers IsolationSession, Bubblewrap,
+LXC, and Seatbelt direct execution. Existing-container PTY support remains
+IsolationSession-only. Seatbelt PTY rejects `guiAccess` and legacy
+`launchMethod: "open"`. Terminal handles
 give the caller explicit input, output, resize, and process ownership; there
 is no separate public attached-console or raw-JSON launch API.
 
