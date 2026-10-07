@@ -1974,34 +1974,36 @@ mod tests {
 
     #[test]
     fn malformed_com_identifier_remains_classified_verbose_diagnostic() {
-        let events = vec![kernel_event(
-            14,
-            42,
-            1,
-            &[
-                ("Mode", "\"Normal\""),
-                ("ObjectType", "\"ComActivationForClass\""),
-                ("ObjectName", r"C:\Users\alice\secret.txt"),
-                ("AccessMask", "0x1"),
-            ],
-        )];
+        for object_name in [r"C:\Users\alice\secret.txt", "alice@example.com"] {
+            let events = vec![kernel_event(
+                14,
+                42,
+                1,
+                &[
+                    ("Mode", "\"Normal\""),
+                    ("ObjectType", "\"ComActivationForClass\""),
+                    ("ObjectName", object_name),
+                    ("AccessMask", "0x1"),
+                ],
+            )];
 
-        let analysis = resources_from_events(&events);
+            let analysis = resources_from_events(&events);
 
-        assert!(analysis.denials.is_empty());
-        assert_eq!(analysis.verbose_logging.signatures.len(), 1);
-        let signature = &analysis.verbose_logging.signatures[0].signature;
-        assert_eq!(
-            signature.reason,
-            VerboseLoggingOutcomeReason::EventPayloadMalformed
-        );
-        assert_eq!(signature.resource_type, Some(ResourceType::Other));
-        assert!(signature.access_type.is_none());
-        assert_eq!(property(signature, "ObjectType"), "ComActivationForClass");
-        assert_eq!(
-            property(signature, "ObjectName"),
-            crate::learning_mode_windows::extractors::REDACTED_PATH
-        );
+            assert!(analysis.denials.is_empty());
+            assert_eq!(analysis.verbose_logging.signatures.len(), 1);
+            let signature = &analysis.verbose_logging.signatures[0].signature;
+            assert_eq!(
+                signature.reason,
+                VerboseLoggingOutcomeReason::EventPayloadMalformed
+            );
+            assert_eq!(signature.resource_type, Some(ResourceType::Other));
+            assert!(signature.access_type.is_none());
+            assert_eq!(property(signature, "ObjectType"), "ComActivationForClass");
+            assert_eq!(
+                property(signature, "ObjectName"),
+                crate::learning_mode_windows::extractors::REDACTED_PATH
+            );
+        }
     }
 
     #[test]

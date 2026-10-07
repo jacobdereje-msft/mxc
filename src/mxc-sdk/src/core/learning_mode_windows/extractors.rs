@@ -425,6 +425,9 @@ fn looks_like_file_path_property(name: &str, value: &str, object_type: Option<&s
     if !normalized.equals("objectname") && !normalized.equals("resource") {
         return false;
     }
+    if object_type.is_some_and(|object_type| com_outcome_reason(object_type).is_some()) {
+        return !is_guid_identifier(value);
+    }
     if object_type.is_some_and(|object_type| object_type.eq_ignore_ascii_case("File")) {
         return true;
     }
