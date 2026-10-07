@@ -234,6 +234,10 @@ pub(crate) fn is_learning_mode_event(provider: GUID, event_id: u16) -> bool {
     }
 }
 
+pub(crate) fn is_process_scoped_event(provider: GUID, event_id: u16) -> bool {
+    provider != NETWORK_DECISION_PROVIDER && is_learning_mode_event(provider, event_id)
+}
+
 pub(crate) fn effective_event_pid(parts: &DecodedEventParts, header_pid: u32) -> Option<u32> {
     if parts.provider == NETWORK_DECISION_PROVIDER {
         Some(0)

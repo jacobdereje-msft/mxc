@@ -40,7 +40,7 @@ use windows::Win32::System::Diagnostics::Etw::{
 };
 
 use crate::learning_mode_windows::extractors::{
-    extract_denial, is_learning_mode_event, DecodedEventParts, RawDenial, NETWORK_DECISION_PROVIDER,
+    extract_denial, is_learning_mode_event, is_process_scoped_event, DecodedEventParts, RawDenial,
 };
 use crate::learning_mode_windows::process_lifetime::{
     attested_process_lifetimes, JobMembershipSnapshot,
@@ -228,6 +228,14 @@ impl<'visitor> Accumulator<'visitor> {
             verbose_logging: VerboseLoggingSummary::default(),
             verbose_logging_signature_bytes: 0,
             skip_relog_header: false,
+        }
+    }
+
+    fn selects(&self, provider: windows::core::GUID, event_id: u16) -> bool {
+        if self.process_lifetimes.is_some() {
+            is_process_scoped_event(provider, event_id)
+        } else {
+            is_learning_mode_event(provider, event_id)
         }
     }
 
@@ -440,10 +448,10 @@ impl<'visitor> Accumulator<'visitor> {
         if !is_learning_mode_event(provider, event_id) {
             return;
         }
-        let pid = if provider == NETWORK_DECISION_PROVIDER {
-            0
-        } else {
+        let pid = if is_process_scoped_event(provider, event_id) {
             pid
+        } else {
+            0
         };
         let reason = match error.event_kind() {
             Some(tdh_decode::EventDecodeKind::PayloadMalformed) => {
@@ -458,7 +466,7 @@ impl<'visitor> Accumulator<'visitor> {
             None => VerboseLoggingOutcomeReason::SchemaUnavailable,
         };
         if reason == VerboseLoggingOutcomeReason::SchemaUnavailable
-            && provider != NETWORK_DECISION_PROVIDER
+            && is_process_scoped_event(provider, event_id)
         {
             self.truncated = true;
         }
@@ -493,6 +501,11 @@ impl<'visitor> Accumulator<'visitor> {
     fn into_analysis(self) -> Result<AnalysisResult, AnalyzeError> {
         if let Some(error) = self.decode_error {
             return Err(AnalyzeError::Decode(error));
+        }
+        if self.skip_relog_header {
+            return Err(AnalyzeError::Decode(
+                "relogged trace has no transport header".into(),
+            ));
         }
         let mut result = AnalysisResult {
             denials: self.denials,
@@ -570,11 +583,6 @@ impl EtlDenialAnalyzer {
         let mut accumulator = Accumulator::analyze_for_process_lifetimes(lifetimes);
         accumulator.skip_relog_header = true;
         process_trace_file(source_path, &mut accumulator)?;
-        if accumulator.skip_relog_header {
-            return Err(AnalyzeError::Decode(
-                "relogged trace has no transport header".into(),
-            ));
-        }
         accumulator.into_analysis()
     }
 }
@@ -738,9 +746,10 @@ fn process_trace_file(
 
     // ERROR_SUCCESS (0) is end-of-file. ERROR_CANCELLED (1223) is expected
     // when our buffer callback stops after a processing bound or fatal error.
-    if status.0 != 0
-        && !(status.0 == 1223 && (accumulator.stop_requested || accumulator.decode_error.is_some()))
-    {
+    if !process_trace_succeeded(
+        status.0,
+        accumulator.stop_requested || accumulator.decode_error.is_some(),
+    ) {
         return Err(AnalyzeError::Decode(format!(
             "ProcessTrace failed for '{}': Win32 error {}",
             source_path.display(),
@@ -749,6 +758,10 @@ fn process_trace_file(
     }
 
     Ok(())
+}
+
+fn process_trace_succeeded(status: u32, cancelled_by_callback: bool) -> bool {
+    status == 0 || (status == 1223 && cancelled_by_callback)
 }
 
 /// ETW record callback, invoked by `ProcessTrace` for every event in the
@@ -825,6 +838,9 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
     }
 
     if matches!(acc.mode, CollectionMode::SelectForRelogging) {
+        if !acc.selects(provider, event_id) {
+            return;
+        }
         let event_index = acc.relog_event_count;
         let Some(next_event_count) = acc.relog_event_count.checked_add(1) else {
             acc.decode_error =
@@ -833,9 +849,6 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
             return;
         };
         acc.relog_event_count = next_event_count;
-        if !is_learning_mode_event(provider, event_id) || provider == NETWORK_DECISION_PROVIDER {
-            return;
-        }
         let Some(filetime) = normalized_filetime(header.TimeStamp, acc) else {
             return;
         };
@@ -859,9 +872,7 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
     let mut analyze_filetime = None;
 
     if matches!(acc.mode, CollectionMode::Analyze) {
-        if !is_learning_mode_event(provider, event_id)
-            || (provider == NETWORK_DECISION_PROVIDER && acc.process_lifetimes.is_some())
-        {
+        if !acc.selects(provider, event_id) {
             return;
         }
         let Some(filetime) = normalized_filetime(header.TimeStamp, acc) else {
@@ -894,7 +905,11 @@ unsafe fn process_event_record(event_record: *mut EVENT_RECORD, acc: &mut Accumu
                 let pid = if event_id
                     == crate::learning_mode_windows::extractors::CAPABILITY_DENIAL_EVENT_ID
                 {
-                    let process_id = if matches!(&error, tdh_decode::DecodeError::Schema(_)) {
+                    let process_id = if matches!(
+                        &error,
+                        tdh_decode::DecodeError::Schema(_)
+                            | tdh_decode::DecodeError::SchemaNotFound
+                    ) {
                         acc.truncated = true;
                         None
                     } else {
@@ -956,7 +971,7 @@ fn select_capability_decode_result_for_relogging(
             header_pid,
             filetime,
         ),
-        Err(tdh_decode::DecodeError::Schema(_)) => {
+        Err(tdh_decode::DecodeError::Schema(_) | tdh_decode::DecodeError::SchemaNotFound) => {
             acc.decode_error =
                 Some("could not scope brokered capability event: schema unavailable".into());
             acc.stop_requested = true;
@@ -1019,9 +1034,7 @@ fn handle_decoded_event(
     filetime: u64,
     acc: &mut Accumulator<'_>,
 ) {
-    if !is_learning_mode_event(parts.provider, parts.event_id)
-        || (parts.provider == NETWORK_DECISION_PROVIDER && acc.process_lifetimes.is_some())
-    {
+    if !acc.selects(parts.provider, parts.event_id) {
         return;
     }
     let event = (parts.event_id, parts.event_name.as_deref());
@@ -1511,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn relog_selection_tracks_all_provider_ordinals_and_exact_lifetimes() {
+    fn relog_selection_tracks_known_provider_ordinals_and_exact_lifetimes() {
         let mut accumulator = Accumulator::select_for_relogging(&[ProcessLifetime {
             pid: 42,
             start_filetime: 100,
@@ -1582,9 +1595,40 @@ mod tests {
             150,
         );
 
-        assert_eq!(accumulator.relog_event_count, 11);
+        assert_eq!(accumulator.relog_event_count, 3);
         assert_eq!(accumulator.relog_selected_event_indices, [0]);
         assert!(accumulator.decode_error.is_none());
+    }
+
+    #[test]
+    fn relogged_analysis_requires_a_valid_transport_header() {
+        for (provider, event_id, valid) in [
+            (EventTraceGuid, 0, true),
+            (
+                crate::learning_mode_windows::extractors::KERNEL_GENERAL_PROVIDER,
+                14,
+                false,
+            ),
+        ] {
+            let mut accumulator = Accumulator::analyze_for_process_lifetimes(&[]);
+            accumulator.skip_relog_header = true;
+            let mut record = EVENT_RECORD::default();
+            record.EventHeader.ProviderId = provider;
+            record.EventHeader.EventDescriptor.Id = event_id;
+            unsafe { process_event_record(&mut record, &mut accumulator) };
+            assert_eq!(accumulator.into_analysis().is_ok(), valid);
+        }
+        let mut absent = Accumulator::analyze_for_process_lifetimes(&[]);
+        absent.skip_relog_header = true;
+        assert!(absent.into_analysis().is_err());
+    }
+
+    #[test]
+    fn process_trace_cancellation_succeeds_only_when_requested() {
+        assert!(process_trace_succeeded(0, false));
+        assert!(process_trace_succeeded(1223, true));
+        assert!(!process_trace_succeeded(1223, false));
+        assert!(!process_trace_succeeded(5, true));
     }
 
     #[test]
@@ -1716,7 +1760,8 @@ mod tests {
                     unsafe {
                         tdh_decode::decode_event_parts(&mut record, &mut accumulator.schema_cache)
                     },
-                    Err(tdh_decode::DecodeError::Schema(_))
+                    Err(tdh_decode::DecodeError::Schema(_)
+                        | tdh_decode::DecodeError::SchemaNotFound)
                 ));
             }
             let schema_loads = accumulator.schema_cache.schema_loads;
@@ -1898,7 +1943,12 @@ mod tests {
             (privacy, 14, true, true),
             (privacy, 27, true, true),
             (privacy, 4907, true, true),
-            (NETWORK_DECISION_PROVIDER, 1, true, false),
+            (
+                crate::learning_mode_windows::extractors::NETWORK_DECISION_PROVIDER,
+                1,
+                true,
+                false,
+            ),
             (kernel, 999, false, false),
             (privacy, 28, false, false),
             (windows::core::GUID::from_u128(1), 14, false, false),

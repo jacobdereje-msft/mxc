@@ -530,10 +530,10 @@ mod tests {
     #[test]
     fn schema_name_is_optional_and_separate_from_payload() {
         let old = serde_json::json!({
-            "provider": "kernelGeneral",
+            "provider": "learningModeNetworkDecision",
             "providerGuid": "provider",
             "eventId": 0,
-            "reason": "unsupportedEventSchema",
+            "reason": "schemaUnavailable",
             "pid": 42,
             "properties": [["EventName", "payload-name"]]
         });
@@ -545,6 +545,8 @@ mod tests {
             .is_none());
         signature.event_name = Some("schema-name".into());
         let json = serde_json::to_value(&signature).unwrap();
+        assert_eq!(json["provider"], "learningModeNetworkDecision");
+        assert_eq!(json["reason"], "schemaUnavailable");
         assert_eq!(json["eventName"], "schema-name");
         assert_eq!(json["properties"][0][1], "payload-name");
         assert_eq!(

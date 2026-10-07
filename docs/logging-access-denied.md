@@ -208,8 +208,9 @@ sandbox policy:
   `summary.totalDenials` equals `denials.length`.
 - Analysis retains at most 10,000 unique denials and processes at most
   1,000,000 ETW events. Reaching the unique-denial bound stops adding policy
-  entries but continues bounded diagnostic accounting; reaching either bound
-  sets `summary.deniedResourcesTruncated` to `true`.
+  entries but continues bounded diagnostic accounting; reaching either bound, or
+  failing to read a non-network event's schema, sets
+  `summary.deniedResourcesTruncated` to `true`.
 - `resource` is the user-visible identifier for the denied resource,
   interpreted by `resourceType`: an absolute `C:\…` path for `file`, the
   AppContainer **capability name** (e.g. `internetClient`) for `capability`,
@@ -309,7 +310,10 @@ a digest is derived from a sensitive value.
 
 Only Learning Mode events are decoded: Kernel-General events 14, 27, and 28,
 PermissiveLearningMode events 14, 27, and 4907, and NetworkDecision event 1.
-Other provider and event ID pairs are ignored.
+Other provider and event ID pairs are ignored. `unsupportedEventSchema` means
+the event has no actionable extractor. NetworkDecision records are kept only by
+unscoped analysis, with PID 0 and that reason; the local file keeps their
+sanitized properties, including remote endpoints, while telemetry drops them.
 
 Per-event TDH failures use closed diagnostic reasons:
 `eventPayloadMalformed` means the payload conflicts with its declared schema,
@@ -318,8 +322,9 @@ decoding, and `unsupportedPropertyEncoding` means the decoder cannot consume
 that property shape. When TDH exposes it, the schema-declared name is retained
 as the bounded `eventName` signature field. Free-form decoder errors are
 never serialized. `schemaUnavailable` means the event schema could not be
-obtained. Analysis continues but sets `deniedResourcesTruncated`, except for
-network decisions, because the event may have been a denial. Schema failures
+obtained. Analysis continues but sets `deniedResourcesTruncated` because the
+unreadable event may have been a denial; network decisions are not denials, so
+they do not. Schema failures
 remain fatal for raw decoding and for scoping brokered capability events in
 guarded traces.
 
