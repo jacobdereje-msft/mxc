@@ -33,10 +33,9 @@
 //!   classified registry reads are actionable; writes and unknown registry
 //!   access are retained only as verbose diagnostics. Named Section,
 //!   SymbolicLink, and Timer objects are likewise verbose-only because MXC has
-//!   no corresponding policy grants. COM activation and interface-call checks
-//!   are recognized as distinct verbose-only outcomes with their CLSID/IID
-//!   retained in sanitized properties. Other object types are dropped until
-//!   their access-mask vocabulary is understood. The [`AccessType`] is derived from the
+//!   no corresponding policy grants.
+//!   Other object types are dropped until their access-mask vocabulary is
+//!   understood. The [`AccessType`] is derived from the
 //!   `AccessMask` field (see [`access_type_from_mask`]). Emitted under both
 //!   learning modes (`block` → `Mode="Normal"`, `allow` →
 //!   `Mode="Permissive"`).
@@ -615,13 +614,11 @@ pub(crate) fn sanitize_properties(props: &[(String, String)]) -> Vec<(String, St
 ///
 /// The `ObjectType` field selects the resource type: `File` and `Key`
 /// (registry) map to concrete resources, an **empty** `ObjectType` is a
-/// brokered-capability check, the observed named-object types `Section`,
-/// `SymbolicLink`, and `Timer` map to [`ResourceType::Other`], and COM
-/// activation/interface checks are recognized as distinct verbose-only
-/// outcomes with a CLSID/IID resource. Only registry reads are actionable;
-/// other registry access, named-object types, and COM checks are excluded
-/// because MXC has no corresponding policy grants. Other object types are
-/// dropped until their access-mask vocabulary is understood. An absent
+/// brokered-capability check, and the observed named-object types `Section`,
+/// `SymbolicLink`, and `Timer` map to [`ResourceType::Other`]. Only registry
+/// reads are actionable; other registry access and those named-object types are
+/// excluded because MXC has no corresponding policy grants. Other object types
+/// are dropped until their access-mask vocabulary is understood. An absent
 /// `ObjectType` field drops the event.
 ///
 /// For file/registry resources the [`AccessType`] is derived from the
@@ -641,9 +638,7 @@ pub(crate) fn sanitize_properties(props: &[(String, String)]) -> Vec<(String, St
 /// [`VerboseLoggingOutcomeReason::MissingObjectName`]; capability: an
 /// unidentified brokered check,
 /// [`VerboseLoggingOutcomeReason::UnresolvedCapability`] — [`crate::capability_dacl`]
-/// may still recover it from the event's DACL payload), a malformed COM
-/// identifier ([`VerboseLoggingOutcomeReason::EventPayloadMalformed`]), a valid
-/// COM check retained under its dedicated verbose reason, or a self-access,
+/// may still recover it from the event's DACL payload), or a self-access,
 /// non-read registry, or recognized named-object check that isn't actionable
 /// ([`VerboseLoggingOutcomeReason::NotActionable`]).
 pub fn build_denial_from_access_check(
@@ -697,8 +692,9 @@ pub fn build_denial_from_access_check(
     }
 
     let access_type = if resource_type == ResourceType::Capability {
-        // Capability checks report a mask whose vocabulary is not a
-        // file/registry read/write/execute verb.
+        // Capability checks report a mask (often 0x1) that is not a
+        // read/write/execute verb, so don't run the file/registry
+        // classifier over it.
         AccessType::Unknown
     } else {
         find_prop(&parts.props, "AccessMask")
@@ -1029,20 +1025,11 @@ fn com_outcome_reason(object_type: &str) -> Option<VerboseLoggingOutcomeReason> 
 }
 
 fn is_guid_identifier(value: &str) -> bool {
-    let value = match (value.strip_prefix('{'), value.strip_suffix('}')) {
-        (Some(value), Some(_)) => &value[..value.len() - 1],
-        (None, None) => value,
-        _ => return false,
-    };
-
-    value.len() == 36
-        && value.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
+    let value = value
+        .strip_prefix('{')
+        .and_then(|value| value.strip_suffix('}'))
+        .unwrap_or(value);
+    GUID::try_from(value).is_ok()
 }
 
 #[cfg(test)]
@@ -1438,6 +1425,10 @@ mod tests {
             ),
             (
                 Some("\"{00000132-0000-0000-C000-000000000046\""),
+                VerboseLoggingOutcomeReason::EventPayloadMalformed,
+            ),
+            (
+                Some("\"00000132-0000-0000-C000-000000000046}\""),
                 VerboseLoggingOutcomeReason::EventPayloadMalformed,
             ),
         ] {

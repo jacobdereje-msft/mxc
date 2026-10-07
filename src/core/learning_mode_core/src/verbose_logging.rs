@@ -51,9 +51,9 @@ pub enum VerboseLoggingOutcomeReason {
     UnusableResourcePath,
     /// A capability event did not contain a usable capability denial.
     UnresolvedCapability,
-    /// A valid classic COM class-activation denial was retained for diagnostics.
+    /// Classic COM class activation.
     ComActivation,
-    /// A valid classic COM interface-call denial was retained for diagnostics.
+    /// Classic COM interface call.
     ComInterfaceCall,
     /// The event was valid but did not describe an actionable denial.
     NotActionable,
